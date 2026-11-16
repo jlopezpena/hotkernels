@@ -5,9 +5,10 @@
 // The additions are the same single fadd chain as the naive loop, in the same
 // order, so the result is bit-identical and a long array still costs one fadd
 // latency (3 cycles) per element. What changes is that elements are loaded and
-// stored two at a time (ldp/stp), which halves the number of stores waiting on
-// the chain. That only matters for short arrays, where the core runs several
-// calls at once and how many it can hold is set by its store queue.
+// stored two at a time (ldp/stp), which halves the number of store operations
+// waiting on the chain. That only matters for short arrays, where the core runs
+// several calls at once and how many it can hold depends on how many
+// operations each one has waiting.
 .text
 .globl _cumsum_f64
 .p2align 2
@@ -31,8 +32,7 @@ _cumsum_f64:
     stp     d7, d0, [x1, #48]
     add     x0, x0, #64
     add     x1, x1, #64
-    sub     x2, x2, #8
-    subs    x2, x2, #8              // the running sum is in d0 from here on
+    subs    x2, x2, #16             // 8 done, 8 more for the loop; the running sum is in d0
     b.lo    Lrest
 Lmain:
     ldp     d1, d2, [x0]
