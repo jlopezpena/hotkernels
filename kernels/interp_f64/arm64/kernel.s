@@ -16,10 +16,10 @@
 // The bases of four queries are the 32-bit lanes of one vector register, so
 // 64 searches advance together and their loads overlap. One step for four
 // queries moves the bases to integer registers, loads the four probes, and
-// does the compare and the update as vector operations (see the macro-like
-// block after Lg64_pass). jc is written to out as a 64-bit integer.
+// does the compare and the update as vector operations (16 instructions,
+// repeated after Lg64_pass). jc is written to out as a 64-bit integer.
 //
-// Stage 2, the arithmetic, one query at a time without branches:
+// Stage 2, the arithmetic, two queries per vector, without branches:
 //     t = v - xp[jc]
 //     r = fma((fp[jc+1] - fp[jc]) / (xp[jc+1] - xp[jc]), t, fp[jc])
 //     if !(t > 0)        r = fp[jc]      // exact hit, or below the range
@@ -597,81 +597,66 @@ Lg16_pass:
     b       Lp2
 
     // Stage 2 for x7 queries (a multiple of 4) at x5, with jc in out at x6.
-    Lp2:
-        movi    d24, #0xffffffffffffffff
-    ldr     x8, [x6, #0]             // jc
-        ldr     d0, [x5, #0]             // v
-        add     x10, x1, x8, lsl #3
-        add     x16, x2, x8, lsl #3
-        ldp     d1, d2, [x10]           // xp[jc], xp[jc+1]
-        ldp     d3, d4, [x16]           // fp[jc], fp[jc+1]
-        fsub    d5, d2, d1
-        fsub    d6, d4, d3
-        fsub    d7, d0, d1              // t = v - xp[jc]
-        fdiv    d6, d6, d5              // slope
-        fmadd   d5, d6, d7, d3          // slope * t + fp[jc]
-        fcmeq   d6, d5, d5              // all ones unless that is NaN
-        fcmgt   d7, d7, #0.0
-        fcmge   d0, d0, d2
-        and     v24.8b, v24.8b, v6.8b
-        bif     v5.8b, v3.8b, v7.8b     // !(t > 0): fp[jc]
-        bit     v5.8b, v4.8b, v0.8b     // v >= xp[jc+1]: fp[jc+1]
-        str     d5, [x6, #0]
-    ldr     x8, [x6, #8]             // jc
-        ldr     d0, [x5, #8]             // v
-        add     x10, x1, x8, lsl #3
-        add     x16, x2, x8, lsl #3
-        ldp     d1, d2, [x10]           // xp[jc], xp[jc+1]
-        ldp     d3, d4, [x16]           // fp[jc], fp[jc+1]
-        fsub    d5, d2, d1
-        fsub    d6, d4, d3
-        fsub    d7, d0, d1              // t = v - xp[jc]
-        fdiv    d6, d6, d5              // slope
-        fmadd   d5, d6, d7, d3          // slope * t + fp[jc]
-        fcmeq   d6, d5, d5              // all ones unless that is NaN
-        fcmgt   d7, d7, #0.0
-        fcmge   d0, d0, d2
-        and     v24.8b, v24.8b, v6.8b
-        bif     v5.8b, v3.8b, v7.8b     // !(t > 0): fp[jc]
-        bit     v5.8b, v4.8b, v0.8b     // v >= xp[jc+1]: fp[jc+1]
-        str     d5, [x6, #8]
-    ldr     x8, [x6, #16]             // jc
-        ldr     d0, [x5, #16]             // v
-        add     x10, x1, x8, lsl #3
-        add     x16, x2, x8, lsl #3
-        ldp     d1, d2, [x10]           // xp[jc], xp[jc+1]
-        ldp     d3, d4, [x16]           // fp[jc], fp[jc+1]
-        fsub    d5, d2, d1
-        fsub    d6, d4, d3
-        fsub    d7, d0, d1              // t = v - xp[jc]
-        fdiv    d6, d6, d5              // slope
-        fmadd   d5, d6, d7, d3          // slope * t + fp[jc]
-        fcmeq   d6, d5, d5              // all ones unless that is NaN
-        fcmgt   d7, d7, #0.0
-        fcmge   d0, d0, d2
-        and     v24.8b, v24.8b, v6.8b
-        bif     v5.8b, v3.8b, v7.8b     // !(t > 0): fp[jc]
-        bit     v5.8b, v4.8b, v0.8b     // v >= xp[jc+1]: fp[jc+1]
-        str     d5, [x6, #16]
-    ldr     x8, [x6, #24]             // jc
-        ldr     d0, [x5, #24]             // v
-        add     x10, x1, x8, lsl #3
-        add     x16, x2, x8, lsl #3
-        ldp     d1, d2, [x10]           // xp[jc], xp[jc+1]
-        ldp     d3, d4, [x16]           // fp[jc], fp[jc+1]
-        fsub    d5, d2, d1
-        fsub    d6, d4, d3
-        fsub    d7, d0, d1              // t = v - xp[jc]
-        fdiv    d6, d6, d5              // slope
-        fmadd   d5, d6, d7, d3          // slope * t + fp[jc]
-        fcmeq   d6, d5, d5              // all ones unless that is NaN
-        fcmgt   d7, d7, #0.0
-        fcmge   d0, d0, d2
-        and     v24.8b, v24.8b, v6.8b
-        bif     v5.8b, v3.8b, v7.8b     // !(t > 0): fp[jc]
-        bit     v5.8b, v4.8b, v0.8b     // v >= xp[jc+1]: fp[jc+1]
-        str     d5, [x6, #24]
+    // Two queries per vector.
+Lp2:
+    movi    v24.2d, #0xffffffffffffffff
+    ldp     x8, x10, [x6, #0]       // jc of the two queries
+    ldr     q0, [x5, #0]            // v
+    add     x16, x1, x8, lsl #3
+    add     x17, x2, x8, lsl #3
+    ldr     q5, [x16]               // xp[jc], xp[jc+1] of the first query
+    ldr     q7, [x17]               // fp[jc], fp[jc+1]
+    add     x16, x1, x10, lsl #3
+    add     x17, x2, x10, lsl #3
+    ldr     q6, [x16]               // and of the second
+    ldr     q16, [x17]
+    zip1    v1.2d, v5.2d, v6.2d     // xp[jc] of both
+    zip2    v2.2d, v5.2d, v6.2d     // xp[jc+1]
+    zip1    v3.2d, v7.2d, v16.2d    // fp[jc]
+    zip2    v4.2d, v7.2d, v16.2d    // fp[jc+1]
+    fsub    v5.2d, v2.2d, v1.2d
+    fsub    v6.2d, v4.2d, v3.2d
+    fsub    v7.2d, v0.2d, v1.2d     // t = v - xp[jc]
+    fdiv    v6.2d, v6.2d, v5.2d     // slope
+    mov     v5.16b, v3.16b
+    fmla    v5.2d, v6.2d, v7.2d     // slope * t + fp[jc], fused
+    fcmeq   v6.2d, v5.2d, v5.2d     // all ones unless that is NaN
+    fcmgt   v7.2d, v7.2d, #0.0
+    fcmge   v0.2d, v0.2d, v2.2d
+    and     v24.16b, v24.16b, v6.16b
+    bif     v5.16b, v3.16b, v7.16b  // !(t > 0): fp[jc]
+    bit     v5.16b, v4.16b, v0.16b  // v >= xp[jc+1]: fp[jc+1]
+    str     q5, [x6, #0]
+    ldp     x8, x10, [x6, #16]       // jc of the two queries
+    ldr     q0, [x5, #16]            // v
+    add     x16, x1, x8, lsl #3
+    add     x17, x2, x8, lsl #3
+    ldr     q5, [x16]               // xp[jc], xp[jc+1] of the first query
+    ldr     q7, [x17]               // fp[jc], fp[jc+1]
+    add     x16, x1, x10, lsl #3
+    add     x17, x2, x10, lsl #3
+    ldr     q6, [x16]               // and of the second
+    ldr     q16, [x17]
+    zip1    v1.2d, v5.2d, v6.2d     // xp[jc] of both
+    zip2    v2.2d, v5.2d, v6.2d     // xp[jc+1]
+    zip1    v3.2d, v7.2d, v16.2d    // fp[jc]
+    zip2    v4.2d, v7.2d, v16.2d    // fp[jc+1]
+    fsub    v5.2d, v2.2d, v1.2d
+    fsub    v6.2d, v4.2d, v3.2d
+    fsub    v7.2d, v0.2d, v1.2d     // t = v - xp[jc]
+    fdiv    v6.2d, v6.2d, v5.2d     // slope
+    mov     v5.16b, v3.16b
+    fmla    v5.2d, v6.2d, v7.2d     // slope * t + fp[jc], fused
+    fcmeq   v6.2d, v5.2d, v5.2d     // all ones unless that is NaN
+    fcmgt   v7.2d, v7.2d, #0.0
+    fcmge   v0.2d, v0.2d, v2.2d
+    and     v24.16b, v24.16b, v6.16b
+    bif     v5.16b, v3.16b, v7.16b  // !(t > 0): fp[jc]
+    bit     v5.16b, v4.16b, v0.16b  // v >= xp[jc+1]: fp[jc+1]
+    str     q5, [x6, #16]
     fmov    x8, d24
+    mov     x10, v24.d[1]
+    and     x8, x8, x10
     cmn     x8, #1
     b.ne    Lp2_redo                // some fma result was NaN
 Lp2_next:

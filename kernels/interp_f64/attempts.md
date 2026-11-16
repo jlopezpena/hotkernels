@@ -33,3 +33,18 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
 - **Kept:** yes
 - **Notes:** 1.72x at 16, 10.9x to 16.9x from 64 to 262,144, about 10x from
   1M. Locally about 1.2x over naive C at 16 and 3x to 6x above.
+
+## 3. Stage 2 with two queries per vector
+
+- **Idea:** scalar `fdiv` runs at one per cycle on this core and the two-lane
+  `fdiv` also at one per cycle, so do the arithmetic for two queries at once:
+  load `xp[jc], xp[jc+1]` and `fp[jc], fp[jc+1]` of each query as one 16-byte
+  vector, `zip1`/`zip2` them into lane form, then `fsub`, `fdiv`, `fmla` (the
+  fused multiply-add), the two compares and the two selects as vector
+  operations.
+- **check:** pass
+- **compare:** significantly faster, 1.07x [1.07 – 1.07]
+- **Kept:** yes
+- **Notes:** 1.13x at 64 falling to 1.03x at 262,144, 1.04x to 1.05x from 1M,
+  1.08x at 16. Locally, gathering with `ldp d` + `ins` instead of 16-byte
+  loads + `zip` was 1% slower.
