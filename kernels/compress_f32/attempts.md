@@ -113,3 +113,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** not run; ns per element at 5% density for first/second tier sizes: 4/8 0.072, 5/10 0.053, 6/12 0.047, 6/10 0.046 to 0.047, 7/14 0.052, 8/16 0.055. The version without a sparse path is 0.097.
 - **Kept:** no (6/12 stays)
 - **Notes:** on the memorised benchmark smaller first tiers look better (see nonzero_bool attempt 5); they were not adopted. Known weakness, not visible to the judge: at 10% density the count sits on the boundary between the tiers, the tier branch is mispredicted about half the time, and this kernel runs at 0.126 ns per element against 0.097 for the version without a sparse path (30% slower). At 2%, 5%, 20% and 50% it is 0.042, 0.047, 0.094 and 0.092 against 0.097. A fix would be to stay in the 12-extraction code while its use is frequent; it cannot show as a gain on the two benchmark distributions, so under the keep rule it was not attempted.
+
+## Final result (`uv run judge run compress_f32 --unlocked`, after attempt 14)
+
+- **check:** pass (30,482 cases)
+- **vs naive C:** 3.76x [3.76 – 3.77] overall; half_selected 2.75x [2.74 – 2.77], few_selected 5.14x [5.13 – 5.16]
+- **vs NumPy:** 30.5x [30.46 – 30.71] overall; half_selected 42.6x [42.42 – 43.08], few_selected 21.9x [21.82 – 21.96]
+- **Smallest per-size speedups vs naive C:** n=16 1.98x (half) and 1.95x (few); 16M 2.43x (half) and 3.69x (few).
+- **Stopped because:** no untried idea left that is expected to help; see attempt 14 for the known weakness at about 10% density.

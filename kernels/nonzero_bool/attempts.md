@@ -73,3 +73,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** not run; ns per element at 2% / 5% / 10% / 20% / 50%: 0.038 / 0.045 / 0.127 / 0.110 / 0.112, against 0.116 at every density for the dense-only version (attempt 2).
 - **Kept:** nothing changed
 - **Notes:** known weakness, not visible to the judge: at 10% density the count sits on the boundary between the two sparse tiers, the tier branch is mispredicted about half the time, and this kernel is 9% slower than dense-only. See compress_f32 attempt 14.
+
+## Final result (`uv run judge run nonzero_bool --unlocked`, after attempt 9)
+
+- **check:** pass (7,268 cases)
+- **vs naive C:** 4.27x [4.26 – 4.28] overall; half_selected 2.67x [2.66 – 2.68], few_selected 6.83x [6.81 – 6.84]
+- **vs NumPy:** 15.7x [15.60 – 15.68] overall; half_selected 10.7x [10.67 – 10.75], few_selected 22.9x [22.73 – 22.93]
+- **Smallest per-size speedups vs naive C:** n=16 2.20x in both distributions; half_selected 16M 2.45x.
+- **Stopped because:** no untried idea left that is expected to help; see attempt 9 for the known weakness at about 10% density.

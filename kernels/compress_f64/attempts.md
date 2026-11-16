@@ -57,3 +57,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** not run; ns per element at 2% / 5% / 10% / 20% / 50%: 0.042 / 0.048 / 0.129 / 0.123 / 0.124, against 0.135 at every density for the dense-only version (attempt 2).
 - **Kept:** nothing changed
 - **Notes:** 10% density sits on the boundary between the two sparse tiers and the tier branch is mispredicted about half the time; for this kernel that still comes out slightly ahead of dense-only. See compress_f32 attempt 14 for the tier-size measurements.
+
+## Final result (`uv run judge run compress_f64 --unlocked`, after attempt 7)
+
+- **check:** pass (30,482 cases)
+- **vs naive C:** 2.73x [2.72 – 2.74] overall; half_selected 1.84x [1.83 – 1.85], few_selected 4.03x [4.01 – 4.07]
+- **vs NumPy:** 20.2x [20.15 – 20.36] overall; half_selected 27.2x [27.06 – 27.39], few_selected 15.1x [14.95 – 15.21]
+- **Smallest per-size speedups vs naive C:** half_selected n=16,384 1.43x, 16M 1.46x, 4M 1.54x; few_selected n=16 1.70x, 16M 1.87x, 4M 1.89x.
+- **Stopped because:** no untried idea left that is expected to help. half_selected is memory-bound from n=16,384 up; few_selected at 4M and 16M is limited by scattered reads of x.
