@@ -25,3 +25,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.09x [1.09 – 1.09]
 - **Kept:** yes
 - **Notes:** the loop is limited by instruction count, not by a dependency chain: removing 2 of about 22 instructions gave 9%.
+
+## 4. Sixteen elements per loop iteration
+
+- **Idea:** two 8-element blocks per iteration, so the pointer updates and the loop branch are shared (`ldp` for 16 mask bytes, two `ldp q` and one `add` for x). One leftover 8-block, then the scalar tail.
+- **check:** pass
+- **compare:** significantly faster, 1.06x [1.06 – 1.07]
+- **Kept:** yes
+- **Notes:** n=16 is 3% slower (one extra branch on the way in); every other size gains 5 to 10%.

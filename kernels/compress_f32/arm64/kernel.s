@@ -1,7 +1,7 @@
 // size_t compress_f32(const float *x, const bool *mask, float *out, size_t n);
 // Copies x[i] to out wherever mask[i] is true. Returns how many were copied.
 //
-// Eight elements per step. The eight mask bytes (each 0 or 1) are loaded as one
+// Sixteen elements per step, in two blocks of eight. The eight mask bytes (each 0 or 1) are loaded as one
 // 64-bit word. Multiplications turn that word into (a) an 8-bit mask, split
 // into two nibbles that index a table of byte-shuffle patterns, and (b) the
 // selected counts, already scaled to bytes. Each half is compacted with `tbl`
@@ -24,15 +24,52 @@ _compress_f32:
     movk    x10, #0x0408, lsl #32
     movk    x10, #0x0102, lsl #48
     mov     x11, #0x0404040404040404    // running sums of the bytes, times 4
-Lloop8:
-    ldr     x6, [x1], #8                // eight mask bytes
-    ldp     q0, q1, [x0], #32
+    subs    x4, x4, #8                  // x4 = elements left after a 16-block
+    b.lo    Lblock8
+Lloop16:
+    ldp     x6, x15, [x1], #16          // sixteen mask bytes
+    ldp     q0, q1, [x0]
+    ldp     q4, q5, [x0, #32]
+    add     x0, x0, #64
     mul     x7, x6, x10                 // 8-bit mask in the top byte
     mul     x8, x6, x11                 // byte j = 4 * (count in elements 0..j)
+    mul     x16, x15, x10
+    mul     x17, x15, x11
     ubfx    x13, x7, #56, #4            // low nibble of the mask
-    lsr     x14, x7, #60                // high nibble
+    lsr     x7, x7, #60                 // high nibble
+    ubfx    x14, x16, #56, #4
+    lsr     x16, x16, #60
+    ldr     q2, [x9, x13, lsl #4]
+    ldr     q3, [x9, x7, lsl #4]
+    ldr     q6, [x9, x14, lsl #4]
+    ldr     q7, [x9, x16, lsl #4]
     ubfx    x12, x8, #24, #8            // 4 * (count in the low four)
     lsr     x8, x8, #56                 // 4 * (count in all eight)
+    ubfx    x3, x17, #24, #8
+    lsr     x17, x17, #56
+    tbl     v0.16b, {v0.16b}, v2.16b
+    tbl     v1.16b, {v1.16b}, v3.16b
+    tbl     v4.16b, {v4.16b}, v6.16b
+    tbl     v5.16b, {v5.16b}, v7.16b
+    str     q0, [x5]
+    str     q1, [x5, x12]
+    add     x5, x5, x8
+    str     q4, [x5]
+    str     q5, [x5, x3]
+    add     x5, x5, x17
+    subs    x4, x4, #16
+    b.hs    Lloop16
+Lblock8:                                // x4 = (elements left) - 16, left < 16
+    adds    x4, x4, #8
+    b.lo    Ltail_setup                 // fewer than 8 left
+    ldr     x6, [x1], #8                // eight mask bytes
+    ldp     q0, q1, [x0], #32
+    mul     x7, x6, x10
+    mul     x8, x6, x11
+    ubfx    x13, x7, #56, #4
+    lsr     x14, x7, #60
+    ubfx    x12, x8, #24, #8
+    lsr     x8, x8, #56
     ldr     q2, [x9, x13, lsl #4]
     ldr     q3, [x9, x14, lsl #4]
     tbl     v0.16b, {v0.16b}, v2.16b
@@ -40,8 +77,7 @@ Lloop8:
     str     q0, [x5]
     str     q1, [x5, x12]
     add     x5, x5, x8
-    subs    x4, x4, #8
-    b.hs    Lloop8
+    sub     x4, x4, #8
 Ltail_setup:
     adds    x4, x4, #8                  // 0 to 7 elements left
     b.eq    Ldone
