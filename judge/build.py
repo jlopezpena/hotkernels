@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from .render import render
-from .spec import DTYPES, RETURNS, In, Kernel, Out, Size
+from .spec import DTYPES, FLOAT_SCALARS, RETURNS, SCALARS, In, InOut, Kernel, Out, Scalar, Size
 
 ROOT = Path(__file__).resolve().parent.parent
 C_DIR = Path(__file__).resolve().parent / "c"
@@ -46,13 +46,36 @@ def _run(cmd: list) -> str:
     return proc.stdout
 
 
-def _c_type(arg: In | Out | Size) -> str:
+def _c_type(arg: In | Out | InOut | Size | Scalar) -> str:
     """Return the C type of one kernel argument."""
     if isinstance(arg, In):
         return f"const {DTYPES[arg.dtype][1]} *"
-    if isinstance(arg, Out):
+    if isinstance(arg, (Out, InOut)):
         return f"{DTYPES[arg.dtype][1]} *"
+    if isinstance(arg, Scalar):
+        return SCALARS[arg.dtype]
     return "size_t"
+
+
+def _c_literal(scalar: Scalar) -> str:
+    """Return a scalar argument's value as a C literal of its type.
+
+    Floats are written in hexadecimal notation, which reproduces the value
+    exactly; a decimal literal could round.
+    """
+    if scalar.dtype in FLOAT_SCALARS:
+        suffix = "f" if scalar.dtype == "f32" else ""
+        return f"{float(scalar.value).hex()}{suffix}"
+    return f"({SCALARS[scalar.dtype]}){int(scalar.value)}"
+
+
+def _call_arg(arg: In | Out | InOut | Size | Scalar) -> str:
+    """Return the C expression the timing loop passes for one kernel argument."""
+    if isinstance(arg, Size):
+        return "(size_t)n"
+    if isinstance(arg, Scalar):
+        return _c_literal(arg)
+    return f"({_c_type(arg)})p_{arg.name}[p]"
 
 
 def c_prototype(k: Kernel) -> str:
@@ -125,16 +148,12 @@ def build_naive(k: Kernel, src: Path) -> Path:
 
 def _bench_source(k: Kernel) -> str:
     """Generate the C timing loop for this kernel's signature."""
-    pointer_args = [a for a in k.args if not isinstance(a, Size)]
-    call_args = [
-        "(size_t)n" if isinstance(a, Size) else f"({_c_type(a)})p_{a.name}[p]" for a in k.args
-    ]
     return render(
         "bench.c.j2",
         ret=RETURNS[k.returns],
         arg_types=[_c_type(a) for a in k.args],
-        pointer_names=[a.name for a in pointer_args],
-        call_args=call_args,
+        pointer_names=[a.name for a in k.buffers],
+        call_args=[_call_arg(a) for a in k.args],
     )
 
 

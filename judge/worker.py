@@ -23,7 +23,8 @@ import typer
 
 from .cases import Case, build_inputs, fixed_cases, fresh_cases
 from .memory import ArenaPool
-from .spec import USED_RETURN, In, Kernel, Size, load_spec, np_dtype
+from .spec import (FLOAT_SCALARS, USED_RETURN, In, InOut, Kernel, Scalar, Size, element_count,
+                   load_spec, np_dtype)
 
 # Failure categories reported to the parent.
 WRONG_RESULT = "wrong result"
@@ -67,6 +68,8 @@ _INT_RETURN_BITS = {
 }
 _FLOAT_RETURNS = ("f32", "f64")
 _F32_BITS_MASK = 0xFFFFFFFF
+# An integer register holds 64 bits; negative values are passed in two's complement.
+_REGISTER_MASK = 0xFFFFFFFFFFFFFFFF
 
 app = typer.Typer(add_completion=False)
 
@@ -98,6 +101,21 @@ def _matches(got: np.ndarray, expected: np.ndarray, ulp: int | None) -> np.ndarr
     return np.where(special, identical, close)
 
 
+def _float_bits(scalar: Scalar) -> int:
+    """Return the register contents for a floating-point scalar argument.
+
+    Args:
+        scalar: A Scalar of type f32 or f64.
+
+    Returns:
+        The raw bits as an integer. A float occupies the low 32 bits of its
+        64-bit register, which is where the kernel reads it as `s0`..`s7`.
+    """
+    if scalar.dtype == "f32":
+        return struct.unpack("<I", struct.pack("<f", scalar.value))[0]
+    return struct.unpack("<Q", struct.pack("<d", scalar.value))[0]
+
+
 class Runner:
     """Runs cases against one kernel and reports the first failure."""
 
@@ -127,8 +145,8 @@ class Runner:
         inputs = build_inputs(k, case, self.cache)
         expected = k.oracle(*[inputs[a.name] for a in k.ins])
 
-        int_args, out_addr, out_bytes, read_only = self._place_arguments(case, inputs)
-        float_args, result = RegisterArgs(), WrapperResult()
+        int_args, float_args, out_addr, out_bytes, read_only = self._place_arguments(case, inputs)
+        result = WrapperResult()
 
         # Record the case before calling, in case the kernel kills this process.
         os.pwrite(self.progress_fd, str(case).ljust(_PROGRESS_WIDTH).encode(), 0)
@@ -149,32 +167,45 @@ class Runner:
     def _place_arguments(self, case: Case, inputs: dict) -> tuple:
         """Copy inputs into guarded memory and build the kernel's argument list.
 
-        Returns (integer argument registers, output address, output size in
-        bytes, arenas made read-only). Inputs are made read-only so that a
-        kernel writing to one crashes. The output buffer is filled with a
-        known byte so that stray writes can be detected afterwards.
+        Returns (integer argument registers, floating-point argument registers,
+        output address, output size in bytes, arenas made read-only). Inputs
+        are made read-only so that a kernel writing to one crashes. An output
+        buffer is filled with a known byte so that stray writes can be detected
+        afterwards; an in-place buffer starts as its input and stays writable.
+
+        The calling convention numbers integer and floating-point arguments
+        separately: the third integer argument goes in the third integer
+        register however many floating-point arguments precede it.
         """
-        int_args = RegisterArgs()
+        int_args, float_args = RegisterArgs(), RegisterArgs()
+        int_slot = float_slot = 0
         read_only = []
         out_addr = out_bytes = 0
-        for slot, a in enumerate(self.k.args):
-            if isinstance(a, Size):
-                int_args[slot] = case.n
+        for a in self.k.args:
+            if isinstance(a, Scalar) and a.dtype in FLOAT_SCALARS:
+                float_args[float_slot] = _float_bits(a)
+                float_slot += 1
+                continue
+            if isinstance(a, (Size, Scalar)):
+                int_args[int_slot] = (case.n if isinstance(a, Size) else int(a.value)) & _REGISTER_MASK
+                int_slot += 1
                 continue
             itemsize = np_dtype(a.dtype).itemsize
-            nbytes = case.n * itemsize
+            nbytes = element_count(a, case.n) * itemsize
             arena = self.arenas.get(a.name, nbytes)
             addr = arena.place(nbytes, case.arr, itemsize)
-            int_args[slot] = addr
+            int_args[int_slot] = addr
+            int_slot += 1
+            if isinstance(a, (In, InOut)) and nbytes:
+                ctypes.memmove(addr, inputs[a.name].ctypes.data, nbytes)
             if isinstance(a, In):
-                if nbytes:
-                    ctypes.memmove(addr, inputs[a.name].ctypes.data, nbytes)
                 arena.protect(read_only=True)
                 read_only.append(arena)
-            else:
-                out_addr, out_bytes = addr, nbytes
+                continue
+            out_addr, out_bytes = addr, nbytes
+            if not isinstance(a, InOut):
                 ctypes.memset(addr, _FILL_BYTE, nbytes)
-        return int_args, out_addr, out_bytes, read_only
+        return int_args, float_args, out_addr, out_bytes, read_only
 
     def _decode_return(self, result) -> object:
         """Convert the raw return registers into a Python value of the kernel's return type."""
@@ -220,7 +251,7 @@ class Runner:
         k, out = self.k, self.k.out
         dt = np_dtype(out.dtype)
         want = np.ascontiguousarray(np.asarray(expected), dtype=dt).ravel()
-        capacity = case.n
+        capacity = element_count(out, case.n, capacity=True)
         used = capacity
         if out.used == USED_RETURN:
             if returned != len(want):

@@ -19,7 +19,7 @@ from typing import Callable
 import numpy as np
 
 from . import cases
-from .spec import In, Kernel, Size, np_dtype
+from .spec import Kernel, Out, element_count, np_dtype
 
 # Array sizes timed by default: from data that fits in the fastest cache to
 # data far larger than any cache.
@@ -83,7 +83,7 @@ def _inputs(k: Kernel, dist: str, n: int, seed: int) -> dict[str, np.ndarray]:
         rng = np.random.default_rng([seed, n, cases._crc(dist)])
         made = k.distributions[dist](rng, n)
         return {a.name: np.ascontiguousarray(made[a.name], np_dtype(a.dtype)) for a in k.ins}
-    return {a.name: np.ascontiguousarray(cases.base(a.dtype, n, seed, a.name)) for a in k.ins}
+    return {a.name: cases.default_input(a, n, seed) for a in k.ins}
 
 
 class Harness:
@@ -95,7 +95,7 @@ class Harness:
         self.lib = ctypes.CDLL(str(path))
         # The kernel's buffer arguments, in order. The timing loop takes one
         # array of pointers per buffer argument, indexed by pool entry.
-        self.pointer_args = [a for a in k.args if not isinstance(a, Size)]
+        self.pointer_args = k.buffers
         self.lib.hk_bench.argtypes = (
             [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64]
             + [ctypes.POINTER(ctypes.c_void_p)] * len(self.pointer_args)
@@ -150,12 +150,16 @@ def _timing_setup(k: Kernel, harness: Harness, contenders: dict[str, int | None]
     """
     npool = _pool_size(n)
     pool = [_inputs(k, dist, n, seed) for seed in range(npool)]
-    outs = [{a.name: np.empty(n, np_dtype(a.dtype)) for a in k.outs} for _ in range(npool)]
+    outs = [{a.name: np.empty(element_count(a, n), np_dtype(a.dtype))
+             for a in k.outs if isinstance(a, Out)} for _ in range(npool)]
 
     # One array of pointers per buffer argument, one pointer per pool entry.
+    # An in-place buffer points at its input, which the kernel then modifies:
+    # every later repeat sees the result of the first. That is only a fair
+    # timing for operations that give the same result when applied twice.
     pointer_arrays = []
     for a in harness.pointer_args:
-        source = pool if isinstance(a, In) else outs
+        source = outs if isinstance(a, Out) else pool
         addresses = [entry[a.name].ctypes.data for entry in source]
         pointer_arrays.append((ctypes.c_void_p * npool)(*addresses))
     numpy_args = [tuple(entry[a.name] for a in k.ins) for entry in pool]
@@ -169,7 +173,7 @@ def _timing_setup(k: Kernel, harness: Harness, contenders: dict[str, int | None]
 
     def numpy_oracle(reps: int) -> int:
         """Time the NumPy oracle from Python, including its call overhead."""
-        oracle, p = k.oracle, 0
+        oracle, p = k.numpy or k.oracle, 0
         start = time.perf_counter_ns()
         for _ in range(reps):
             oracle(*numpy_args[p])

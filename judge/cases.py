@@ -16,7 +16,7 @@ from typing import Callable, Iterator
 import numpy as np
 
 from .memory import ARRANGEMENTS
-from .spec import Kernel, np_dtype
+from .spec import In, InOut, Kernel, element_count, np_dtype
 
 # --- Which sizes are tested -------------------------------------------------
 
@@ -418,28 +418,70 @@ def build_inputs(k: Kernel, case: Case, cache: dict | None = None) -> dict[str, 
     picks = {arg: (cls, p) for arg, cls, p in case.picks}
     inputs = {}
     for a in k.ins:
-        key = (a.name, case.n, case.seed)
+        count = element_count(a, case.n)
+        key = (a.name, count, case.seed)
         if cache is not None and key in cache:
             base_arr = cache[key]
         else:
-            base_arr = base(a.dtype, case.n, case.seed, a.name)
+            base_arr = base(a.dtype, count, case.seed, a.name)
             if cache is not None:
                 cache[key] = base_arr
         cls, p = picks.get(a.name, (RANDOM, 0))
-        inputs[a.name] = np.ascontiguousarray(
-            make(a.dtype, cls, p, case.n, case.seed, a.name, base_arr), np_dtype(a.dtype)
-        )
+        # A positional class picks its index from the case's element count; a
+        # buffer of a fixed length may be shorter than that.
+        p = p % count if count else 0
+        made = make(a.dtype, cls, p, count, case.seed, a.name, base_arr)
+        inputs[a.name] = finish_input(a, made)
     return inputs
+
+
+def finish_input(arg: In | InOut, values: np.ndarray) -> np.ndarray:
+    """Give an input array the layout and order its argument requires.
+
+    Args:
+        arg: The argument the array is for.
+        values: The array as generated.
+
+    Returns:
+        A contiguous array of the argument's type, passed through the
+        argument's `prepare` function when the spec gives one.
+    """
+    array = np.ascontiguousarray(values, np_dtype(arg.dtype))
+    if arg.prepare is None:
+        return array
+    return np.ascontiguousarray(arg.prepare(array), np_dtype(arg.dtype))
+
+
+def default_input(arg: In | InOut, n: int, seed: int) -> np.ndarray:
+    """Build the default random array for an argument, as used for timing.
+
+    Args:
+        arg: The argument the array is for.
+        n: The value of the kernel's Size argument.
+        seed: Seed of the random data.
+
+    Returns:
+        Random data of the argument's length, prepared as the spec asks.
+    """
+    return finish_input(arg, base(arg.dtype, element_count(arg, n), seed, arg.name))
 
 
 # --- Enumerating cases ------------------------------------------------------
 
-def sizes(min_n: int) -> list[int]:
-    """Return the element counts to test: every small size, then powers of two with neighbours."""
+def sizes(min_n: int, max_n: int | None = None) -> list[int]:
+    """Return the element counts to test: every small size, then powers of two with neighbours.
+
+    Args:
+        min_n: Smallest count to include.
+        max_n: Largest count to include, or None for no limit.
+
+    Returns:
+        The counts, ascending.
+    """
     out = set(range(min_n, EXHAUSTIVE_MAX_N + 1))
     for power in range(MIN_POWER, MAX_POWER + 1):
         out |= {2**power - 1, 2**power, 2**power + 1}
-    return sorted(s for s in out if s >= min_n)
+    return sorted(s for s in out if s >= min_n and (max_n is None or s <= max_n))
 
 
 def _positions(n: int) -> list[int]:
@@ -464,7 +506,7 @@ def fixed_cases(k: Kernel, seed: int = 1) -> Iterator[Case]:
         """Build a case where unchosen arguments get random data."""
         return Case(n, arr, seed, tuple((a.name, *chosen.get(a.name, (RANDOM, 0))) for a in ins))
 
-    for n in sizes(k.min_n):
+    for n in sizes(k.min_n, k.check_max_n):
         exhaustive, large = n <= EXHAUSTIVE_MAX_N, n > LARGE_MIN_N
         for a in ins:
             plain, positional = classes(a.dtype)
