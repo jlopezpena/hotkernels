@@ -2,7 +2,7 @@
 
 This is a proposal for review. It details phase 2 of [core-design.md](core-design.md): where NumPy is slow on ARM64, which operations are worth a kernel, and in what order to build them.
 
-Unlike the other design documents, the measuring part is already done. The harness in [`survey/`](../survey) exists and the numbers below are real. What is proposed, and open to change, is the ranking, the order of work and the answers to the open questions.
+Unlike the other design documents, the measuring part is already done. The harness in [`survey/`](../survey) exists and the numbers below are real. What is proposed, and open to change, is the ranking and the order of work.
 
 The survey was run before the judge existed, so it uses its own small harness. The timings are "naive timings": good enough to rank candidates, not good enough to defend a 10% difference. Every candidate is measured again by the judge before it ships.
 
@@ -129,7 +129,7 @@ Every candidate above is tried; none is dropped in advance. The judge decides wh
 | Step | Candidates | Why here |
 |---|---|---|
 | 1 | `np.clip` on floats, as C | Proves the delivery path with a kernel that needs no assembly. `np.clip` is backed by a ufunc, so it also tests the inner-loop patching mechanism |
-| 2 | Mask selection and `nonzero` | Largest gap the compiler does not close; one compaction technique, two kernels; `compress_f32` is already a judge fixture |
+| 2 | Mask selection and `nonzero` | Largest gap the compiler does not close; one compaction technique, two kernels; `compress_f32` is already a judge fixture. Needs scratch output in the judge first |
 | 3 | `argmax` / `argmin` on floats | The harder case: beating NumPy where it already has NEON. Already a judge fixture |
 | 4 | `searchsorted` on float64, then `interp` | One search core serves `searchsorted`, `digitize` and `interp` |
 | 5 | `cumsum`: integers exact, then floats in tolerance mode | Integers first because they need no tolerance |
@@ -160,9 +160,11 @@ This limits what three shortlist entries are worth until it is resolved:
 
 The kernels are still worth building: the judge can measure them, and the function forms benefit at once. Whether the syntax can be reached is investigated during step 1 of the order of work. The gap is also recorded in [core-design.md](core-design.md) under phase 3.
 
-## Open questions
+## The baseline for mask selection
 
-1. **Which loop is "naive C" for mask selection?** The branchy loop is the simplest, but the branchless loop is just as short and 9x faster at 50% density. The branchless loop is the honest baseline. It stores one element past the used output, still inside the buffer's capacity, which the judge's output rule currently rejects. The SIMD technique needs the same allowance. Proposed: a kernel may write anywhere inside the declared capacity.
+The branchy loop is the simplest C for `a[mask]`, but the branchless loop is just as short and 9x faster at 50% density, so the branchless loop is the honest baseline for mask selection and `nonzero`. It leaves a stray element just past the reported output, inside the buffer's capacity, and the NEON technique leaves up to a block of them. The judge's default output rule rejects that.
+
+Decided in review: a spec may declare an output buffer as scratch, which lets the kernel write anywhere inside its capacity. The trade-offs, including what the stray last element means for the binding, are set out in [judge-design.md](judge-design.md#scratch-output-writing-inside-the-capacity). The mask kernels and `nonzero` cannot be judged against the branchless baseline until the judge implements it.
 
 ## Limits of this survey
 
@@ -181,3 +183,4 @@ The kernels are still worth building: the judge can measure them, and the functi
 | Choose three kernels for phase 3? | No. All candidates are tried |
 | Tolerance-mode float `cumsum`? | Acceptable. Float `cumsum` may reorder additions under a declared tolerance |
 | Indexing syntax not reachable | Recorded as a known gap here and in the core design |
+| May a kernel write inside its output capacity? | Yes, per buffer, when the spec declares it scratch. Strict by default; trade-offs in the judge design |
