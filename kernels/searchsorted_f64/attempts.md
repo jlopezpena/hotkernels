@@ -109,3 +109,56 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
   An experiment that dropped the needle loads (wrong results, timing only)
   ran 1.3x to 1.4x faster, so the step is limited by its loads and
   instruction count: 1.5 loads per probe against three load ports.
+
+## 7. Counting over all of `a` for 16 <= n < 64 (rejected on local timing)
+
+- **Idea:** drop the sixteen-needle binary search and, for sixteen needles at
+  once, compare every element of `a` with all of them and add up the masks
+  (no dependency chain at all, and a much shorter kernel).
+- **check:** not run through the judge (local harness: correct)
+- **compare:** not run through the judge; locally 0.96x at 16, unchanged at 64
+- **Kept:** no
+- **Notes:** 16 vector operations per element for sixteen needles, and the
+  core has four vector ports, so 16 elements take about 64 cycles: no better
+  than the search it would replace.
+
+## 8. Two search steps per load of the needles (rejected on local timing)
+
+- **Idea:** in the 64-needle path, do two consecutive steps for each four
+  needles before moving to the next four, so the needles are loaded from `v`
+  once per two steps (1.25 loads per probe instead of 1.5).
+- **check:** not run through the judge (local harness: correct)
+- **compare:** not run through the judge; locally 1.00x to 1.01x from 256 to
+  16,384, 0.97x at 64, 0.90x at 65,536 and 262,144, 0.99x from 1M
+- **Kept:** no
+- **Notes:** the saved loads are cancelled by the doubled dependency chain
+  per register. See the notes of attempt 10 for why the loads were not the
+  limit after all.
+
+## 9. Lane load instead of load plus insert (rejected on local timing)
+
+- **Idea:** `add x7, x17, x5, lsr #29` + `ld1 {v24.d}[1], [x7]` in place of
+  `lsr` + `ldr d25` + `ins`, one instruction fewer per two probes.
+- **check:** not run through the judge (local harness: correct)
+- **compare:** not run through the judge; locally 1.00x at every size from
+  16 to 65,536
+- **Kept:** no
+- **Notes:** the lane load is evidently a load plus an insert internally.
+
+## 10. Diagnosis of the 64-needle path (no change to the kernel)
+
+- **Idea:** find out what limits the path at about 0.74 cycles per probe
+  when its instruction count allows about 0.5.
+- **check:** not applicable
+- **compare:** not applicable
+- **Kept:** no change
+- **Notes:** timing-only experiments in the local harness. Comparing against
+  a constant instead of the loaded needles (so every search takes the same
+  path and probes the same elements, with all the same instructions executed)
+  ran 1.06x faster at 64, 1.25x at 1,024 and 1.33x at 4,096: the time depends
+  on which elements of `a` are probed, not on the instruction count. The
+  timing pool at these sizes holds about 96 KB of page-aligned arrays against
+  a 128 KB first-level cache, so part of the random probes miss it. With 32
+  searches per group instead of 64 the path is 0.83x to 0.96x, so it is only
+  mildly limited by how many searches are in flight; doubling them again
+  would need 16-bit bases (n <= 65,536 only) and was not tried.
