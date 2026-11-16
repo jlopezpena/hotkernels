@@ -95,13 +95,9 @@
 .globl _argmax_f32
 .p2align 4
 _argmax_f32:
-    cmp     x1, #64
-    b.hi    Lbig
     add     x9, x0, x1, lsl #2          // end of the array
-    cmp     x1, #32
-    b.hi    Lupto64
     cmp     x1, #16
-    b.hi    Lupto32
+    b.hi    Lover16
     cmp     x1, #8
     b.hs    Lupto16
 
@@ -132,6 +128,13 @@ Lscalar_new:
     b.vc    Lscalar_next                // a real new maximum: carry on
     mov     x0, x2                      // NaN: it wins
     ret
+
+Lover16:
+    cmp     x1, #64
+    b.hi    Lbig
+    cmp     x1, #32
+    b.hi    Lupto64
+    b       Lupto32
 
 // ---- 8 <= n <= 16: vectors at 0, 4, n-8, n-4 -------------------------------
 Lupto16:

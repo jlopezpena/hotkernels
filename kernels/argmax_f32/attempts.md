@@ -31,3 +31,19 @@
 - **compare:** significantly faster, 1.021x [1.017 – 1.032]
 - **Kept:** yes
 - **Notes:** n = 64 goes from 5.3 ns to 4.0 ns (1.33x); nothing else changes.
+
+## 5. Software prefetch in the block loop
+
+- **Idea:** two `prfm pldl1keep` per 256-byte block, 1,024 bytes ahead, to help once the data no longer fits the first-level cache.
+- **check:** pass
+- **compare:** significantly slower, 0.949x [0.943 – 0.956]
+- **Kept:** no
+- **Notes:** 8 to 13% slower from 4,096 to 1,048,576 (the prefetches take load slots, and the hardware prefetcher already follows the stream); no measurable gain at 4M and 16M.
+
+## 6. Test for n <= 16 first at entry
+
+- **Idea:** n = 16 runs at about 43 operations per call including the caller's loop, so it is limited by how many operations the core can issue per cycle. Checking the smallest class first removes two compare-and-branch pairs from that path at the cost of one more for larger inputs.
+- **check:** pass
+- **compare:** significantly faster, 1.007x [1.002 – 1.010]
+- **Kept:** yes
+- **Notes:** n = 16 goes from 1.8 ns to 1.7 ns (1.10x); other sizes unchanged.
