@@ -119,3 +119,35 @@
 - **compare:** significantly faster, 1.006x [1.004 – 1.008], repeated: 1.005x [1.004 – 1.005]
 - **Kept:** yes
 - **Notes:** n = 256 goes from 13.2 to 12.5 ns (1.05x, 1.04x on the repeat); no other timed size changes. Only 256 is timed in this range, so the gain for 129..255 is not measured, only checked for correctness. 65..128 still uses the block loop; a matching eight-quad class would be the natural next step but no timed size falls in it.
+
+## 16. Search 128 < n <= 256 through eight double-quads instead of sixteen quads
+
+- **Idea:** compare the eight level-1 tree nodes (32 elements each) with the maximum, then reload and compare the 8 vectors of the first one that holds it: 105 vector operations instead of 111, for 4 more loads.
+- **check:** not run (never became the working copy)
+- **compare:** not run. Timed outside the judge the way the judge times (cycling through a pool of 16 inputs, best of 9, four rounds): n = 256 took 12.26–12.43 ns against 11.93–12.28 ns for the committed kernel.
+- **Kept:** no
+- **Notes:** no gain, so it was not taken to the judge. The same probe showed about 4% swings at 4,096 between builds whose block loop is identical, which the judge did not reproduce (attempts 12 and 15); small differences seen only in that probe are code placement, not signal.
+
+## Final result (after attempt 16)
+
+`uv run judge run argmax_f32 --unlocked`: check PASS (18,081 cases). Overall 22.3x [22.14 – 22.56] over naive C and 22.3x [22.09 – 22.49] over NumPy. Other kernels were being timed on the machine at the same time, which widens the intervals at 4M and 16M.
+
+| n | kernel | naive C | speedup | NumPy | speedup |
+|---|---|---|---|---|---|
+| 16 | 1.7 ns | 10.3 ns | 6.04x [5.98 – 6.07] | 611.8 ns | 360x [357 – 362] |
+| 64 | 4.1 ns | 54.4 ns | 13.3x [13.22 – 13.43] | 663.6 ns | 162x [161 – 164] |
+| 256 | 12.6 ns | 299.7 ns | 23.7x [23.50 – 24.03] | 720.8 ns | 57.1x [56.63 – 57.73] |
+| 1,024 | 33.4 ns | 1.3 us | 39.0x [38.80 – 39.34] | 1.1 us | 31.8x [31.62 – 31.85] |
+| 4,096 | 117.7 ns | 5.4 us | 45.6x [45.01 – 45.91] | 2.4 us | 20.4x [20.23 – 20.53] |
+| 16,384 | 458.2 ns | 21.6 us | 47.1x [46.75 – 47.42] | 7.7 us | 16.9x [16.69 – 17.01] |
+| 65,536 | 3.2 us | 85.7 us | 26.7x [26.44 – 26.88] | 29.4 us | 9.15x [9.04 – 9.21] |
+| 262,144 | 12.5 us | 336.4 us | 26.8x [26.65 – 27.18] | 112.9 us | 8.99x [8.94 – 9.08] |
+| 1,048,576 | 51.9 us | 1.36 ms | 26.3x [26.03 – 26.50] | 452.2 us | 8.72x [8.63 – 8.78] |
+| 4,194,304 | 326.9 us | 5.38 ms | 16.4x [15.59 – 17.36] | 1.80 ms | 5.50x [5.22 – 5.82] |
+| 16,777,216 | 1.55 ms | 21.72 ms | 14.1x [12.90 – 15.21] | 7.20 ms | 4.66x [4.32 – 5.07] |
+
+Where it stands: 0.028 ns per element in the first-level cache against a load-port bound of about 0.026; 0.048 to 0.050 in the second level and about 0.07 beyond, the same as a plain `fmax` reduction with no index (measured outside the judge), so those sizes are limited by memory, not by the kernel. Two streams, look-ahead loads and `prfm` did not raise that limit.
+
+Not measured by the judge, timed outside it against naive C (best of 7, one input): ascending, descending and all-equal inputs take the same time as random ones at every size tried (for example 440 ns at 16,384 in all four cases), because no branch depends on the data. A NaN as the first element returns in 3.5 to 10 ns at any size. A NaN as the last element costs 114 ns at 256 (the straight-line classes fall back to a scalar search of the whole input) and 466 ns at 16,384.
+
+Left untried or unkept: an eight-quad class for 65..128 and a two-step search for 17..32 (no timed size falls in either range, so the rule cannot keep them); attempt 7 (n = 16 was 2 to 3% faster every time, overall not significant).
