@@ -41,3 +41,19 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.02x [1.02 – 1.02]
 - **Kept:** yes
 - **Notes:** +3 to 5% from n=64 to 16,384; 65,536 and 262,144 are 1 to 2% slower in half_selected (the table competes for L1); the largest sizes are +1%.
+
+## 6. Register-offset mask loads with a single up-counting index
+
+- **Idea:** replace `ldp x6, x15, [x1], #16` plus `subs`/`b.hs` with two `ldr [base, x4]` loads and `adds x4, #16`/`b.ne`, hoping to drop the pointer writeback.
+- **check:** pass
+- **compare:** significantly slower, 0.975x [0.972 – 0.977]
+- **Kept:** no
+- **Notes:** the post-indexed `ldp` of two general registers is cheaper than two separate loads; sizes above L1 lost 4%.
+
+## 7. Sparse path: 64-bit bitmask and unconditional `clz` extractions, tiers of 6 and 12
+
+- **Idea:** same scheme as compress_f64 attempt 3 and nonzero_bool attempts 3 to 5. Per 64 elements, build a bitmask in NEON (`ushl` by 0..7, three `addp`, `fmov`, `rbit`) and count it. At most 6 selected: find 6 positions with `clz` / `lsr` / `bic` and copy `x[pos]` with scalar `ldr s` / `stp s`, no branches. 7 to 12: a second copy with 12 extractions. More than 12: the dense table code (attempt 5) for those 64 elements. After a dense stretch, back to sparse if at most 1 in 8 was selected, else a longer dense stretch (up to 512 elements). The sparse loop needs 65 elements left (an exhausted `clz` copies `x[64]` as rubbish); exactly 64 left use a copy that masks the position with `and #63`.
+- **check:** pass
+- **compare:** significantly faster, 1.30x [1.30 – 1.31] (first run 1.30x [1.30 – 1.33] with a NOISY MACHINE warning; rerun clean)
+- **Kept:** yes
+- **Notes:** few_selected 1.74x (2.2 to 2.4x from 256 to 16,384, 1.9x to 1M, 1.17x at 4M and 16M where scattered reads of x miss the cache). half_selected 0.98x: n=64 and n=256 are 0.91x (the failed sparse attempt on the first block), 1,024 to 16,384 0.97 to 1.0x.
