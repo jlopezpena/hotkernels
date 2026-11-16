@@ -166,7 +166,7 @@ The trick only matters for tiny arrays, where the leftover is most of the work. 
 
 #### Scratch output: writing inside the capacity
 
-*Decided in review of the survey. Not yet implemented in the judge.*
+*Decided in review of the survey.*
 
 By default a kernel may write only the output it reports. A spec can relax this for one output buffer by declaring it as scratch:
 
@@ -306,6 +306,8 @@ An agent told to make a number go up will sometimes do it the wrong way. The jud
 
 There are two fixture kernels, matching the two spec examples above: `argmax_f32` (returns a value) and `compress_f32` (writes variable-length output). Each has a correct, deliberately simple assembly version, plus broken variants:
 
+A third fixture, `compress_scratch_f32`, covers [scratch output](#scratch-output-writing-inside-the-capacity). It is the same operation as `compress_f32` with the output declared `scratch=True`. Its correct kernel and its naive C both leave a stray element past the reported output, and must pass. The same assembly is a broken variant of `compress_f32`, where it must fail, so the two fixtures together prove the rule applies only where the spec asks for it.
+
 | Broken variant | Must be caught by |
 |---|---|
 | Skips the last element when the size is not a multiple of the vector width | Correctness |
@@ -314,6 +316,7 @@ There are two fixture kernels, matching the two spec examples above: `argmax_f32
 | Only correct when the buffer is aligned | Correctness |
 | Reads one vector past the end of the input | Memory safety |
 | Writes one element past the used output | Memory safety |
+| Writes one element past the capacity of a scratch output | Memory safety |
 | Writes to an input buffer | Memory safety |
 | Overwrites a register it must preserve | Calling convention |
 | Uses `x18` | Lint |
@@ -354,4 +357,4 @@ Phase 1 also delivers the two documents that turn the judge into an agent loop. 
 | Agent target | At least 10% over naive C, then continue until options are exhausted. If 10% is not possible, report best effort and why. |
 | Committing results | Committed for now; revisit later. |
 | NumPy timing | Best effort: timed from Python with call overhead, labelled as such. Stricter if results warrant it. |
-| Fixture kernels | `argmax_f32` and `compress_f32`. |
+| Fixture kernels | `argmax_f32`, `compress_f32` and `compress_scratch_f32`. |

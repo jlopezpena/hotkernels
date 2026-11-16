@@ -129,7 +129,7 @@ Every candidate above is tried; none is dropped in advance. The judge decides wh
 | Step | Candidates | Why here |
 |---|---|---|
 | 1 | `np.clip` on floats, as C | Proves the delivery path with a kernel that needs no assembly. `np.clip` is backed by a ufunc, so it also tests the inner-loop patching mechanism |
-| 2 | Mask selection and `nonzero` | Largest gap the compiler does not close; one compaction technique, two kernels; `compress_f32` is already a judge fixture. Needs scratch output in the judge first |
+| 2 | Mask selection and `nonzero` | Largest gap the compiler does not close; one compaction technique, two kernels; `compress_f32` is already a judge fixture. Uses scratch output |
 | 3 | `argmax` / `argmin` on floats | The harder case: beating NumPy where it already has NEON. Already a judge fixture |
 | 4 | `searchsorted` on float64, then `interp` | One search core serves `searchsorted`, `digitize` and `interp` |
 | 5 | `cumsum`: integers exact, then floats in tolerance mode | Integers first because they need no tolerance |
@@ -164,7 +164,7 @@ The kernels are still worth building: the judge can measure them, and the functi
 
 The branchy loop is the simplest C for `a[mask]`, but the branchless loop is just as short and 9x faster at 50% density, so the branchless loop is the honest baseline for mask selection and `nonzero`. It leaves a stray element just past the reported output, inside the buffer's capacity, and the NEON technique leaves up to a block of them. The judge's default output rule rejects that.
 
-Decided in review: a spec may declare an output buffer as scratch, which lets the kernel write anywhere inside its capacity. The trade-offs, including what the stray last element means for the binding, are set out in [judge-design.md](judge-design.md#scratch-output-writing-inside-the-capacity). The mask kernels and `nonzero` cannot be judged against the branchless baseline until the judge implements it.
+Decided in review: a spec may declare an output buffer as scratch, which lets the kernel write anywhere inside its capacity. The trade-offs, including what the stray last element means for the binding, are set out in [judge-design.md](judge-design.md#scratch-output-writing-inside-the-capacity). The judge implements it, with `compress_scratch_f32` as its fixture.
 
 ## Limits of this survey
 

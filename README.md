@@ -7,7 +7,7 @@ Kernels are written by coding agents iterating against a judge. The judge checks
 ## What is here
 
 - **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is.
-- **Fixture kernels** (`judge/fixtures/`): `argmax_f32` and `compress_f32`, used to test the judge itself.
+- **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32` and `compress_scratch_f32`, used to test the judge itself.
 - **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. Recorded results are in `survey/results/`.
 - **Kernels** (`kernels/`): none yet.
 
