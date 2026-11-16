@@ -15,7 +15,8 @@
 // elements are left. If more than 6 are selected, a second copy extracts 12;
 // if more than 12, the dense code handles those 64 elements.
 //
-// Dense (8 elements per step, as four pairs): a pair (x[p], x[p+1]) needs only
+// Dense (8 elements per block, as four pairs; the stretch loop does two blocks
+// per iteration): a pair (x[p], x[p+1]) needs only
 // one 16-byte store at its output position:
 //   mask[p] true:  store {x[p],   x[p+1]}   (x[p+1] is rubbish if unselected)
 //   mask[p] false: store {x[p+1], x[p+2]}   (both may be rubbish)
@@ -212,11 +213,11 @@ Lsparse_more:                           // more than 6 selected in this 64
     stp     d4, d5, [x5, #80]
     b       Lsparse_next
 Lsparse_fail:
-    mov     x14, #8
-Ldense:                                 // run x14 blocks of 8; at least 8*x14 + 1 elements are left
-    add     x13, x5, x14, lsl #3        // write pointer if one in eight is selected
+    mov     x14, #4
+Ldense:                                 // run x14 steps of 16; at least 16*x14 + 1 elements are left
+    add     x13, x5, x14, lsl #4        // write pointer if one in eight is selected
 Ldense_loop:
-    ldr     x6, [x1], #8                // eight mask bytes
+    ldp     x6, x15, [x1], #16          // sixteen mask bytes
     sub     x7, x16, x6, lsl #3         // load offsets, one per 16-bit field
     mul     x8, x6, x17                 // store offsets, one per byte
     and     x9, x7, #0xff
@@ -228,6 +229,17 @@ Ldense_loop:
     ldr     q2, [x0, x11]
     ldr     q3, [x0, x12]
     add     x0, x0, #64
+    sub     x7, x16, x15, lsl #3
+    mul     x15, x15, x17
+    and     x9, x7, #0xff
+    ubfx    x10, x7, #16, #8
+    ubfx    x11, x7, #32, #8
+    ubfx    x12, x7, #48, #8
+    ldr     q4, [x0, x9]
+    ldr     q5, [x0, x10]
+    ldr     q6, [x0, x11]
+    ldr     q7, [x0, x12]
+    add     x0, x0, #64
     ubfx    x9, x8, #8, #8              // 8 * (count in elements 0-1)
     ubfx    x10, x8, #24, #8            // 8 * (count in elements 0-3)
     ubfx    x11, x8, #40, #8            // 8 * (count in elements 0-5)
@@ -237,6 +249,15 @@ Ldense_loop:
     str     q2, [x5, x10]
     str     q3, [x5, x11]
     add     x5, x5, x8
+    ubfx    x9, x15, #8, #8
+    ubfx    x10, x15, #24, #8
+    ubfx    x11, x15, #40, #8
+    lsr     x15, x15, #56
+    str     q4, [x5]
+    str     q5, [x5, x9]
+    str     q6, [x5, x10]
+    str     q7, [x5, x11]
+    add     x5, x5, x15
     subs    x14, x14, #1
     b.ne    Ldense_loop
     cmp     x1, x4
@@ -245,8 +266,8 @@ Ldense_loop:
     b.ls    Lsparse                     // at most one in eight was selected
     add     x14, x4, #64                // else a longer dense stretch
     sub     x14, x14, x1
-    lsr     x14, x14, #3
-    mov     x12, #64
+    lsr     x14, x14, #4
+    mov     x12, #32
     cmp     x14, x12
     csel    x14, x14, x12, lo
     b       Ldense

@@ -25,3 +25,27 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.43x [1.43 – 1.44]
 - **Kept:** yes
 - **Notes:** few_selected 2.07x: 2.2x to 4.4x up to 16,384, 2.0 to 2.1x up to 1M, only 1.05x at 4M and 16M. half_selected 0.99x (n=64 0.94x and n=256 0.97x from the failed sparse attempt on the first block). At 4M and 16M the sparse path reads x at scattered positions, the hardware prefetcher does not follow, and the time is set by how many cache misses fit in the out-of-order window (about 31 cycles per 64 elements).
+
+## 4. Software prefetch of x in the dense loop (local timing only)
+
+- **Idea:** n=16,384 half_selected runs at 0.20 ns per element against 0.134 in L1; add `prfm pldl1keep, [x0, #256 / #512 / #1024]` per 8 elements.
+- **check:** not run through the judge
+- **compare:** not run; local microbenchmark at n=16,384 half density: 0.192 without, 0.220 / 0.201 / 0.210 with the three distances.
+- **Kept:** no
+- **Notes:** timing-only variants showed the slowdown follows the x read stream (fixing the read pointer gives 0.139, fixing the write pointer changes nothing). Above L1 the dense loop moves about one cache line per 3 cycles, which looks like the L2 transfer rate, not missing prefetch.
+
+## 5. Sparse path that also prefetches 16 or 32 steps ahead (local timing only)
+
+- **Idea:** at 4M and 16M few_selected the sparse path is only 1.05x faster than dense. Build the bitmask of the block 16 or 32 steps ahead as well and `prfm` the 6 elements it selects, so the scattered reads of x start earlier than the out-of-order window allows.
+- **check:** not run through the judge
+- **compare:** not run; local microbenchmark at n=4M, 5% density: 0.153 ns per element without, 0.161 with either distance; n=16,384: 0.047 without, 0.070 with.
+- **Kept:** no
+- **Notes:** no gain where it was meant to help, so that size is not limited by how early the misses start. It moves about 4.4 scattered cache lines per 64 elements (mask, selected x lines and the rubbish read of `x[64]`) at roughly half the streaming rate.
+
+## 6. Dense stretch loop: 16 elements per iteration
+
+- **Idea:** two 8-element blocks per iteration in the dense stretch loop (`ldp` for the two mask words, one loop branch per 16). The loop for the last 64 or fewer elements keeps 8 per iteration.
+- **check:** pass
+- **compare:** significantly faster, 1.017x [1.016 – 1.018]
+- **Kept:** yes
+- **Notes:** half_selected 1.03x: 8 to 10% from n=256 to 4,096, 2 to 4% from 65,536 to 1M, nothing at 16,384, 4M and 16M (memory-bound). few_selected unchanged.
