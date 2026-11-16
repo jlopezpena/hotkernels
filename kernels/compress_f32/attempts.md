@@ -33,3 +33,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.06x [1.06 – 1.07]
 - **Kept:** yes
 - **Notes:** n=16 is 3% slower (one extra branch on the way in); every other size gains 5 to 10%.
+
+## 5. One 256-entry table indexed by the whole 8-bit mask
+
+- **Idea:** multiply by 0x8040201008040201 instead, which puts the mask bits (reversed) in bits 56-63 and leaves bit 55 clear, so a single `lsr #55` gives twice the index of a 32-byte entry holding both halves' shuffle patterns. Replaces `ubfx` + `lsr` with one `lsr` per block. The table grows from 256 bytes to 8 KB.
+- **check:** pass
+- **compare:** significantly faster, 1.02x [1.02 – 1.02]
+- **Kept:** yes
+- **Notes:** +3 to 5% from n=64 to 16,384; 65,536 and 262,144 are 1 to 2% slower in half_selected (the table competes for L1); the largest sizes are +1%.
