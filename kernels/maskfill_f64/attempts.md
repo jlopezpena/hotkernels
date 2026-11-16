@@ -100,3 +100,25 @@ loop (and NumPy) only store to selected elements.
 - **compare:** significantly slower, 0.98x [0.97 – 0.99]. half_selected 0.96x [0.95 – 0.98]: 0.84x at 16, 1.04x at 64. few_selected 1.00x, not significant: 0.96x at 16 and at 64, 1.04x at 1,024.
 - **Kept:** no
 - **Notes:** at n = 16 the extra mask load, test and run set-up in front of the only block cost more than anything they save, and the entry branch is one more thing to mispredict when the judge cycles through 64 different small inputs.
+
+## 12. Prefetch only the elements that will be stored, a few blocks ahead
+
+- **Idea:** in the sparse loop, read the mask words of the block D blocks ahead, compute the address of each half's selected element the same way, and `prfum pstl1keep` it (an empty half prefetches its previous element, already in cache), so that only the lines that will be written are fetched early.
+- **check:** not run (see notes)
+- **compare:** not run through the judge: the experiment reads the mask past its end, so it was only timed in a private harness with padded buffers, at 5% density. ns per element at 4,096 / 262,144 / 1M / 4M / 16M: without 0.064 / 0.077 / 0.105 / 0.161 / 0.174; D = 4: 0.096 / 0.112 / 0.132 / 0.160 / 0.185; D = 8, 16 and 32 no better (0.095–0.098 / 0.106–0.110 / 0.129–0.137 / 0.166–0.206 / 0.182–0.202).
+- **Kept:** no
+- **Notes:** the 13 extra instructions per block cost 40–50% in cache and buy nothing at 4M and 16M. The large sizes are not waiting on late prefetches; a version gated on n would have had nothing to gain.
+
+## 13. Align the two loop heads to 16 bytes
+
+- **Idea:** `.p2align 4` before `Lrun` and `Lloop`.
+- **check:** pass
+- **compare:** no significant difference, 1.00x [0.99 – 1.02]
+- **Kept:** no
+- **Notes:** none.
+
+## Not tried, and why
+
+- **Wider or fewer stores in the blend.** The blend is at the core's limit of about three memory operations per cycle (attempt 6); NEON has no store wider than 16 bytes, and attempt 4 showed loop overhead is not the limit.
+- **Testing blocks at a finer grain than 16 elements** (four stores per block chosen per 4 elements): about 40 instructions per block, no faster than the blend.
+- **A scratch location for unwanted stores** (on the stack) instead of repeating the previous store: a kernel may not write outside its buffers.
