@@ -58,3 +58,20 @@ agents were timing other kernels on the same machine, so timings are noisier tha
 - **compare:** significantly faster, 1.299x [1.298 – 1.300] (1.13x at 16, 1.24x at 64, 1.31–1.38x from 256 up)
 - **Kept:** no. The brief for this kernel asked for naive.c's operations to be followed one by one, and this path skips two of them on most elements, relying on a proof instead. It is committed so it can be picked up if that trade is acceptable, and the next commit restores the literal kernel.
 - **Notes:** two other shapes of the per-lane check were measured privately and were no better: bias and half-swap done in the vector (`add`, `rev64`) so each lane needs two compares and no shift, 0.64–0.68 ns per element, same as this version; one branch per lane via `ccmp`, 0.71–0.75, slower.
+
+## 8. Narrow four indices to 32 bits and move them out two per register (measured privately)
+
+- **Idea:** halve the vector-to-general-register moves in the literal kernel: `sqxtn` + `sqxtn2` pack the four q of a block into one vector (saturating, so an out-of-range q stays out of range), then one `fmov` and one `umov` carry two each and a shift splits them.
+- **check:** private micro-benchmark result check passed
+- **compare:** not run. Micro-benchmark, three rounds: 0.90–0.93 ns per element against 0.88–0.91 for HEAD (normal); 0.90–0.95 against 0.89–0.94 (uniform). No gain.
+- **Kept:** no
+- **Notes:** two narrowing operations cost as much as the two moves they save.
+
+## Where this stands
+
+The literal kernel needs 14 vector operations per two elements (three for t, two for the truncation as integer and as double, five for the two edges, two compares, two to apply them) plus two moves to general registers, and measures about 5.5 cycles per vector against a port limit near 4.5. I found no way to do the same individually rounded operations with fewer vector operations; the ideas that cut them (edge table, attempt 6) pay for it in moves. The remaining gain I know of is attempt 7, which changes what is computed per element.
+
+## Not tried
+
+- Several count tables. On this kernel the increments are not the limit: an input that never repeats a bin within 50 elements runs at 0.83 ns per element against 0.88 for normal data, and extra tables need zeroing and summing for an unbounded nbins.
+- Replacing the divide by a multiply with the reciprocal: it would change the rounding of the first estimate, which the brief rules out.
