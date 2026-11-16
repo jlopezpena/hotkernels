@@ -9,3 +9,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** not run (first version, nothing to compare against)
 - **Kept:** yes
 - **Notes:** starting point only; expected to match naive C.
+
+## 2. Eight elements per step with a nibble shuffle table
+
+- **Idea:** load 8 mask bytes as a u64; one multiply packs them into an 8-bit mask, two more give the selected counts (scaled to bytes) for all eight and for the low four. Each nibble indexes a 16-entry table of `tbl` patterns; each 4-lane half is compacted and stored whole at the write pointer. The write-pointer chain is one add per 8 elements. Scalar tail for the last 0 to 7.
+- **check:** pass
+- **compare:** significantly faster, 2.50x [2.48 – 2.50]
+- **Kept:** yes
+- **Notes:** half_selected 2.45x, few_selected 2.55x; the code is branchless so the two distributions run the same. About 0.125 ns per element in cache (roughly 3.2 cycles per 8 elements).
