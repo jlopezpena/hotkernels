@@ -22,4 +22,12 @@
 - **check:** pass
 - **compare:** significantly faster, 1.091x [1.085 – 1.098]
 - **Kept:** yes
-- **Notes:** 262,144: 1.19x, 1,048,576: 1.29x, 4,194,304: 1.54x, 16,777,216: 1.09x; nothing changes up to 16,384. Locally the loop now matches `memmove` at every size from 65,536 up. Tried locally in the same harness and not worth a judge run, because none of them moved the timings: `stnp` instead of `stp` (no change at any size, with or without `ldnp`), `prfm` on the input 512 or 1,024 bytes ahead (no change), `prfm pstl1keep` on the output (9% slower in the second-level cache, 2 to 3 times slower beyond it), eight vectors per iteration (no change). `dc zva` on the output is far worse: 20 to 90 times slower when issued next to the stores, and still 1.4 times slower when a whole 64 KB of output is zeroed first and then filled.
+- **Notes:** 262,144: 1.19x, 1,048,576: 1.29x, 4,194,304: 1.54x, 16,777,216: 1.09x; nothing changes up to 16,384. Locally the loop now matches `memmove` at every size from 65,536 up. Tried locally in the same harness and not worth a judge run, because none of them moved the timings: `stnp` instead of `stp` (no change at any size, with or without `ldnp`), `prfm` on the input 512 or 1,024 bytes ahead (no change), `prfm pstl1keep` on the output (10 to 20% slower in the second-level cache, 2 to 4 times slower beyond it), eight vectors per iteration (no change). `dc zva` on the output is far worse: 20 to 90 times slower when issued next to the stores, and still 1.4 times slower when a whole 64 KB of output is zeroed first and then filled.
+
+## 4. Symmetric bounds on the short path: one absolute compare
+
+- **Idea:** below 192 elements the kernel is still compare and select, four operations per vector. When `lo` is exactly `-hi` (as the judge's bounds are), `facgt` finds both sides at once and a clipped element keeps its own sign, so `facgt` + `bic` + `bit` is three operations and still exact for every element, NaN included, in any FPCR mode. Used for 16 elements and up on the exact path when a bit test of the bounds at entry says they are symmetric.
+- **check:** pass
+- **compare:** no significant difference, 1.007x [1.000 – 1.013]
+- **Kept:** no
+- **Notes:** n = 64 gained (5.6 ns to 4.8 ns, 1.16x) but n = 16 lost (1.9 ns to 2.0 ns, 0.92x) to the extra test of the bounds at entry. It would also have helped only one shape of bounds. Not tried for the same range: `fmax`/`fmin` plus a vector test for NaN in the results instead of the FPSR reads. That is three operations per vector for any bounds, but any NaN in a short array, quiet ones included, would then cost a second pass, about 1.7 times the plain compare and select.
