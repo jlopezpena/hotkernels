@@ -10,17 +10,17 @@
 //             a bit mask whose lowest set bit is the answer. The elements are
 //             covered by a front half and a back half that may overlap; the
 //             back half ends exactly at the end of the array.
-//   n  > 64   Blocks of 64 elements. Each block is reduced to a vector of four
-//             lane maxima. Per lane, the running maximum and the number of the
-//             first block that reached it are kept without any branch. At the
-//             end the winning block is the lowest block number among the lanes
-//             that hold the overall maximum, and only that block is rescanned.
+//   n  > 64   Blocks of 64 elements. Each block is reduced to its maximum (15
+//             `fmax` and one `fmaxv`). A scalar compare with the maximum so
+//             far sets the flags once: unordered means the block holds a NaN,
+//             strictly greater moves the "best block" pointer with `csel`. No
+//             branch depends on the data unless there is a NaN. At the end
+//             only the best block is rescanned. Keeping the best block in a
+//             general register matters: its address is ready before the loop
+//             ends, so the rescan does not wait for a vector-to-integer move.
 //
-// A NaN makes m NaN, which is tested once per small input, and once per
-// 65,536 elements on the large path; a scalar loop then finds the first NaN.
-
-// Blocks per NaN test on the large path.
-.set SUPER_BLOCKS, 1024
+// A NaN makes m NaN. A scalar loop then finds the first NaN, in the whole
+// input when n <= 64 and inside the offending block otherwise.
 
 // v\d = lane-wise maximum of v\a and v\b (NaN if either is NaN).
 .macro MX d, a, b
@@ -101,7 +101,7 @@ _argmax_f32:
     cmp     x1, #8
     b.hs    Lupto16
 
-// ---- n < 8, and absurdly large n: one element at a time --------------------
+// ---- n < 8: one element at a time -------------------------------------------
 Lscalar:
     ldr     s0, [x0]                    // best value so far
     mov     x2, #0                      // its index
@@ -290,32 +290,18 @@ Lnan_scan:
 
 // ---- n > 64 ----------------------------------------------------------------
 // x8  start of the array          x0  current block
-// x12 number of whole blocks      x3  whole blocks after this super-block
-// x13 the block ending at n       x2  blocks left in this super-block
+// x12 end of the whole blocks     x5  first block that reached the maximum
+// x13 the block ending at n       s4  maximum so far
 // x11 nonzero while that last, overlapping block is still to be done
-// x9  start of the current super-block (where a NaN search would begin)
-// v4  running maximum per lane    v5  block number that first reached it
-// v6  current block number        v7  1 in every lane
 .p2align 4
 Lbig:
-    lsr     x10, x1, #38                // block numbers are 32 bits wide
-    cbnz    x10, Lscalar
     mov     x8, x0
-    lsr     x3, x1, #6
-    add     x13, x0, x1, lsl #2
-    mov     x12, x3
+    and     x12, x1, #-64
     and     x11, x1, #63
-    sub     x13, x13, #256
+    sub     x13, x9, #256
+    add     x12, x0, x12, lsl #2
     mvni    v4.4s, #0x7f, msl #16       // -infinity
-    movi    v5.16b, #0
-    movi    v6.16b, #0
-    movi    v7.4s, #1
-Lsuper:
-    mov     x9, x0
-    mov     x2, #SUPER_BLOCKS
-    cmp     x3, x2
-    csel    x2, x3, x2, lo
-    sub     x3, x3, x2
+    mov     x5, x0
 .p2align 4
 Lblock:
     ldp     q16, q17, [x0]
@@ -326,7 +312,6 @@ Lblock:
     ldp     q26, q27, [x0, #160]
     ldp     q28, q29, [x0, #192]
     ldp     q30, q31, [x0, #224]
-    add     x0, x0, #256
     MX 16, 16, 17
     MX 18, 18, 19
     MX 20, 20, 21
@@ -341,47 +326,41 @@ Lblock:
     MX 28, 28, 30
     MX 16, 16, 20
     MX 24, 24, 28
-    MX 16, 16, 24                       // lane maxima of this block
-    fcmgt   v0.4s, v16.4s, v4.4s        // lanes that beat the running maximum
-    fmax    v4.4s, v4.4s, v16.4s
-    bit     v5.16b, v6.16b, v0.16b      // those lanes record this block
-    add     v6.4s, v6.4s, v7.4s
-    subs    x2, x2, #1
-    b.ne    Lblock
+    MX 16, 16, 24
+    fmaxv   s16, v16.4s                 // maximum of this block, NaN if it has one
+    fcmp    s16, s4
+    b.vs    Lnan_block
+    csel    x5, x0, x5, gt              // strictly greater: this block takes over
+    fmax    s4, s4, s16
+    add     x0, x0, #256
+    cmp     x0, x12
+    b.lo    Lblock
 
-    fmaxv   s0, v4.4s                   // overall maximum so far
-    fcmp    s0, s0
-    b.vs    Lnan_scan                   // NaN somewhere in this super-block
-    cbnz    x3, Lsuper
     cbz     x11, Lfinish
     mov     x0, x13                     // run the block that ends at n
-    mov     x9, x13
     mov     x11, #0
-    mov     x2, #1
+    add     x12, x13, #256
     b       Lblock
 
+Lnan_block:
+    mov     x9, x0                      // the NaN is inside this block
+    b       Lnan_scan
+
 Lfinish:
-    dup     v0.4s, v0.s[0]
-    fcmeq   v1.4s, v4.4s, v0.4s         // lanes holding the overall maximum
-    orn     v1.16b, v5.16b, v1.16b      // other lanes become 0xffffffff
-    uminv   s1, v1.4s                   // first block that contains it
-    fmov    w10, s1
-    cmp     x10, x12
-    add     x0, x8, x10, lsl #8
-    csel    x0, x13, x0, eq             // block number n/64 is the last one
-    ldp     q16, q17, [x0]
-    ldp     q18, q19, [x0, #32]
-    ldp     q20, q21, [x0, #64]
-    ldp     q22, q23, [x0, #96]
-    ldp     q24, q25, [x0, #128]
-    ldp     q26, q27, [x0, #160]
-    ldp     q28, q29, [x0, #192]
-    ldp     q30, q31, [x0, #224]
+    ldp     q16, q17, [x5]
+    ldp     q18, q19, [x5, #32]
+    ldp     q20, q21, [x5, #64]
+    ldp     q22, q23, [x5, #96]
+    ldp     q24, q25, [x5, #128]
+    ldp     q26, q27, [x5, #160]
+    ldp     q28, q29, [x5, #192]
+    ldp     q30, q31, [x5, #224]
+    dup     v0.4s, v4.s[0]
     LOAD_WEIGHTS
     MASK64
     rbit    x10, x10
     clz     x10, x10                    // position inside the block
-    sub     x0, x0, x8
+    sub     x0, x5, x8
     add     x0, x10, x0, lsr #2
     ret
 

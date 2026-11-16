@@ -47,3 +47,35 @@
 - **compare:** significantly faster, 1.007x [1.002 – 1.010]
 - **Kept:** yes
 - **Notes:** n = 16 goes from 1.8 ns to 1.7 ns (1.10x); other sizes unchanged.
+
+## 7. One operation fewer in the index arithmetic for 8 <= n <= 16
+
+- **Idea:** select the offset (0 or n-16) with `csel` and fold the divide-by-four into the final `add`, saving one integer operation on the n = 16 path.
+- **check:** pass
+- **compare:** not significantly faster. Three runs: 1.004x [1.001 – 1.007], then 1.002x [0.997 – 1.007] and 1.002x [0.998 – 1.010].
+- **Kept:** no
+- **Notes:** n = 16 itself was 2 to 3% faster in every run, but the overall figure did not hold up when repeated.
+
+## 8. Vector search for the first NaN on the large path
+
+- **Idea:** when a super-block reports a NaN, the scalar loop walks up to 65,536 elements to find it. Step over whole blocks with the `fmax` tree first and run the scalar loop only inside the block that holds the NaN.
+- **check:** pass
+- **compare:** no significant difference, 0.999x [0.997 – 1.001]
+- **Kept:** no
+- **Notes:** the judge times random data without NaN, so it cannot see this path, and the rule says not to keep it. Measured outside the judge (NaN as the last element, best of 7): 16,384 elements 5,711 ns -> 898 ns; 1,048,576 elements 72.2 us -> 52.7 us. Worth keeping if NaN inputs ever become a timed distribution.
+
+## 9. Two-step rescan of the winning block on the large path
+
+- **Idea:** same trick as attempt 4 for the final rescan: rebuild the block's four quads (12 `fmax`), find the first quad that holds the maximum, then compare only its four vectors. 30 vector operations instead of 37, at the cost of 4 more loads.
+- **check:** pass
+- **compare:** significantly slower, 0.962x [0.960 – 0.964]
+- **Kept:** no
+- **Notes:** 256: 13.0 -> 15.0 ns, 1,024: 35.7 -> 43.2 ns, 4,096: 122.7 -> 132.5 ns. The extra cost is about 24 cycles per call from 1,024 up, which matches the extra length of the dependency chain (quad tree, a second move to a general register, a second load), not the operation count. Lesson: after the block loop the final phase is paid for by its latency, so it should be kept short and shallow, not merely small.
+
+## 10. Track the best block with a scalar compare and `csel`, NaN test per block
+
+- **Idea:** attempt 9 showed the final phase costs its latency. A probe outside the judge that skipped the lane/block selection (wrong answers, timing only) was 13 cycles faster at 1,024. So reduce every block to one scalar (`fmaxv`), `fcmp` it against the running maximum, and let that one compare drive `b.vs` (NaN in this block), `csel` (pointer to the best block, strictly greater only) and a scalar `fmax`. The best block's address then sits in a general register before the loop ends, and the selection chain (`fcmeq`, `orn`, `uminv`, `fmov`) disappears. Same number of vector operations per block as the lane-wise tracking it replaces.
+- **check:** pass
+- **compare:** significantly faster, 1.016x [1.008 – 1.021] (a first, noisy run gave 1.020x [0.971 – 1.024])
+- **Kept:** yes
+- **Notes:** 1,024: 36.2 -> 33.0 ns (1.10x), 4,096 and 16,384: 1.04x, 256: 1.02x; no change once the data is outside the first-level cache. Side effects: the super-block loop is gone, a NaN is now noticed within its own 64-element block, and block numbers no longer limit n.
