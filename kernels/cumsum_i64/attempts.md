@@ -20,3 +20,17 @@ the core.
 - **Kept:** yes (baseline)
 - **Notes:** slower than the C because the C is unrolled eight times and this
   pays the loop branch on every element (0.37 ns against 0.31 ns per element).
+
+## 2. Scalar blocks of four with the running sum off the critical path
+
+- **Idea:** load four elements with two `ldp`, build the block's partial sums
+  from its inputs only (a+b, c+d, a+b+c+d), add the running sum when storing,
+  and advance the running sum with one add per block. The carried chain drops
+  from one add per element to one add per four.
+- **check:** pass
+- **compare:** significantly faster, 1.96x [1.95 – 1.99]
+- **Kept:** yes
+- **Notes:** 2.0x at n=16, 2.2x from 256 to 262,144 (0.172 ns per element,
+  about 0.55 cycles), 2.09x at 1,048,576, and 1.35x at 4,194,304 and
+  16,777,216, where it runs at 0.29 ns per element and is limited by memory.
+  The tail of 0 to 3 elements is the scalar loop from attempt 1.
