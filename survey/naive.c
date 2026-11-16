@@ -1,7 +1,7 @@
 // Naive C baselines for the phase 2 survey.
 //
 // Each kernel is the simplest correct loop that matches NumPy's semantics.
-// It is compiled by survey.py with `clang -O3 -mcpu=native` and timed inside C
+// It is compiled by survey/measure.py with `clang -O3 -mcpu=native` and timed inside C
 // by the bench_* functions, so no Python call overhead is included.
 //
 // These are survey baselines, not kernel-contract `naive.c` files. A candidate

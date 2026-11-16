@@ -8,7 +8,7 @@ Kernels are written by coding agents iterating against a judge. The judge checks
 
 - **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is.
 - **Fixture kernels** (`judge/fixtures/`): `argmax_f32` and `compress_f32`, used to test the judge itself.
-- **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. Results for an Apple M1 Pro are in `survey/results/`.
+- **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. Recorded results are in `survey/results/`.
 - **Kernels** (`kernels/`): none yet.
 
 Supported platform: macOS on Apple Silicon (ARM64).
@@ -21,6 +21,14 @@ Requires the Xcode command line tools and [uv](https://docs.astral.sh/uv/).
 uv run judge selftest            # prove the judge catches known-bad kernels
 uv run judge check argmax_f32    # lint and correctness for one kernel
 uv run judge run argmax_f32      # correctness, then a timing report
+```
+
+## Using the survey
+
+```bash
+uv run survey run                 # measure every candidate; takes about 15 minutes
+uv run survey run --only argmax   # measure the candidates whose name matches
+uv run survey report survey/results/apple-m1-pro.json   # regenerate a report
 ```
 
 ## Documentation

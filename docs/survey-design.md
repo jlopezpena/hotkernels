@@ -4,11 +4,11 @@ This is a proposal for review. It details phase 2 of [core-design.md](core-desig
 
 Unlike the other design documents, the measuring part is already done. The harness in [`survey/`](../survey) exists and the numbers below are real. What is proposed, and open to change, is the ranking, the order of work and the answers to the open questions.
 
-The judge was not available when this was run, so the survey uses its own small harness. The timings are "naive timings": good enough to rank candidates, not good enough to defend a 10% difference. Every candidate is measured again by the judge before it ships.
+The survey was run before the judge existed, so it uses its own small harness. The timings are "naive timings": good enough to rank candidates, not good enough to defend a 10% difference. Every candidate is measured again by the judge before it ships.
 
 ## What the survey is
 
-A script that, for each candidate operation, times the NumPy statement a user would write against the simplest correct C loop, and reports how far NumPy is behind. It answers two questions per candidate:
+A command-line tool, `uv run survey`, that for each candidate operation times the NumPy statement a user would write against the simplest correct C loop and reports how far NumPy is behind. It answers two questions per candidate:
 
 1. **Is NumPy slow here?** Measured: NumPy time divided by naive C time.
 2. **Can assembly beat the C as well?** Partly measured (did clang vectorise the loop?), partly judgement (is there a known technique the compiler will not find?).
@@ -19,10 +19,13 @@ The survey is a development tool, like the judge. It is not part of the `hotkern
 
 ```
 survey/
-  naive.c      naive C baselines for every candidate, with their timing loops
-  survey.py    candidate list, correctness check, timing, result file
-  report.py    turns a result file into a Markdown table
-  results/     recorded results, committed: one JSON and one table per machine
+  naive.c        naive C baselines for every candidate, with their timing loops
+  candidates.py  the candidate list: NumPy statement, C kernel, input, expected result
+  measure.py     builds the C, checks it against NumPy, times both
+  render.py      prepares the numbers for the templates
+  templates/     Jinja templates for the report and the progress lines
+  cli.py         the `survey run` and `survey report` commands
+  results/       recorded results, committed: one JSON file and one report per run
 ```
 
 The baselines in `survey/naive.c` are survey code. A candidate that goes forward gets its own reviewed `naive.c` and `spec.py` under `kernels/`, as the kernel contract requires.
@@ -40,9 +43,10 @@ The baselines in `survey/naive.c` are survey code. A candidate that goes forward
 To reproduce:
 
 ```
-uv run survey/survey.py
-python3 survey/report.py survey/results/apple-m1-pro.json
+uv run survey run
 ```
+
+`uv run survey report <file.json>` regenerates the report of an existing result file.
 
 Full tables: [apple-m1-pro.md](../survey/results/apple-m1-pro.md) (61 variants) and [apple-m1-pro-branchless.md](../survey/results/apple-m1-pro-branchless.md) (4 follow-up variants).
 

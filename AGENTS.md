@@ -18,8 +18,9 @@ These apply to all Python in this repository.
 
 - **Command lines use `typer`.** Never `argparse`.
 - **Output uses the `logging` module.** Never a bare `print`. Each module gets `log = logging.getLogger(__name__)`; the CLI configures the handler.
-- **Generated text uses Jinja templates** in `judge/templates/`: reports, tables, Markdown, generated C. Python passes values in; it does not assemble multi-line or column-aligned text with string formatting.
+- **Generated text uses Jinja templates**, wherever it is produced: reports, tables, Markdown, progress lines, generated C. Each package keeps its templates in its own `templates/` directory (`judge/templates/`, `survey/templates/`). Python passes values in; it does not assemble multi-line or column-aligned text with string formatting, and it does not build a report out of consecutive `print` or `log` calls.
 - **Every module, class and function has a docstring**, including private and nested ones. Say what it does and anything a reader could not guess from the signature.
+- **Docstrings describe every parameter and the return value**, in `Args:` and `Returns:` sections: what each one means, its unit where it has one, and any constraint on it. A one-line docstring is enough only for a function with no parameters and an obvious result, or a nested function a few lines long.
 - **Every dataclass field has a comment** directly above it saying what it means.
 - **No magic constants.** Numbers and strings with meaning get a named module-level constant, with a comment explaining the value where it is not obvious.
 - **Comment the non-obvious.** Where code depends on something outside itself, such as a calling convention, a file format or a memory layout, explain it at the point of use.
