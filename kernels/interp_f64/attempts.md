@@ -48,3 +48,17 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
 - **Notes:** 1.13x at 64 falling to 1.03x at 262,144, 1.04x to 1.05x from 1M,
   1.08x at 16. Locally, gathering with `ldp d` + `ins` instead of 16-byte
   loads + `zip` was 1% slower.
+
+## 4. Counting instead of searching when n < 64
+
+- **Idea:** with sixteen queries per group the searches wait on each other's
+  steps (about 21 cycles per step for only sixteen probes). For n < 64, load
+  the sixteen queries into eight vector registers and, for every element of
+  `xp[1 .. n-2]`, compare it with all of them and add up the masks: no step
+  depends on the one before.
+- **check:** pass
+- **compare:** significantly faster, 1.02x [1.02 – 1.02]
+- **Kept:** yes
+- **Notes:** 1.26x at 16, every other size unchanged (different code path).
+  The same idea in `searchsorted_f64` was 4% slower than the code it would
+  replace there, which already counts over a window of eight.

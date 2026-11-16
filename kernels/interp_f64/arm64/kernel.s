@@ -18,6 +18,9 @@
 // queries moves the bases to integer registers, loads the four probes, and
 // does the compare and the update as vector operations (16 instructions,
 // repeated after Lg64_pass). jc is written to out as a 64-bit integer.
+// When n < 64 the same count is made for sixteen queries at once by comparing
+// every element of a with all of them (Lg16): with so few elements that is
+// quicker than a search whose steps wait on each other.
 //
 // Stage 2, the arithmetic, two queries per vector, without branches:
 //     t = v - xp[jc]
@@ -480,118 +483,50 @@ Lg64_pass:
     mov     x7, #64
     b       Lp2
 
-Lg16:                               // stage 1 for 16 queries at x9
-    ldp     q24, q25, [x9, #0]
-    fcmge   v24.2d, v24.2d, v27.2d
-    fcmge   v25.2d, v25.2d, v27.2d
-    uzp1    v0.4s, v24.4s, v25.4s
-    and     v0.16b, v0.16b, v28.16b   // (a[p - 1] <= v) ? m - p : 0
-    ldp     q24, q25, [x9, #32]
-    fcmge   v24.2d, v24.2d, v27.2d
-    fcmge   v25.2d, v25.2d, v27.2d
-    uzp1    v1.4s, v24.4s, v25.4s
-    and     v1.16b, v1.16b, v28.16b   // (a[p - 1] <= v) ? m - p : 0
-    ldp     q24, q25, [x9, #64]
-    fcmge   v24.2d, v24.2d, v27.2d
-    fcmge   v25.2d, v25.2d, v27.2d
-    uzp1    v2.4s, v24.4s, v25.4s
-    and     v2.16b, v2.16b, v28.16b   // (a[p - 1] <= v) ? m - p : 0
-    ldp     q24, q25, [x9, #96]
-    fcmge   v24.2d, v24.2d, v27.2d
-    fcmge   v25.2d, v25.2d, v27.2d
-    uzp1    v3.4s, v24.4s, v25.4s
-    and     v3.16b, v3.16b, v28.16b   // (a[p - 1] <= v) ? m - p : 0
-    mov     x10, x13
-    add     x17, x14, x13, lsl #3
-    sub     x17, x17, #8            // &a[p/2 - 1]
-    dup     v31.4s, w13
-    add     x16, x15, #1            // k steps and the last probe
-Lg16_pass:
-    fmov    x5, d0                // bases 0 and 1
-    mov     x6, v0.d[1]              // bases 2 and 3
-    lsr     x7, x5, #32
-    lsr     x8, x6, #32
-    ldr     d24, [x17, w5, uxtw #3]
-    ldr     d25, [x17, x7, lsl #3]
-    ins     v24.d[1], v25.d[0]
-    ldr     d25, [x17, w6, uxtw #3]
-    ldr     d26, [x17, x8, lsl #3]
-    ins     v25.d[1], v26.d[0]
-    ldr     q26, [x9, #0]
-    fcmge   v24.2d, v26.2d, v24.2d
-    ldr     q26, [x9, #16]
-    fcmge   v25.2d, v26.2d, v25.2d
-    uzp1    v24.4s, v24.4s, v25.4s  // four 32-bit masks
-    mls     v0.4s, v24.4s, v31.4s    // base += h where the mask is -1
-    fmov    x5, d1                // bases 0 and 1
-    mov     x6, v1.d[1]              // bases 2 and 3
-    lsr     x7, x5, #32
-    lsr     x8, x6, #32
-    ldr     d24, [x17, w5, uxtw #3]
-    ldr     d25, [x17, x7, lsl #3]
-    ins     v24.d[1], v25.d[0]
-    ldr     d25, [x17, w6, uxtw #3]
-    ldr     d26, [x17, x8, lsl #3]
-    ins     v25.d[1], v26.d[0]
-    ldr     q26, [x9, #32]
-    fcmge   v24.2d, v26.2d, v24.2d
-    ldr     q26, [x9, #48]
-    fcmge   v25.2d, v26.2d, v25.2d
-    uzp1    v24.4s, v24.4s, v25.4s  // four 32-bit masks
-    mls     v1.4s, v24.4s, v31.4s    // base += h where the mask is -1
-    fmov    x5, d2                // bases 0 and 1
-    mov     x6, v2.d[1]              // bases 2 and 3
-    lsr     x7, x5, #32
-    lsr     x8, x6, #32
-    ldr     d24, [x17, w5, uxtw #3]
-    ldr     d25, [x17, x7, lsl #3]
-    ins     v24.d[1], v25.d[0]
-    ldr     d25, [x17, w6, uxtw #3]
-    ldr     d26, [x17, x8, lsl #3]
-    ins     v25.d[1], v26.d[0]
-    ldr     q26, [x9, #64]
-    fcmge   v24.2d, v26.2d, v24.2d
-    ldr     q26, [x9, #80]
-    fcmge   v25.2d, v26.2d, v25.2d
-    uzp1    v24.4s, v24.4s, v25.4s  // four 32-bit masks
-    mls     v2.4s, v24.4s, v31.4s    // base += h where the mask is -1
-    fmov    x5, d3                // bases 0 and 1
-    mov     x6, v3.d[1]              // bases 2 and 3
-    lsr     x7, x5, #32
-    lsr     x8, x6, #32
-    ldr     d24, [x17, w5, uxtw #3]
-    ldr     d25, [x17, x7, lsl #3]
-    ins     v24.d[1], v25.d[0]
-    ldr     d25, [x17, w6, uxtw #3]
-    ldr     d26, [x17, x8, lsl #3]
-    ins     v25.d[1], v26.d[0]
-    ldr     q26, [x9, #96]
-    fcmge   v24.2d, v26.2d, v24.2d
-    ldr     q26, [x9, #112]
-    fcmge   v25.2d, v26.2d, v25.2d
-    uzp1    v24.4s, v24.4s, v25.4s  // four 32-bit masks
-    mls     v3.4s, v24.4s, v31.4s    // base += h where the mask is -1
-    lsr     x7, x10, #1
-    cmp     x7, #0
-    csinc   x10, x7, xzr, ne        // h = max(h / 2, 1): the last probe is h = 1 again
-    add     x17, x14, x10, lsl #3
-    sub     x17, x17, #8
-    dup     v31.4s, w10
-    subs    x16, x16, #1
-    b.ne    Lg16_pass
+    // 16 <= n < 64: for sixteen queries at once, compare every element of a
+    // with all of them and count. No step depends on the one before, so this
+    // is quicker than a binary search while a is this short.
+    // v16-v23 queries, v0-v7 counts, v24-v26 scratch
+Lg16:
+    ldp     q16, q17, [x9]
+    ldp     q18, q19, [x9, #32]
+    ldp     q20, q21, [x9, #64]
+    ldp     q22, q23, [x9, #96]
+    movi    v0.2d, #0
+    movi    v1.2d, #0
+    movi    v2.2d, #0
+    movi    v3.2d, #0
+    movi    v4.2d, #0
+    movi    v5.2d, #0
+    movi    v6.2d, #0
+    movi    v7.2d, #0
+    mov     x5, x14
+    sub     x6, x4, #2              // m
+Lg16_element:
+    ld1r    {v24.2d}, [x5], #8
+    fcmge   v25.2d, v16.2d, v24.2d
+    sub     v0.2d, v0.2d, v25.2d     // count += 1 where a[i] <= v
+    fcmge   v26.2d, v17.2d, v24.2d
+    sub     v1.2d, v1.2d, v26.2d     // count += 1 where a[i] <= v
+    fcmge   v25.2d, v18.2d, v24.2d
+    sub     v2.2d, v2.2d, v25.2d     // count += 1 where a[i] <= v
+    fcmge   v26.2d, v19.2d, v24.2d
+    sub     v3.2d, v3.2d, v26.2d     // count += 1 where a[i] <= v
+    fcmge   v25.2d, v20.2d, v24.2d
+    sub     v4.2d, v4.2d, v25.2d     // count += 1 where a[i] <= v
+    fcmge   v26.2d, v21.2d, v24.2d
+    sub     v5.2d, v5.2d, v26.2d     // count += 1 where a[i] <= v
+    fcmge   v25.2d, v22.2d, v24.2d
+    sub     v6.2d, v6.2d, v25.2d     // count += 1 where a[i] <= v
+    fcmge   v26.2d, v23.2d, v24.2d
+    sub     v7.2d, v7.2d, v26.2d     // count += 1 where a[i] <= v
+    subs    x6, x6, #1
+    b.ne    Lg16_element
     add     x6, x9, x12             // group's out
-    ushll   v24.2d, v0.2s, #0
-    ushll2  v25.2d, v0.4s, #0
-    stp     q24, q25, [x6, #0]
-    ushll   v24.2d, v1.2s, #0
-    ushll2  v25.2d, v1.4s, #0
-    stp     q24, q25, [x6, #32]
-    ushll   v24.2d, v2.2s, #0
-    ushll2  v25.2d, v2.4s, #0
-    stp     q24, q25, [x6, #64]
-    ushll   v24.2d, v3.2s, #0
-    ushll2  v25.2d, v3.4s, #0
-    stp     q24, q25, [x6, #96]
+    stp     q0, q1, [x6]
+    stp     q2, q3, [x6, #32]
+    stp     q4, q5, [x6, #64]
+    stp     q6, q7, [x6, #96]
     mov     x5, x9
     mov     x7, #16
     b       Lp2
@@ -660,6 +595,7 @@ Lp2:
     cmn     x8, #1
     b.ne    Lp2_redo                // some fma result was NaN
 Lp2_next:
+
     add     x5, x5, #32
     add     x6, x6, #32
     subs    x7, x7, #4
