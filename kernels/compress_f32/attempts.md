@@ -97,3 +97,19 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.015x [1.012 – 1.018] (third run, clean; the first two had NOISY MACHINE warnings and read 1.009x [1.008 – 1.010] and about the same)
 - **Kept:** yes
 - **Notes:** half_selected 1.02x: 4 to 6% from n=64 to 16,384, 0 to 1% above. n=65,536 read 0.92x and 0.95x in the two noisy runs and 1.02x in the clean one. few_selected unchanged.
+
+## 13. `ldp` for the two halves of a table entry (local timing only)
+
+- **Idea:** one `add` to form the entry address and one `ldp q` instead of two register-offset `ldr q`.
+- **check:** not run through the judge
+- **compare:** not run; local microbenchmark, half density: 0.0915 to 0.0914 ns per element at n=1,024, 0.0889 to 0.1031 at n=16,384.
+- **Kept:** no
+- **Notes:** no gain.
+
+## 14. Sizes of the two sparse tiers, measured on masks the predictor has not seen (local timing only)
+
+- **Idea:** the benchmark repeats one input per size, so the branch predictor can memorise which 64-element blocks need the second tier. A local benchmark with 1,024 different masks of 4,096 elements (data in L1) measures the tiers without that help.
+- **check:** not run through the judge
+- **compare:** not run; ns per element at 5% density for first/second tier sizes: 4/8 0.072, 5/10 0.053, 6/12 0.047, 6/10 0.046 to 0.047, 7/14 0.052, 8/16 0.055. The version without a sparse path is 0.097.
+- **Kept:** no (6/12 stays)
+- **Notes:** on the memorised benchmark smaller first tiers look better (see nonzero_bool attempt 5); they were not adopted. Known weakness, not visible to the judge: at 10% density the count sits on the boundary between the tiers, the tier branch is mispredicted about half the time, and this kernel runs at 0.126 ns per element against 0.097 for the version without a sparse path (30% slower). At 2%, 5%, 20% and 50% it is 0.042, 0.047, 0.094 and 0.092 against 0.097. A fix would be to stay in the 12-extraction code while its use is frequent; it cannot show as a gain on the two benchmark distributions, so under the keep rule it was not attempted.

@@ -49,3 +49,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.017x [1.016 – 1.018]
 - **Kept:** yes
 - **Notes:** half_selected 1.03x: 8 to 10% from n=256 to 4,096, 2 to 4% from 65,536 to 1M, nothing at 16,384, 4M and 16M (memory-bound). few_selected unchanged.
+
+## 7. Densities between the two benchmark distributions (local measurement only)
+
+- **Idea:** check the sparse/dense choice on masks the predictor has not seen (1,024 different masks of 4,096 elements, data in L1), at densities the judge does not time.
+- **check:** not run through the judge
+- **compare:** not run; ns per element at 2% / 5% / 10% / 20% / 50%: 0.042 / 0.048 / 0.129 / 0.123 / 0.124, against 0.135 at every density for the dense-only version (attempt 2).
+- **Kept:** nothing changed
+- **Notes:** 10% density sits on the boundary between the two sparse tiers and the tier branch is mispredicted about half the time; for this kernel that still comes out slightly ahead of dense-only. See compress_f32 attempt 14 for the tier-size measurements.

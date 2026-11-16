@@ -57,3 +57,19 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.016x [1.015 – 1.017]
 - **Kept:** yes
 - **Notes:** half_selected 1.03x (3 to 5% from n=64 to 4M; 16M read 0.97x), few_selected 1.00x.
+
+## 8. `dc zva` on the output line ahead of the write pointer (local timing only)
+
+- **Idea:** half_selected above 1M elements is limited by memory traffic, and part of it is reading output cache lines only to overwrite them. Zero the 64-byte line 64 bytes past the write pointer before each block's stores, so the line does not have to be fetched (the scratch output allows writing there).
+- **check:** not run through the judge
+- **compare:** not run; local microbenchmark, half density: 0.129 to 0.254 ns per element at n=4M, 0.110 to 0.244 at n=16,384.
+- **Kept:** no
+- **Notes:** twice as slow at every size, including the memory-bound ones. The timing variant did not bound the zeroing at the end of the buffer and was never a candidate as written.
+
+## 9. Densities between the two benchmark distributions (local measurement only)
+
+- **Idea:** check the sparse/dense choice on masks the predictor has not seen (1,024 different masks of 4,096 bytes), at densities the judge does not time.
+- **check:** not run through the judge
+- **compare:** not run; ns per element at 2% / 5% / 10% / 20% / 50%: 0.038 / 0.045 / 0.127 / 0.110 / 0.112, against 0.116 at every density for the dense-only version (attempt 2).
+- **Kept:** nothing changed
+- **Notes:** known weakness, not visible to the judge: at 10% density the count sits on the boundary between the two sparse tiers, the tier branch is mispredicted about half the time, and this kernel is 9% slower than dense-only. See compress_f32 attempt 14.
