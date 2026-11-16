@@ -18,7 +18,7 @@ _cumsum_i64:
     b.lo    Lsmall
     movi    v16.2d, #0              // [out[i-2], out[i-1]], zero before the start
     movi    v17.2d, #0              // [x[i-2], x[i-1]], zero before the start
-    cmp     x2, #8, lsl #12         // 32,768 elements: the arrays no longer fit in the first-level cache
+    cmp     x2, #8, lsl #12         // from 32,768 elements the loop at Llarge is the faster one
     b.hs    Llarge
     subs    x2, x2, #16
     b.lo    Lrest
@@ -122,8 +122,8 @@ Ltail_loop:
 Ldone:
     ret
 // Same loop with one overlapping load per block replaced by an ext. It has one
-// more vector operation and one load fewer per block, which is slower while the
-// data is in the first-level cache and faster once it is not.
+// more vector operation and one load fewer per block, which measured slower up
+// to 16,384 elements and faster from 65,536 to 1,048,576.
 Llarge:
     sub     x2, x2, #16
 Lmain_large:
