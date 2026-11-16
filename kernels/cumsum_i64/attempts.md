@@ -34,3 +34,17 @@ the core.
   about 0.55 cycles), 2.09x at 1,048,576, and 1.35x at 4,194,304 and
   16,777,216, where it runs at 0.29 ns per element and is limited by memory.
   The tail of 0 to 3 elements is the scalar loop from attempt 1.
+
+## 3. Two blocks of four per iteration
+
+- **Idea:** the loop of attempt 2 spends 3 of its 15 instructions on pointer
+  and counter updates; doing two blocks per iteration halves that. The running
+  sum still advances by one add per block (two per iteration).
+- **check:** pass
+- **compare:** significantly faster, 1.07x [1.07 – 1.08]
+- **Kept:** yes
+- **Notes:** 1.10x to 1.15x from 16 to 16,384 (0.152 ns per element, about
+  0.49 cycles). No gain from 65,536 up (1.01x, 1.02x, then not significant):
+  once the two arrays no longer fit in the first-level cache both versions
+  run at about 0.177 ns per element, so the instruction count is no longer
+  what limits them. One leftover block of four, then the scalar tail.
