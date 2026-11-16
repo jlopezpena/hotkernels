@@ -4,11 +4,12 @@
 // Two ways of handling a stretch of mask bytes, chosen by how many are true.
 //
 // Sparse (64 bytes per step): the 64 bytes (each 0 or 1) are packed into a
-// 64-bit word, one bit per byte, and the true ones are counted. If at most
-// 8 are true, the positions of the 8 lowest set bits are extracted one
-// after another, with no branches, and stored; the ones past the true count are
-// rubbish that the next store overwrites (`out` is a scratch buffer). If more
-// are true, the dense code handles those 64 bytes.
+// 64-bit word, first byte in the top bit, and the true ones are counted. Then
+// the positions of the first 6 set bits are extracted one after another with
+// `clz`, with no branches, and stored; the ones past the true count are rubbish
+// that the next store overwrites (`out` is a scratch buffer). If more than 6
+// bytes are true, a second copy extracts 12; if more than 12, the dense code
+// handles those 64 bytes.
 //
 // Dense (8 bytes per step): the bytes are loaded as one 64-bit word. One
 // multiplication packs them into an 8-bit number, another gives the true count
@@ -27,7 +28,7 @@
 _nonzero_bool:
     mov     x5, x1                      // x5 = write pointer
     mov     x3, #0                      // x3 = index of the next mask byte
-    mov     x4, x2                      // x4 = mask bytes left
+    mov     x4, x2                      // x4 = mask bytes left (small sizes only)
     cmp     x2, #8
     b.lo    Ltail
     adrp    x9, Lpositions@PAGE
@@ -39,7 +40,7 @@ _nonzero_bool:
     mov     x11, #0x0808080808080808    // sums the bytes, times 8, into the top byte
     mov     w12, #8
     dup     v18.2d, x12
-    cmp     x4, #64
+    cmp     x2, #64
     b.hs    Lbig
     movi    v17.2d, #0
 Lsmall:                                 // 8 to 63 bytes left; v17 = their index
@@ -70,6 +71,9 @@ Lsmall_loop:
 Lbig:
     adrp    x12, Lbit_shifts@PAGE
     ldr     q19, [x12, Lbit_shifts@PAGEOFF]
+    mov     x17, #0x8000000000000000
+    add     x2, x0, x2                  // x2 = end of the mask
+    sub     x4, x2, #64                 // x4 = last place a 64-byte step can start
 Lsparse:                                // at least 64 bytes left
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
@@ -84,65 +88,108 @@ Lsparse:                                // at least 64 bytes left
     cnt     v1.8b, v0.8b
     fmov    x6, d0                      // bit j = mask byte j
     addv    b1, v1.8b
+    rbit    x6, x6                      // bit 63-j = mask byte j
     fmov    w7, s1                      // number of true bytes
-    cmp     w7, #8
-    b.hi    Lsparse_fail
-    rbit    x8, x6
-    clz     x8, x8                      // position of the lowest set bit (64 if none)
+    cmp     w7, #6
+    b.hi    Lsparse_more
+    // Each step: clz finds the first true byte (64 if none are left), its bit
+    // is cleared, and its index goes to the next output slot.
+    clz     x8, x6
+    lsr     x12, x17, x8
+    bic     x6, x6, x12
     add     x8, x8, x3
-    sub     x12, x6, #1
-    and     x6, x6, x12                 // clear the lowest set bit
-    rbit    x15, x6
-    clz     x15, x15                      // position of the lowest set bit (64 if none)
+    clz     x15, x6
+    lsr     x12, x17, x15
+    bic     x6, x6, x12
     add     x15, x15, x3
     stp     x8, x15, [x5, #0]
-    sub     x12, x6, #1
-    and     x6, x6, x12                 // clear the lowest set bit
-    rbit    x8, x6
-    clz     x8, x8                      // position of the lowest set bit (64 if none)
+    clz     x8, x6
+    lsr     x12, x17, x8
+    bic     x6, x6, x12
     add     x8, x8, x3
-    sub     x12, x6, #1
-    and     x6, x6, x12                 // clear the lowest set bit
-    rbit    x15, x6
-    clz     x15, x15                      // position of the lowest set bit (64 if none)
+    clz     x15, x6
+    lsr     x12, x17, x15
+    bic     x6, x6, x12
     add     x15, x15, x3
     stp     x8, x15, [x5, #16]
-    sub     x12, x6, #1
-    and     x6, x6, x12                 // clear the lowest set bit
-    rbit    x8, x6
-    clz     x8, x8                      // position of the lowest set bit (64 if none)
+    clz     x8, x6
+    lsr     x12, x17, x8
+    bic     x6, x6, x12
     add     x8, x8, x3
-    sub     x12, x6, #1
-    and     x6, x6, x12                 // clear the lowest set bit
-    rbit    x15, x6
-    clz     x15, x15                      // position of the lowest set bit (64 if none)
+    clz     x15, x6
     add     x15, x15, x3
     stp     x8, x15, [x5, #32]
-    sub     x12, x6, #1
-    and     x6, x6, x12                 // clear the lowest set bit
-    rbit    x8, x6
-    clz     x8, x8                      // position of the lowest set bit (64 if none)
-    add     x8, x8, x3
-    sub     x12, x6, #1
-    and     x6, x6, x12                 // clear the lowest set bit
-    rbit    x15, x6
-    clz     x15, x15                      // position of the lowest set bit (64 if none)
-    add     x15, x15, x3
-    stp     x8, x15, [x5, #48]
+Lsparse_next:
     add     x5, x5, x7, lsl #3
     add     x0, x0, #64
     add     x3, x3, #64
-    sub     x4, x4, #64
-    cmp     x4, #64
-    b.hs    Lsparse
+    cmp     x0, x4
+    b.ls    Lsparse
 Lrest:                                  // fewer than 64 bytes left
+    sub     x4, x2, x0
     cmp     x4, #8
     b.lo    Ltail
     dup     v17.2d, x3
     b       Lsmall
+Lsparse_more:                           // more than 6 true bytes in this 64
+    cmp     w7, #12
+    b.hi    Lsparse_fail
+    clz     x8, x6
+    lsr     x12, x17, x8
+    bic     x6, x6, x12
+    add     x8, x8, x3
+    clz     x15, x6
+    lsr     x12, x17, x15
+    bic     x6, x6, x12
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #0]
+    clz     x8, x6
+    lsr     x12, x17, x8
+    bic     x6, x6, x12
+    add     x8, x8, x3
+    clz     x15, x6
+    lsr     x12, x17, x15
+    bic     x6, x6, x12
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #16]
+    clz     x8, x6
+    lsr     x12, x17, x8
+    bic     x6, x6, x12
+    add     x8, x8, x3
+    clz     x15, x6
+    lsr     x12, x17, x15
+    bic     x6, x6, x12
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #32]
+    clz     x8, x6
+    lsr     x12, x17, x8
+    bic     x6, x6, x12
+    add     x8, x8, x3
+    clz     x15, x6
+    lsr     x12, x17, x15
+    bic     x6, x6, x12
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #48]
+    clz     x8, x6
+    lsr     x12, x17, x8
+    bic     x6, x6, x12
+    add     x8, x8, x3
+    clz     x15, x6
+    lsr     x12, x17, x15
+    bic     x6, x6, x12
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #64]
+    clz     x8, x6
+    lsr     x12, x17, x8
+    bic     x6, x6, x12
+    add     x8, x8, x3
+    clz     x15, x6
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #80]
+    b       Lsparse_next
 Lsparse_fail:
     mov     x14, #8
-Ldense:                                 // run x14 blocks of 8 bytes; x14 * 8 <= x4
+Ldense:                                 // run x14 blocks of 8 bytes, all inside the mask
     dup     v17.2d, x3                  // index of the block's first element, twice
     mov     x13, x5
     mov     x16, x14
@@ -167,13 +214,13 @@ Ldense_loop:
     subs    x14, x14, #1
     b.ne    Ldense_loop
     add     x3, x3, x16, lsl #3
-    sub     x4, x4, x16, lsl #3
-    cmp     x4, #64
-    b.lo    Lrest
+    cmp     x0, x4
+    b.hi    Lrest
     sub     x13, x5, x13                // 8 * (true bytes in this stretch)
     cmp     x13, x16, lsl #3
     b.ls    Lsparse                     // at most one in eight was true
-    lsr     x14, x4, #3                 // else a longer dense stretch
+    sub     x14, x2, x0                 // else a longer dense stretch
+    lsr     x14, x14, #3
     mov     x15, #64
     cmp     x14, x15
     csel    x14, x14, x15, lo

@@ -33,3 +33,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.03x [1.03 – 1.03]
 - **Kept:** yes
 - **Notes:** n=16 goes from 4.5 to 3.3 ns (1.40x); everything else within 1 to 2%. 16M half_selected read 0.96x, again while other agents were running.
+
+## 5. Cheaper sparse extraction, two tiers of 6 and 12
+
+- **Idea:** three changes to the sparse path, tried together after timing-only experiments showed it is limited by instruction count (about 6 per cycle), not by the dependency chain: (a) reverse the bitmask once (`rbit`) and extract with `clz` / `lsr` / `bic` instead of `rbit` + `clz` + `sub` + `and` per position; (b) extract only 6 positions when the count is at most 6, a second copy extracts 12 when it is 7 to 12, and the dense code takes more than 12; (c) loop on the mask pointer against an end pointer instead of keeping a separate remaining count.
+- **check:** pass
+- **compare:** significantly faster, 1.17x [1.16 – 1.17]
+- **Kept:** yes
+- **Notes:** few_selected 1.39x, half_selected 0.98x (4M and 16M read 0.90x and 0.92x; the dense loop itself is unchanged, see the next entry for a noise check). Local timing of the tier sizes at 5% density: 4/8 was fastest up to 262,144 elements but slowest at 4M (0.072 ns per element against 0.046 for 6/12). The benchmark repeats one input, so the predictor memorises which blocks take the second tier; 4M is too long to memorise. 6/12 was chosen as the best on unmemorised data, not the best on the benchmark.
