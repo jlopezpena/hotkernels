@@ -98,6 +98,26 @@ KERNEL = Kernel(
 
 From the signature the judge generates the C glue it needs to call the kernel. Kernel authors never write harness code.
 
+### What a spec can express
+
+The first real kernels needed more than the two fixtures do. Each addition below exists because a surveyed kernel could not be written without it.
+
+| Feature | What it does | Needed by |
+|---|---|---|
+| `Scalar("lo", "f64", -0.5)` | A scalar argument with the same value in every call. Integers go in the integer argument registers and floats in the floating-point ones | `clip` (bounds), `histogram` (bin count and range), masked assignment (the value) |
+| `In("test", "i64", len=8)` | An input whose length is fixed and does not follow `n` | `isin` (the set of test values) |
+| `Out("counts", "i64", capacity=256)` | An output whose size is fixed | `bincount`, `histogram` |
+| `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs | `searchsorted` and `interp` (sorted data) |
+| `InOut("x", "f64")` | A buffer the kernel modifies in place. It starts as an input and is compared in full with the oracle's result | masked assignment |
+| `Kernel(numpy=fn)` | What is timed as NumPy when that is not the oracle. An in-place oracle has to copy its input; the statement a user writes does not | masked assignment |
+| `Kernel(check_max_n=65537)` | Caps the sizes used for correctness, for an oracle too slow to run on millions of elements per case. Timing still uses the full sweep | `interp` |
+| No `arm64/kernel.s` | The kernel is its naive C. `check` verifies the C against NumPy and `run` reports C against NumPy | every kernel before its assembly exists, and kernels shipped as C |
+
+Two limits follow from these and are deliberate:
+
+- **A scalar is tested with one value.** The judge has value classes for arrays and none for scalars, so `clip_f32` is checked with one pair of bounds. A kernel's behaviour for other values is not verified. Kernels with scalars need a second spec, or value classes for scalars, before they ship.
+- **An in-place buffer is timed on its own output.** After the first repeat the kernel sees the result of the previous one. That is only a fair timing for operations that give the same result when applied twice, which masked assignment is.
+
 ### Why a Python file
 
 The oracle is Python code, so a Python file per kernel exists either way. Putting the signature in the same file means one file and one format per kernel.

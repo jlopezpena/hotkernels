@@ -9,7 +9,7 @@ Speedups are geometric means across array sizes, with 95% confidence intervals.
 | Kernel | Arch | Machine | vs naive C | vs NumPy | NumPy | Date |
 |---|---|---|---|---|---|---|
 {% for r in results %}
-| `{{ r.kernel }}` | {{ r.environment.arch }} | {{ r.environment.machine }} | {{ cell(r.overall.vs_naive) }} | {{ cell(r.overall.vs_numpy) }} | {{ r.environment.numpy }} | {{ r.environment.timestamp[:10] }} |
+| `{{ r.kernel }}` | {{ r.environment.arch }} | {{ r.environment.machine }} | {{ cell(r.overall.vs_naive) if r.overall.vs_naive is defined else "C kernel" }} | {{ cell(r.overall.vs_numpy) }} | {{ r.environment.numpy }} | {{ r.environment.timestamp[:10] }} |
 {% else %}
 | _no recorded results yet_ | | | | | | |
 {% endfor %}
