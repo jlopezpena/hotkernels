@@ -1,33 +1,54 @@
 // void isin_i64(const int64_t *x, const int64_t *test, bool *out, size_t n);
 // x0 = x (n values), x1 = test (exactly 8 values), x2 = out (n bytes), x3 = n.
 //
-// 16 elements per iteration. The 8 test values are broadcast into v16-v23.
-// Each vector of two elements is compared with all of them and the results are
-// combined with an OR tree; the eight 64-bit lane masks pairs are then narrowed
-// to 16 bytes and shifted down to 0 or 1.
+// 16 elements per iteration, in one of two ways, chosen once from the test
+// values.
 //
-// The leftover (n mod 16) is handled by one more block that ends exactly at
+// Narrow keys (Lnarrow), when all 8 test values lie within 32,767 of test[0].
+// With base = test[0] - 0x7FFF, every test value minus base is below 0xFFFF.
+// Each element minus base is narrowed from 64 to 16 bits with unsigned
+// saturation (uqxtn twice), which keeps values below 0xFFFF exact and turns
+// everything else into 0xFFFF. An element is in the set exactly when its
+// 16-bit key equals a test key, because no test key is 0xFFFF. The 8 compares
+// and the OR tree then run on vectors of eight keys instead of two elements.
+//
+// Wide (Lwide), for any other test values: each vector of two elements is
+// compared with the 8 broadcast test values at 64 bits.
+//
+// Either way the lane masks are narrowed to 16 bytes and shifted down to 0 or
+// 1. The leftover (n mod 16) is handled by one more block that ends exactly at
 // the end of the arrays and overlaps the previous one. Fewer than 16 elements
 // take a scalar loop.
 
-// \res = all-ones in each 64-bit lane of \src that equals a test value.
-// Uses v1-v6.
-.macro MEMBER res, src
-    cmeq    v1.2d, \src\().2d, v16.2d
-    cmeq    v2.2d, \src\().2d, v17.2d
-    cmeq    v3.2d, \src\().2d, v18.2d
-    cmeq    v4.2d, \src\().2d, v19.2d
-    orr     v1.16b, v1.16b, v2.16b
-    orr     v3.16b, v3.16b, v4.16b
-    cmeq    v2.2d, \src\().2d, v20.2d
-    cmeq    v4.2d, \src\().2d, v21.2d
-    cmeq    v5.2d, \src\().2d, v22.2d
-    cmeq    v6.2d, \src\().2d, v23.2d
-    orr     v2.16b, v2.16b, v4.16b
-    orr     v5.16b, v5.16b, v6.16b
-    orr     v1.16b, v1.16b, v3.16b
-    orr     v2.16b, v2.16b, v5.16b
-    orr     \res\().16b, v1.16b, v2.16b
+// \res = all-ones in each lane (of arrangement \sz) of \src that equals one of
+// the values broadcast in v16-v23. \a-\f are scratch registers.
+.macro MEMBER res, src, sz, a, b, c, d, e, f
+    cmeq    \a\().\sz, \src\().\sz, v16.\sz
+    cmeq    \b\().\sz, \src\().\sz, v17.\sz
+    cmeq    \c\().\sz, \src\().\sz, v18.\sz
+    cmeq    \d\().\sz, \src\().\sz, v19.\sz
+    orr     \a\().16b, \a\().16b, \b\().16b
+    orr     \c\().16b, \c\().16b, \d\().16b
+    cmeq    \b\().\sz, \src\().\sz, v20.\sz
+    cmeq    \d\().\sz, \src\().\sz, v21.\sz
+    cmeq    \e\().\sz, \src\().\sz, v22.\sz
+    cmeq    \f\().\sz, \src\().\sz, v23.\sz
+    orr     \b\().16b, \b\().16b, \d\().16b
+    orr     \e\().16b, \e\().16b, \f\().16b
+    orr     \a\().16b, \a\().16b, \c\().16b
+    orr     \b\().16b, \b\().16b, \e\().16b
+    orr     \res\().16b, \a\().16b, \b\().16b
+.endm
+
+// Narrow four vectors of two 64-bit values (\a, \b, \c, \d, in order) to eight
+// 16-bit values in \a, saturating. Clobbers \c.
+.macro NARROW8 a, b, c, d
+    uqxtn   \a\().2s, \a\().2d
+    uqxtn2  \a\().4s, \b\().2d
+    uqxtn   \c\().2s, \c\().2d
+    uqxtn2  \c\().4s, \d\().2d
+    uqxtn   \a\().4h, \a\().4s
+    uqxtn2  \a\().8h, \c\().4s
 .endm
 
 .text
@@ -36,6 +57,68 @@
 _isin_i64:
     cmp     x3, #16
     b.lo    Lsmall
+    add     x9, x0, x3, lsl #3      // end of x
+    add     x10, x2, x3             // end of out
+    sub     x3, x3, #16             // elements left after the first block
+
+    // Test keys: test[j] - base, narrowed. A key of 0xFFFF means that value is
+    // out of range and the narrow path cannot be used.
+    ldp     q0, q1, [x1]
+    ldp     q2, q3, [x1, #32]
+    ldr     x8, [x1]
+    sub     x8, x8, #0x7000
+    sub     x8, x8, #0xfff          // base = test[0] - 0x7FFF
+    dup     v31.2d, x8
+    sub     v0.2d, v0.2d, v31.2d
+    sub     v1.2d, v1.2d, v31.2d
+    sub     v2.2d, v2.2d, v31.2d
+    sub     v3.2d, v3.2d, v31.2d
+    NARROW8 v0, v1, v2, v3
+    movi    v1.16b, #0xff
+    cmeq    v1.8h, v0.8h, v1.8h
+    umaxv   h1, v1.8h
+    fmov    w8, s1
+    cbnz    w8, Lwide_setup
+    dup     v16.8h, v0.h[0]
+    dup     v17.8h, v0.h[1]
+    dup     v18.8h, v0.h[2]
+    dup     v19.8h, v0.h[3]
+    dup     v20.8h, v0.h[4]
+    dup     v21.8h, v0.h[5]
+    dup     v22.8h, v0.h[6]
+    dup     v23.8h, v0.h[7]
+
+Lnarrow:
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ldp     q4, q5, [x0, #64]
+    ldp     q6, q7, [x0, #96]
+    sub     v0.2d, v0.2d, v31.2d
+    sub     v1.2d, v1.2d, v31.2d
+    sub     v2.2d, v2.2d, v31.2d
+    sub     v3.2d, v3.2d, v31.2d
+    sub     v4.2d, v4.2d, v31.2d
+    sub     v5.2d, v5.2d, v31.2d
+    sub     v6.2d, v6.2d, v31.2d
+    sub     v7.2d, v7.2d, v31.2d
+    NARROW8 v0, v1, v2, v3          // keys of elements 0-7
+    NARROW8 v4, v5, v6, v7          // keys of elements 8-15
+    MEMBER  v24, v0, 8h, v1, v2, v3, v5, v6, v7
+    MEMBER  v25, v4, 8h, v1, v2, v3, v5, v6, v7
+    uzp1    v24.16b, v24.16b, v25.16b
+    ushr    v24.16b, v24.16b, #7    // 0xFF -> 1
+    str     q24, [x2], #16
+    add     x0, x0, #128
+    subs    x3, x3, #16
+    b.hs    Lnarrow
+    cmn     x3, #16                 // x3 = leftover - 16
+    b.eq    Ldone
+    sub     x0, x9, #128            // last 16 elements, overlapping
+    sub     x2, x10, #16
+    mov     x3, #0
+    b       Lnarrow
+
+Lwide_setup:
     ld1r    {v16.2d}, [x1]
     add     x8, x1, #8
     ld1r    {v17.2d}, [x8]
@@ -51,22 +134,19 @@ _isin_i64:
     ld1r    {v22.2d}, [x8]
     add     x8, x1, #56
     ld1r    {v23.2d}, [x8]
-    add     x9, x0, x3, lsl #3      // end of x
-    add     x10, x2, x3             // end of out
-    sub     x3, x3, #16             // elements left after the block below
-Lloop:
+Lwide:
     ldp     q0, q7, [x0]
-    MEMBER  v24, v0
-    MEMBER  v25, v7
+    MEMBER  v24, v0, 2d, v1, v2, v3, v4, v5, v6
+    MEMBER  v25, v7, 2d, v1, v2, v3, v4, v5, v6
     ldp     q0, q7, [x0, #32]
-    MEMBER  v26, v0
-    MEMBER  v27, v7
+    MEMBER  v26, v0, 2d, v1, v2, v3, v4, v5, v6
+    MEMBER  v27, v7, 2d, v1, v2, v3, v4, v5, v6
     ldp     q0, q7, [x0, #64]
-    MEMBER  v28, v0
-    MEMBER  v29, v7
+    MEMBER  v28, v0, 2d, v1, v2, v3, v4, v5, v6
+    MEMBER  v29, v7, 2d, v1, v2, v3, v4, v5, v6
     ldp     q0, q7, [x0, #96]
-    MEMBER  v30, v0
-    MEMBER  v31, v7
+    MEMBER  v30, v0, 2d, v1, v2, v3, v4, v5, v6
+    MEMBER  v31, v7, 2d, v1, v2, v3, v4, v5, v6
     uzp1    v24.4s, v24.4s, v25.4s
     uzp1    v26.4s, v26.4s, v27.4s
     uzp1    v28.4s, v28.4s, v29.4s
@@ -78,13 +158,13 @@ Lloop:
     str     q24, [x2], #16
     add     x0, x0, #128
     subs    x3, x3, #16
-    b.hs    Lloop
+    b.hs    Lwide
     cmn     x3, #16                 // x3 = leftover - 16
     b.eq    Ldone
     sub     x0, x9, #128            // last 16 elements, overlapping
     sub     x2, x10, #16
     mov     x3, #0
-    b       Lloop
+    b       Lwide
 
 Lsmall:
     cbz     x3, Ldone
