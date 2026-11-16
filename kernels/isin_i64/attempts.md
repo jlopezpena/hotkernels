@@ -43,3 +43,19 @@ wider than usual.
 - **compare:** significantly faster, 1.50x [1.49 – 1.50]: 1.37x at 256, 1.60x–1.73x from 1,024 up, unchanged at 16 and 64
 - **Kept:** yes
 - **Notes:** 0.131 ns per element in the table loop, 6.7 cycles per 16 elements. Building the tables takes about 8.7 ns; measured with the threshold at 16, n = 16 took 12.1 ns against 5.4 and n = 64 17.6 against 16.0, and the break-even is near 90 elements.
+
+## 6. `ld4` to split the elements into 16-bit pieces while loading
+
+- **Idea:** in the base-0 table loop, `ld4 {v0.8h-v3.8h}` loads eight elements already split into their four 16-bit pieces, so the low piece is the key and the saturating narrowing (12 instructions per 16 elements) is replaced by OR-ing the three upper pieces and masking the result (8 instructions).
+- **check:** not run through the judge (private fuzzer: no failure)
+- **compare:** not run through the judge. Private harness: 0.196 ns per element at 65,536 against 0.131 for the committed loop.
+- **Kept:** no
+- **Notes:** 50% slower. `ld4` costs far more on this core than the two loads and the narrowing it replaces.
+
+## 7. Three lookups when every test value is below 4096
+
+- **Idea:** with base 0 and all test values below 4096, the high byte of every test key is below 16, so it can index a table directly: one `tbl` on the whole high byte replaces the `and`, `ushr`, two `tbl` and one `and` of its two nibbles (a key whose high byte is 16 or more finds nothing, which is right). 22 vector instructions per 16 elements instead of 26, and three tables to build instead of four, so this variant is used from n = 64 (four tables stay at 96).
+- **check:** pass (private fuzzer with both thresholds at 16: 2,000,000 cases, no failure)
+- **compare:** significantly faster, 1.13x [1.12 – 1.13]: 1.08x at 64, 1.17x–1.21x from 256 to 1M, 1.01x–1.02x at 4M and 16M, unchanged at 16
+- **Kept:** yes
+- **Notes:** 0.108–0.115 ns per element up to 1M. At 4M and 16M the loop now runs at 0.15–0.17 ns per element: reading `x` (8 bytes per element) has become the limit there. Only the base-0 loop has this variant; with a base of `test[0] - 0x7FFF` the keys sit near 0x7FFF and never qualify.

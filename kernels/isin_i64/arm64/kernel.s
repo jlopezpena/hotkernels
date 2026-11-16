@@ -13,12 +13,14 @@
 // 16-bit key equals a test key, because no test key is 0xFFFF. The keys are
 // then matched in one of two ways:
 //
-//   - n >= TABLE_MIN_N (Ltable, Lbiased_table): nibble tables. Each key is
-//     split into four nibbles, and each nibble looks up, in a 16-entry table
-//     for its position, a byte with one bit per test key: set when that test
-//     key has the same nibble there. A key equals test key j exactly when bit
-//     j is set in all four lookups, so the AND of the four is non-zero exactly
-//     for members. Building the four tables costs about as much as six blocks.
+//   - Nibble tables (Ltable, Ltable3, Lbiased_table), from n = 96. Each key
+//     is split into four nibbles, and each nibble looks up, in a 16-entry
+//     table for its position, a byte with one bit per test key: set when that
+//     test key has the same nibble there. A key equals test key j exactly
+//     when bit j is set in all four lookups, so the AND of the four is
+//     non-zero exactly for members. When base 0 is used and every test value
+//     is below 4096, the high byte of a key is looked up whole, which makes
+//     three lookups and three tables, and the tables are used from n = 64.
 //
 //   - smaller n (Lnarrow, Lbiased): 8 compares and an OR tree on vectors of
 //     eight keys.
@@ -115,19 +117,26 @@ Liota:
 .endm
 
 // Build the four nibble tables in v16-v19 from the eight 16-bit test keys in
-// \src. Table q, entry v, has bit j set when nibble q of key j is v. Needs
-// 0..15 in v22 and 0x0F bytes in v20. Uses v1-v7.
-.macro BUILDTABLES src
+// \src. Table q, entry v, has bit j set when nibble q of key j is v. With
+// \three, the third table is for the whole high byte and there is no fourth.
+// Needs 0..15 in v22 and 0x0F bytes in v20. Uses v1-v7.
+.macro BUILDTABLES src, three
     xtn     v1.8b, \src\().8h        // low byte of each key
-    shrn    v2.8b, \src\().8h, #8    // high byte of each key
+    shrn    v6.8b, \src\().8h, #8    // high byte of each key
     and     v4.16b, v1.16b, v20.16b // nibble 0 of each key
     ushr    v5.16b, v1.16b, #4      // nibble 1
-    and     v6.16b, v2.16b, v20.16b // nibble 2
-    ushr    v7.16b, v2.16b, #4      // nibble 3
+.if \three
+    ONETABLE v16, v4
+    ONETABLE v17, v5
+    ONETABLE v18, v6                // the whole high byte, which is below 16
+.else
+    ushr    v7.16b, v6.16b, #4      // nibble 3
+    and     v6.16b, v6.16b, v20.16b // nibble 2
     ONETABLE v16, v4
     ONETABLE v17, v5
     ONETABLE v18, v6
     ONETABLE v19, v7
+.endif
 .endm
 
 // \tab = table for the nibbles in bytes 0-7 of \nib. For each key j, a vector
@@ -163,9 +172,11 @@ Liota:
 // into four nibbles; each nibble looks up, in its table, the set of test keys
 // that have the same nibble there (one bit per test key). A key equals test
 // key j when bit j survives the AND of its four lookups. With \biased, the
-// base in v31 is subtracted from every element first. Needs 0x0F bytes in v20
-// and 0x01 bytes in v21.
-.macro TABLELOOP name, biased
+// base in v31 is subtracted from every element first. With \three, every test
+// key is below 4096, so its high byte is below 16 and is looked up whole in
+// the table in v18: three lookups instead of four. Needs 0x0F bytes in v20 and
+// 0x01 bytes in v21.
+.macro TABLELOOP name, biased, three
 \name:
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
@@ -187,15 +198,21 @@ Liota:
     uzp2    v2.16b, v0.16b, v4.16b  // high byte of each key
     and     v3.16b, v1.16b, v20.16b
     ushr    v1.16b, v1.16b, #4
-    and     v5.16b, v2.16b, v20.16b
-    ushr    v2.16b, v2.16b, #4
     tbl     v3.16b, {v16.16b}, v3.16b
     tbl     v1.16b, {v17.16b}, v1.16b
+.if \three
+    tbl     v2.16b, {v18.16b}, v2.16b // a high byte of 16 or more finds nothing
+    and     v3.16b, v3.16b, v1.16b
+    and     v3.16b, v3.16b, v2.16b
+.else
+    and     v5.16b, v2.16b, v20.16b
+    ushr    v2.16b, v2.16b, #4
     tbl     v5.16b, {v18.16b}, v5.16b
     tbl     v2.16b, {v19.16b}, v2.16b
     and     v3.16b, v3.16b, v1.16b
     and     v5.16b, v5.16b, v2.16b
     and     v3.16b, v3.16b, v5.16b
+.endif
     umin    v3.16b, v3.16b, v21.16b // non-zero -> 1
     str     q3, [x2], #16
     add     x0, x0, #128
@@ -209,8 +226,10 @@ Liota:
     b       \name
 .endm
 
-// Smallest n for which the nibble tables are built.
-.set TABLE_MIN_N, 96
+// Smallest n for which the nibble tables are built: three tables cost about as
+// much as three blocks of compares, four tables about as much as six.
+.set TABLE3_MIN_N, 64
+.set TABLE4_MIN_N, 96
 
 .text
 .globl _isin_i64
@@ -232,17 +251,26 @@ _isin_i64:
     umaxv   h1, v1.8h
     fmov    w8, s1
     cbnz    w8, Lbiased_setup
-    cmp     x3, #TABLE_MIN_N - 16
-    b.hs    Ltable_setup
-    DUPKEYS v0
-    NARROWLOOP Lnarrow, 0
-Ltable_setup:
+    cmp     x3, #TABLE3_MIN_N - 16
+    b.lo    Lnarrow_setup
     adrp    x8, Liota@PAGE
     ldr     q22, [x8, Liota@PAGEOFF]
     movi    v20.16b, #0x0f
     movi    v21.16b, #0x01
-    BUILDTABLES v0
-    TABLELOOP Ltable, 0
+    umaxv   h1, v0.8h
+    fmov    w8, s1
+    cmp     w8, #4096
+    b.lo    Ltable3_setup           // largest test key below 4096
+    cmp     x3, #TABLE4_MIN_N - 16
+    b.lo    Lnarrow_setup
+    BUILDTABLES v0, 0
+    TABLELOOP Ltable, 0, 0
+Ltable3_setup:
+    BUILDTABLES v0, 1
+    TABLELOOP Ltable3, 0, 1
+Lnarrow_setup:
+    DUPKEYS v0
+    NARROWLOOP Lnarrow, 0
 
 Lbiased_setup:
     ldp     q0, q1, [x1]
@@ -260,7 +288,7 @@ Lbiased_setup:
     umaxv   h1, v1.8h
     fmov    w8, s1
     cbnz    w8, Lwide_setup
-    cmp     x3, #TABLE_MIN_N - 16
+    cmp     x3, #TABLE4_MIN_N - 16
     b.hs    Lbiased_table_setup
     DUPKEYS v0
     NARROWLOOP Lbiased, 1
@@ -269,8 +297,8 @@ Lbiased_table_setup:
     ldr     q22, [x8, Liota@PAGEOFF]
     movi    v20.16b, #0x0f
     movi    v21.16b, #0x01
-    BUILDTABLES v0
-    TABLELOOP Lbiased_table, 1
+    BUILDTABLES v0, 0
+    TABLELOOP Lbiased_table, 1, 0
 
 Lwide_setup:
     ld1r    {v16.2d}, [x1]
