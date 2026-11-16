@@ -1,0 +1,13 @@
+{% if unlocked %}
+UNLOCKED: these reference files differ from main, so the results are not trustworthy for an agent run:
+{% for path in changed %}
+  {{ path }}
+{% endfor %}
+{% else %}
+FAIL {{ name }} ({{ arch }}): reference files modified
+  The spec, the naive reference and the judge must match the main branch.
+{% for path in changed %}
+  changed: {{ path }}
+{% endfor %}
+  Only kernel.s and attempts.md may be edited during a kernel run.
+{% endif %}
