@@ -162,3 +162,41 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
   searches per group instead of 64 the path is 0.83x to 0.96x, so it is only
   mildly limited by how many searches are in flight; doubling them again
   would need 16-bit bases (n <= 65,536 only) and was not tried.
+
+## Final numbers
+
+`uv run judge run searchsorted_f64 --unlocked` on the kernel of attempt 6
+(check: pass, 45,915 cases), Apple M1 Pro, NumPy 2.5.5, 30 samples per point,
+with other agents timing on the machine:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 22.3 ns | 107.3 ns | 4.81x [4.77 – 4.83] | 637.0 ns | 28.6x [28.34 – 28.70] |
+| 64 | 89.3 ns | 738.9 ns | 8.28x [8.25 – 8.29] | 2.2 us | 24.7x [24.55 – 24.95] |
+| 256 | 491.6 ns | 4.3 us | 8.76x [8.75 – 8.78] | 10.2 us | 20.7x [20.57 – 21.57] |
+| 1,024 | 2.6 us | 23.8 us | 9.20x [9.18 – 9.22] | 50.2 us | 19.4x [19.34 – 19.55] |
+| 4,096 | 12.9 us | 125.1 us | 9.69x [9.67 – 9.70] | 257.7 us | 20.0x [19.90 – 20.07] |
+| 16,384 | 68.4 us | 649.9 us | 9.50x [9.47 – 9.52] | 1.29 ms | 18.9x [18.81 – 18.98] |
+| 65,536 | 533.6 us | 4.31 ms | 8.07x [8.06 – 8.35] | 6.08 ms | 11.4x [11.10 – 11.41] |
+| 262,144 | 2.70 ms | 22.50 ms | 8.32x [8.28 – 8.33] | 27.69 ms | 10.2x [10.18 – 10.27] |
+| 1,048,576 | 15.79 ms | 128.23 ms | 8.12x [7.99 – 8.54] | 135.73 ms | 8.59x [8.55 – 8.81] |
+| 4,194,304 | 143.16 ms | 1518.79 ms | 10.6x [10.55 – 10.70] | 733.24 ms | 5.12x [5.10 – 5.17] |
+| 16,777,216 | 850.63 ms | 10698.03 ms | 12.6x [12.52 – 12.61] | 3564.78 ms | 4.19x [4.17 – 4.20] |
+| overall | | | 8.70x [8.68 – 8.75] | | 13.3x [13.26 – 13.36] |
+
+NumPy is timed from Python and includes its per-call overhead.
+
+Not tried, and why:
+
+- A step that classifies against three pivots held in registers in place of
+  the first two steps: estimated at about 10% fewer instructions at 1,024,
+  but attempt 10 shows the path is not limited by instruction count.
+- 128 searches per group with 16-bit bases (n <= 65,536 only): attempt 10
+  puts the sensitivity to the number of searches at 5% to 17% per doubling.
+- For arrays far beyond the cache, grouping the needles by the part of `a`
+  they fall in, so that a block of needles probes only cache-resident
+  elements. It needs a per-needle link stored in `out` and a table of bucket
+  heads that would have to live in registers (a kernel has no memory besides
+  its buffers), and walking the links is itself one cache miss per needle.
+  Too large a change to attempt in this run; it is the only idea here that
+  could reduce the number of misses at 4M and 16M instead of overlapping them.
