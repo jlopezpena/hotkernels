@@ -20,3 +20,11 @@ loop (and NumPy) only store to selected elements.
 - **compare:** n/a (first version). `run`: 1.34x [1.31 – 1.35] overall vs naive C; half_selected 2.67x [2.58 – 2.71], few_selected 0.67x [0.65 – 0.68].
 - **Kept:** yes
 - **Notes:** about 0.33 ns per element at every size. Naive C mispredicts at half_selected only from 65,536 elements up (2.7 ns per element there; below that the predictor memorises the cycled inputs and it runs at 0.4 ns). At few_selected naive C runs at 0.17 ns per element, twice as fast as this scalar loop.
+
+## 2. NEON blend, 16 elements per iteration
+
+- **Idea:** load 16 mask bytes, `cmtst` to 0x00/0xFF, spread each pair of bytes over a 2x64-bit vector with one `tbl` per vector (eight index constants), `bsl` between the broadcast value and the loaded data, store back. Leftover handled by one overlapping final block of 16; n < 16 stays scalar.
+- **check:** pass
+- **compare:** significantly faster, 2.66x [2.64 – 2.69] (half_selected 2.73x, few_selected 2.58x)
+- **Kept:** yes
+- **Notes:** about 0.107 ns per element in L1 (5.5 cycles per 16 elements), the same for both distributions. 3.7x at 256, falling to 1.6–2.2x at 16M where memory speed takes over.
