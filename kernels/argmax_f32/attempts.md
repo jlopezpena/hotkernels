@@ -15,3 +15,19 @@
 - **compare:** significantly faster, 13.3x [13.22 – 13.29]
 - **Kept:** yes
 - **Notes:** 0.028 ns per element while the data fits the first-level cache (16,384), 0.047 to 0.051 in the second level, 0.069 at 16.7M. No data-dependent branch, so ascending data costs the same as random. Chosen over "compare block maximum with running best, rescan on a hit" because that needs the same number of vector operations per block plus a mispredicted branch per hit.
+
+## 3. Broadcast the maximum with two `fmaxp` instead of `fmaxv` + `dup`
+
+- **Idea:** two pairwise maxima leave the overall maximum in every lane, one vector operation fewer than reducing to a scalar and duplicating it.
+- **check:** pass
+- **compare:** no significant difference, 1.002x [0.998 – 1.004]
+- **Kept:** no
+- **Notes:** not significantly faster at any size.
+
+## 4. Two-step search for 32 < n <= 64
+
+- **Idea:** the 64-element path was limited by vector operations (55 for 16 loads). The maximum tree already passes through four "quads" (lane maxima of 16 elements), so compare those with the maximum to find the first quad that holds it, then reload and compare only that quad's four vectors: 18 search operations instead of 36.
+- **check:** pass
+- **compare:** significantly faster, 1.021x [1.017 – 1.032]
+- **Kept:** yes
+- **Notes:** n = 64 goes from 5.3 ns to 4.0 ns (1.33x); nothing else changes.

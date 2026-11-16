@@ -207,6 +207,9 @@ Lupto32:
     ret
 
 // ---- 32 < n <= 64: 32 elements at 0 and 32 ending at n ---------------------
+// Two steps, to keep the number of vector operations down: the maximum tree
+// passes through four "quads" (the lane maxima of 16 consecutive elements), so
+// first find the first quad that holds m, then look only at its 16 elements.
 Lupto64:
     ldp     q16, q17, [x0]
     ldp     q18, q19, [x0, #32]
@@ -224,24 +227,47 @@ Lupto64:
     MX 5, 26, 27
     MX 6, 28, 29
     MX 7, 30, 31
-    MX 0, 0, 1
-    MX 2, 2, 3
-    MX 4, 4, 5
-    MX 6, 6, 7
-    MX 0, 0, 2
-    MX 4, 4, 6
-    MX 0, 0, 4
-    LOAD_WEIGHTS
-    fmaxv   s0, v0.4s
-    dup     v0.4s, v0.s[0]
-    MASK64
-    cbz     x10, Lnan_small
+    MX 0, 0, 1                          // quad 0: elements 0..15
+    MX 2, 2, 3                          // quad 1: elements 16..31
+    MX 4, 4, 5                          // quad 2: elements n-32..n-17
+    MX 6, 6, 7                          // quad 3: elements n-16..n-1
+    MX 1, 0, 2
+    MX 3, 4, 6
+    MX 1, 1, 3
+    fmaxv   s1, v1.4s
+    dup     v1.4s, v1.s[0]              // m in every lane
+    fcmeq   v0.4s, v0.4s, v1.4s
+    fcmeq   v2.4s, v2.4s, v1.4s
+    fcmeq   v4.4s, v4.4s, v1.4s
+    fcmeq   v6.4s, v6.4s, v1.4s
+    NARROW16 0, 2
+    NARROW16 4, 6
+    NARROW8 0, 4
+    shrn    v0.8b, v0.8h, #4            // four mask bits per quad lane
+    fmov    x10, d0
+    cbz     x10, Lnan_small             // nothing equals m: m is NaN
     rbit    x10, x10
     clz     x10, x10
+    lsr     x10, x10, #4                // q: the first quad that holds m
     sub     x11, x1, #64
-    cmp     x10, #32
-    add     x11, x11, x10               // back half: index = n - 64 + k
-    csel    x0, x10, x11, lo
+    cmp     x10, #2
+    csel    x11, xzr, x11, lo           // quads 2 and 3 sit n-64 further on
+    add     x11, x11, x10, lsl #4       // index of the quad's first element
+    add     x12, x0, x11, lsl #2
+    ldp     q16, q17, [x12]
+    ldp     q18, q19, [x12, #32]
+    fcmeq   v16.4s, v16.4s, v1.4s
+    fcmeq   v17.4s, v17.4s, v1.4s
+    fcmeq   v18.4s, v18.4s, v1.4s
+    fcmeq   v19.4s, v19.4s, v1.4s
+    NARROW16 16, 17
+    NARROW16 18, 19
+    NARROW8 16, 18
+    shrn    v16.8b, v16.8h, #4
+    fmov    x10, d16
+    rbit    x10, x10
+    clz     x10, x10
+    add     x0, x11, x10, lsr #2
     ret
 
 // ---- A NaN is present ------------------------------------------------------
