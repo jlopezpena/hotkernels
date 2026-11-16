@@ -24,9 +24,9 @@
 
 // Steps of the big loop between widenings. 128 * 510 = 65,280 fits in 16 bits.
 .set BLOCK_STEPS, 128
-// From this many bytes the big path is used. Below it every accumulator of the
-// lean path receives at most 16 vectors, and 8 accumulators * 16 * 510 =
-// 65,280, so their 16-bit lanes can be added together without overflow.
+// From this many bytes the big path is used. Below it the lean path sees at
+// most 128 vectors (127 whole ones and a masked one), and 128 * 510 = 65,280,
+// so its accumulators can be added together as 16-bit lanes without overflow.
 .set BIG_MIN_N, 2048
 
 .section __TEXT,__const
@@ -42,27 +42,103 @@ Lmask:
 .globl _sum_u8
 .p2align 2
 _sum_u8:
+    // Short calls cost about one cycle per taken branch, so the code is laid
+    // out for n = 16 and n = 64 to reach `ret` with as few as possible.
     cmp     x1, #32
-    b.lo    Lshort
+    b.hs    Lge32
+    tbz     x1, #4, Lsmall
+    // 16..31: the first vector whole, then the last vector masked to the
+    // n - 16 bytes the first did not cover.
+    ldr     q0, [x0]
+    ands    x4, x1, #15
+    b.ne    Ltwo
+    uaddlv  h0, v0.16b
+    fmov    w0, s0
+    ret
+Ltwo:
+    add     x3, x0, x1
+    ldur    q1, [x3, #-16]
+    adrp    x5, Lmask@PAGE
+    add     x5, x5, Lmask@PAGEOFF
+    ldr     q2, [x5, x4]
+    and     v1.16b, v1.16b, v2.16b
+    uaddlp  v0.8h, v0.16b
+    uadalp  v0.8h, v1.16b
+    addv    h0, v0.8h               // at most 31 * 255, fits in 16 bits
+    fmov    w0, s0
+    ret
+
+Lge32:
     mov     x6, #0                  // total of everything already widened
     add     x3, x0, x1              // end of the array
     movi    v16.2d, #0
     movi    v17.2d, #0
     movi    v18.2d, #0
     movi    v19.2d, #0
+    cmp     x1, #128
+    b.hs    Lge128
+
+    // ---- Lean path, fewer than 128 bytes left: x0 = cursor, x1 = a count
+    //      whose low seven bits are the bytes left, x3 = end, x6 = total so
+    //      far, v16-v19 = 16-bit accumulators.
+Llean64:
+    tbz     x1, #6, Llean32
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    add     x0, x0, #64
+    uadalp  v16.8h, v0.16b
+    uadalp  v17.8h, v1.16b
+    uadalp  v18.8h, v2.16b
+    uadalp  v19.8h, v3.16b
+Llean32:
+    tbnz    x1, #5, Ldo32
+Llean16:
+    tbnz    x1, #4, Ldo16
+Lleanpart:
+    tst     x1, #15
+    b.ne    Ldopart
+Lleanreduce:
+    add     v16.8h, v16.8h, v17.8h
+    add     v18.8h, v18.8h, v19.8h
+    add     v16.8h, v16.8h, v18.8h
+    uaddlv  s0, v16.8h
+    fmov    w0, s0
+    add     x0, x0, x6
+    ret
+
+Ldo32:
+    ldp     q0, q1, [x0], #32
+    uadalp  v16.8h, v0.16b
+    uadalp  v17.8h, v1.16b
+    b       Llean16
+Ldo16:
+    ldr     q0, [x0]
+    uadalp  v18.8h, v0.16b
+    b       Lleanpart
+Ldopart:
+    // 1..15 bytes left: load the last 16 bytes of the array (it has at least
+    // 32) and keep only the ones not yet counted.
+    and     x4, x1, #15
+    ldur    q0, [x3, #-16]
+    adrp    x5, Lmask@PAGE
+    add     x5, x5, Lmask@PAGEOFF
+    ldr     q1, [x5, x4]
+    and     v0.16b, v0.16b, v1.16b
+    uadalp  v19.8h, v0.16b
+    b       Lleanreduce
+
+Lge128:
+    cmp     x1, #BIG_MIN_N
+    b.hs    Lbig
+    // ---- Lean path, 128..2047 bytes left: eight accumulators, 128 bytes per
+    //      step, folded into v16-v19 afterwards.
+Llean128:
     movi    v20.2d, #0
     movi    v21.2d, #0
     movi    v22.2d, #0
     movi    v23.2d, #0
-    cmp     x1, #BIG_MIN_N
-    b.hs    Lbig
-
-    // ---- Lean path: x0 = cursor, x1 = bytes left (< 2048), x3 = end,
-    //      x6 = total so far, v16-v23 = 16-bit accumulators.
-Llean:
-    subs    x4, x1, #128
-    b.lo    Llean64
-Llean128:
+    sub     x4, x1, #128
+Lleanstep:
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
     ldp     q4, q5, [x0, #64]
@@ -77,46 +153,18 @@ Llean128:
     uadalp  v22.8h, v6.16b
     uadalp  v23.8h, v7.16b
     subs    x4, x4, #128
-    b.hs    Llean128
-Llean64:
-    // x4 is the bytes left minus 128; its low seven bits are those of the
-    // bytes left, which is now below 128.
-    tbz     x4, #6, Llean32
-    ldp     q0, q1, [x0]
-    ldp     q2, q3, [x0, #32]
-    add     x0, x0, #64
-    uadalp  v16.8h, v0.16b
-    uadalp  v17.8h, v1.16b
-    uadalp  v18.8h, v2.16b
-    uadalp  v19.8h, v3.16b
-Llean32:
-    tbz     x4, #5, Llean16
-    ldp     q0, q1, [x0], #32
-    uadalp  v20.8h, v0.16b
-    uadalp  v21.8h, v1.16b
-Llean16:
-    tbz     x4, #4, Lleanpart
-    ldr     q0, [x0]
-    uadalp  v22.8h, v0.16b
-Lleanpart:
-    ands    x4, x4, #15
-    b.eq    Lleanreduce
-    // 1..15 bytes left: load the last 16 bytes of the array (it has at least
-    // 32) and keep only the ones not yet counted.
-    ldur    q0, [x3, #-16]
-    adrp    x5, Lmask@PAGE
-    add     x5, x5, Lmask@PAGEOFF
-    ldr     q1, [x5, x4]
-    and     v0.16b, v0.16b, v1.16b
-    uadalp  v23.8h, v0.16b
-Lleanreduce:
+    b.hs    Lleanstep
+    add     v16.8h, v16.8h, v20.8h
+    add     v17.8h, v17.8h, v21.8h
+    add     v18.8h, v18.8h, v22.8h
+    add     v19.8h, v19.8h, v23.8h
+    tst     x1, #127
+    b.ne    Llean64
+    // Nothing left: the same reduction as Lleanreduce, repeated here so a
+    // multiple of 128 does not take another branch.
     add     v16.8h, v16.8h, v17.8h
     add     v18.8h, v18.8h, v19.8h
-    add     v20.8h, v20.8h, v21.8h
-    add     v22.8h, v22.8h, v23.8h
     add     v16.8h, v16.8h, v18.8h
-    add     v20.8h, v20.8h, v22.8h
-    add     v16.8h, v16.8h, v20.8h
     uaddlv  s0, v16.8h
     fmov    w0, s0
     add     x0, x0, x6
@@ -124,6 +172,10 @@ Lleanreduce:
 
     // ---- Big path: n >= 2048.
 Lbig:
+    movi    v20.2d, #0
+    movi    v21.2d, #0
+    movi    v22.2d, #0
+    movi    v23.2d, #0
     movi    v24.2d, #0
     movi    v25.2d, #0
     movi    v26.2d, #0
@@ -205,32 +257,11 @@ Lstep:
     movi    v30.2d, #0
     movi    v31.2d, #0
     cbnz    x4, Lblock
-    and     x1, x1, #255            // bytes left for the lean path
-    b       Llean
-
-    // ---- n < 32.
-Lshort:
-    tbz     x1, #4, Lsmall
-    // 16..31: the first vector whole, then the last vector masked to the
-    // n - 16 bytes the first did not cover.
-    ldr     q0, [x0]
-    ands    x4, x1, #15
-    b.eq    Lone
-    add     x3, x0, x1
-    ldur    q1, [x3, #-16]
-    adrp    x5, Lmask@PAGE
-    add     x5, x5, Lmask@PAGEOFF
-    ldr     q2, [x5, x4]
-    and     v1.16b, v1.16b, v2.16b
-    uaddlp  v0.8h, v0.16b
-    uadalp  v0.8h, v1.16b
-    addv    h0, v0.8h               // at most 31 * 255, fits in 16 bits
-    fmov    w0, s0
-    ret
-Lone:
-    uaddlv  h0, v0.16b
-    fmov    w0, s0
-    ret
+    // The last 0..255 bytes go through the lean path, which reads only the
+    // low bits of x1 once fewer than 128 bytes are left.
+    and     x1, x1, #255
+    tbz     x1, #7, Llean64
+    b       Llean128
 
 Lsmall:
     tbnz    x1, #3, L8to15
