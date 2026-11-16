@@ -29,3 +29,23 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
   Micro-benchmarks on this core: `fcmp` runs at one per cycle and the chain
   load -> `fcmp` -> `csel` is about 11.4 cycles, so this form is limited to
   about one probe per cycle however many needles are interleaved.
+
+## 3. Sixteen needles, compare-to-mask instead of flags, one code block per level
+
+- **Idea:** replace `fcmp` + `csel` with `fcmgt` (mask in a vector register),
+  `fmov` to an integer register, and `sub base, base, mask, lsl #log2(h)`. That
+  is still four instructions per probe but none of them is limited to one per
+  cycle (`fmov x, d` runs at two per cycle). The shift must be a constant, so
+  the search uses power-of-two steps (first step `base = a[p-1] < key ? n-p :
+  0` with p the largest power of two <= n, skipped when n is a power of two)
+  and the code for each step size is written out once; a group jumps to the
+  block for h = p/2. With no register needed for the step size, all of x0-x15
+  hold bases (sixteen needles per group) and the pointers and constants are
+  parked in vector registers.
+- **check:** pass
+- **compare:** significantly faster, 1.30x [1.29 – 1.31]
+- **Kept:** yes
+- **Notes:** 1.21x to 1.38x from 64 to 1M elements, 1.5x at 4M and 16M (twice
+  as many cache misses in flight), 1.01x at 16 (a single group per call, so it
+  is limited by the length of the dependency chain, about 13.6 cycles per
+  level in this form against 11.4 with `fcmp`).
