@@ -59,3 +59,45 @@ wider than usual.
 - **compare:** significantly faster, 1.13x [1.12 – 1.13]: 1.08x at 64, 1.17x–1.21x from 256 to 1M, 1.01x–1.02x at 4M and 16M, unchanged at 16
 - **Kept:** yes
 - **Notes:** 0.108–0.115 ns per element up to 1M. At 4M and 16M the loop now runs at 0.15–0.17 ns per element: reading `x` (8 bytes per element) has become the limit there. Only the base-0 loop has this variant; with a base of `test[0] - 0x7FFF` the keys sit near 0x7FFF and never qualify.
+
+## 8. Software prefetch of `x` in the table loop
+
+- **Idea:** from 4M elements the three-table loop is slower per element than in cache; `prfm` two lines of `x` ahead of the loads.
+- **check:** not run (see notes)
+- **compare:** not run through the judge. Private harness, ns per element at 65,536 / 1M / 4M / 16M: no prefetch 0.122 / 0.117 / 0.137 / 0.141; `pldl1keep` at 512 bytes 0.127 / 0.114 / 0.136 / 0.141; at 1,024 bytes 0.132 / 0.109 / 0.137 / 0.142; at 2,048 bytes 0.121 / 0.111 / 0.172 / 0.186; at 4,096 bytes 0.121 / 0.113 / 0.380 / 0.537; `pldl2keep` at 4,096 bytes 0.124 / 0.109 / 0.136 / 0.143.
+- **Kept:** no
+- **Notes:** nothing at 4M and 16M, where it was meant to help, and the differences at 1M are within the spread between runs on this shared machine. Long distances are much worse.
+
+## 9. Build each table with a tree of inserts instead of a chain
+
+- **Idea:** the table build inserts the 8 per-key vectors one after another with `sli`, a chain of seven dependent instructions per table. Pair them instead (keys 0,1 / 2,3 / 4,5 / 6,7, then pairs, then halves): same instruction count, depth three, to shorten the set-up that dominates n = 64 and n = 256.
+- **check:** pass (private fuzzer at both thresholds: no failure)
+- **compare:** no significant difference, 1.00x [1.00 – 1.00]; n = 64 1.00x, n = 256 0.99x
+- **Kept:** no
+- **Notes:** the build is limited by how many vector instructions run per cycle (about 70 for three tables), not by the length of the chain.
+
+## Which path runs for which test values, and how fast each is
+
+Every path gives the exact answer for any 8 int64 test values; the choice only changes the speed. It is made once per call by narrowing the test values the same way as the elements and looking for a saturated key, so a set that does not fit simply falls through to the next path, ending at the 64-bit loop, which has no conditions. The judge's check uses arbitrary test values (it mostly exercises the 64-bit loop) and a private fuzzer covered the boundaries of each condition (spreads of exactly 32,767 and 32,768, values at 65,534 and 65,535, the int64 wrap, duplicates), with the table thresholds lowered so the table loops saw every size.
+
+The judge times one distribution, `mostly_misses`, whose test values are drawn from [0, 1000). It therefore only ever times the first row below. The other rows were timed in a private harness against the same naive C build (ns per element at n = 65,536; ratio to naive C at 65,536 / 64 / 16):
+
+| Test values | Path | ns per element | vs naive C (65,536 / 64 / 16) |
+|---|---|---|---|
+| all in [0, 4096) | base 0, three tables (compare loop below n = 64) | 0.112 | 5.8x / 2.9x / 2.2x |
+| all in [0, 65535), not all below 4096 | base 0, four tables (compare loop below n = 96) | 0.134 | 4.9x / 2.6x / 2.1x |
+| all within 32,767 of `test[0]`, e.g. negative or large values close together | base `test[0] - 0x7FFF`, four tables (compare loop below n = 96) | 0.172–0.179 | 3.7x / 2.1x / 1.6x |
+| anything else, e.g. unrelated 64-bit values | 64-bit compares | 0.666 | 0.99x / 0.97x / 0.87x |
+
+So for test values that do not fit a 16-bit window the kernel is no faster than naive C, and at n = 16 it is about 13% slower, because it has tried and rejected the two narrow set-ups before starting. A set that fits a 16-bit window but is not within 32,767 of its first value (for example {0, 60000} shifted negative) also takes the 64-bit loop.
+
+## Final result
+
+`uv run judge run isin_i64 --unlocked`, check PASS (17,124 cases): 4.46x [4.45 – 4.49] over naive C, 108x [108 – 109] over NumPy. Per size vs naive C: 16: 2.12x, 64: 2.83x, 256: 4.56x, 1,024: 5.39x, 4,096: 5.66x, 16,384: 5.75x, 65,536: 5.74x, 262,144: 5.69x, 1M: 5.36x, 4M: 4.10x, 16M: 4.07x.
+
+## Not tried, and why
+
+- **Choosing the base as the smallest test value** instead of `test[0] - 0x7FFF`. It would accept any set that fits a 16-bit window and let close-together sets away from zero use the three-table loop. The judge's distribution never takes the biased path, so `compare` could not have shown a gain.
+- **A 32-bit key path** for sets that fit a 32-bit window but not a 16-bit one (8 compares on vectors of four keys, about 80 instructions per 16 elements against 128). Same reason.
+- **`eor3` instead of the OR tree** in the compare loops (four instructions instead of seven per vector). It needs the test keys arranged so that no value appears an even number of times among seven of them; the check costs more than it saves at n = 16, the only timed size that still uses a compare loop.
+- **A cheaper table build.** Several formulations were worked out on paper (bit-matrix transpose of one-hot rows, building two entries per compare, 64-bit variable shifts); all came to about 23 instructions per table, the same as the current one.

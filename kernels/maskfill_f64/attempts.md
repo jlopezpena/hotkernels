@@ -122,3 +122,7 @@ loop (and NumPy) only store to selected elements.
 - **Wider or fewer stores in the blend.** The blend is at the core's limit of about three memory operations per cycle (attempt 6); NEON has no store wider than 16 bytes, and attempt 4 showed loop overhead is not the limit.
 - **Testing blocks at a finer grain than 16 elements** (four stores per block chosen per 4 elements): about 40 instructions per block, no faster than the blend.
 - **A scratch location for unwanted stores** (on the stack) instead of repeating the previous store: a kernel may not write outside its buffers.
+
+## Final result
+
+`uv run judge run maskfill_f64 --unlocked`, check PASS (30,482 cases): 4.61x [4.57 – 4.65] over naive C across both distributions, 17.1x [17.07 – 17.15] over NumPy. half_selected 7.35x [7.24 – 7.45] over naive C (2.90x–3.62x up to 16,384, where naive C's branches are memorised; 16.6x–20.3x from 65,536 up, where they are not). few_selected 2.90x [2.88 – 2.91] (1.60x at 16, 2.36x–2.83x from 64 to 65,536, 3.13x–4.72x from 262,144 up).
