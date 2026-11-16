@@ -84,3 +84,19 @@ loop (and NumPy) only store to selected elements.
 - **compare:** significantly faster, 1.01x [1.00 – 1.02]; repeated: 1.01x [1.00 – 1.02], also significant. few_selected 1.03x [1.03 – 1.04]: 1.02x–1.09x from 1,024 to 4M, but 0.96x at 256 and 0.98x at 64. half_selected 0.99x, not significant overall, 0.96x at 64.
 - **Kept:** yes
 - **Notes:** marginal. Two variants were measured in a private harness before this one, at n = 262,144 where the branches cannot be memorised, against the blend-only loop's 0.16 ns per element at every density. (a) Four-store tier with runs never started by two-per-half blocks: 0.077 at 5%, but 0.178–0.186 at 12–16% density, 12–16% worse than blending everything. (b) Runs started by the second failing block in a row, as before: no worse than the blend at any density, but only 0.081 at 5%. The kept rule (third in a row) gives 0.077 at 5%, 0.103 at 8%, 0.147 at 12% and 0.159–0.162 from 15% up, so it is never slower than the blend-only loop by more than noise. Attempt 8 measured the same way: 0.086 at 5%, 0.124–0.129 at 8%.
+
+## 10. Software prefetch in the sparse loop
+
+- **Idea:** the sparse path stores to only about 40% of the cache lines of `x`, in order but with gaps; prefetch two lines of `x` per block so the stores at 1M elements and more find their lines present.
+- **check:** not run (see notes)
+- **compare:** not run through the judge. Private harness at 5% density, ns per element at 4,096 / 262,144 / 1M / 4M: no prefetch 0.065 / 0.079 / 0.108 / 0.144; `pstl1keep` at 512 bytes 0.068 / 0.093 / 0.115 / 0.162; at 1,024 and 2,048 bytes, `pldl1keep` at 1,024 and `pstl2keep` at 2,048 and 4,096 all between those and 0.20 at 4M.
+- **Kept:** no
+- **Notes:** slower at every size and distance. Fetching every line costs more than the misses it hides, since most lines are never needed.
+
+## 11. Test the first block before blending it
+
+- **Idea:** the first block is always blended, so n = 16 never uses the sparse path and a dense n = 64 pays for a run of one block, a test and a second run. Test the first block's two mask words on entry instead: dense starts a run of four blocks at once, sparse goes straight to the tested loop.
+- **check:** pass (private fuzzer: no failure)
+- **compare:** significantly slower, 0.98x [0.97 – 0.99]. half_selected 0.96x [0.95 – 0.98]: 0.84x at 16, 1.04x at 64. few_selected 1.00x, not significant: 0.96x at 16 and at 64, 1.04x at 1,024.
+- **Kept:** no
+- **Notes:** at n = 16 the extra mask load, test and run set-up in front of the only block cost more than anything they save, and the entry branch is one more thing to mispredict when the judge cycles through 64 different small inputs.

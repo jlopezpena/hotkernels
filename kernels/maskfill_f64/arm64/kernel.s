@@ -1,27 +1,32 @@
 // void maskfill_f64(double *x, const bool *mask, size_t n, double value);
 // x0 = x (in place), x1 = mask (bytes, each exactly 0 or 1), x2 = n, d0 = value.
 //
-// Works in blocks of 16 elements and switches between two ways of handling a
-// block, depending on how many of its mask bytes are set.
+// Works in blocks of 16 elements. The 16 mask bytes of a block are read as two
+// 64-bit words, one per half, and the block is handled in one of three ways.
 //
-// Blend (dense masks). 16 mask bytes are turned into 0x00/0xFF bytes, each
-// pair of bytes is spread over a vector of two 64-bit lanes with tbl, and bsl
-// selects between the broadcast value and the loaded data. No data-dependent
-// branch. Unselected elements are stored back with their own bits.
+// Sparse (at most one selected element in each half; Ltest). A word w of 0/1
+// bytes with at most one byte set satisfies w & (w - 1) == 0, and clz gives
+// the position of that byte. Each half does exactly one 8-byte store of
+// value: to its selected element, or, when it has none, to the element that
+// half selected most recently (which already holds value). Nothing is loaded
+// from x, no unselected element is written, and there is no branch per
+// element.
 //
-// Sparse stores (at most one selected element in each half of the block).
-// The 16 mask bytes are read as two 64-bit words. A word with at most one
-// byte set satisfies w & (w - 1) == 0, and clz gives the position of that
-// byte. Each half then does exactly one 8-byte store of value: to its selected
-// element, or, when it has none, to the element that half selected most
-// recently (which already holds value). Nothing is loaded from x and no unselected element is
-// written, and there is still no branch per element.
+// Two per half (at most two selected in each half; Ldense). The same with two
+// stores per half, to its highest and its lowest selected element.
 //
-// Every block reached by Ltest is tested; a block that fails the test starts a
-// run of blended blocks that is not tested. The run is 1 block long, then 4,
-// 16 and 64 while each run is followed directly by another failing block, so
-// a dense mask pays for one test per 64 blocks and a sparse mask loses little
-// to an isolated dense block. The first block is always blended.
+// Blend (anything else; BLEND). The mask bytes are turned into 0x00/0xFF
+// bytes, each pair of bytes is spread over a vector of two 64-bit lanes with
+// tbl, and bsl selects between the broadcast value and the loaded data.
+// Unselected elements are stored back with their own bits.
+//
+// The first block is always blended. After that every block is tested, until
+// three blocks in a row have failed the sparse test (the first block counts
+// as two that failed). The third starts a run of
+// four blended blocks that are not tested (Lgrow, Lrun), and each run that is
+// followed directly by another failing block is followed by a run four times
+// as long, up to 64 blocks. So a dense mask pays for one test per 64 blocks,
+// and a sparse mask loses little to a few dense blocks.
 //
 // The address of a selected element is not known until one is found, so after
 // a run Lscan skips blocks with no mask byte set (touching nothing) and starts
