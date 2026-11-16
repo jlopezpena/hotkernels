@@ -81,3 +81,31 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
   the three load ports while the data is in cache, and a `prfm` takes one;
   when the data is not in cache the out-of-order window already has the next
   hundred probes issued.
+
+## 6. 64 needles at once with bases in vector registers; window count for n < 64
+
+- **Idea:** attempt 3 is limited by its dependency chain: sixteen searches,
+  about 14.6 cycles per step, and the scheduler cannot reach into the next
+  group, so about 0.94 cycles per probe. Two changes, measured together:
+  (a) From 64 elements, keep the bases as 32-bit lanes of sixteen vector
+  registers (64 searches in flight). One step for four needles: two moves to
+  integer registers, four scalar loads of the probes, two `ins`, two loads of
+  the needles from `v`, two `fcmgt`, `uzp1` to 32-bit masks, `mls` to add h
+  where the mask is set: 16 instructions per four probes, h in a register,
+  one loop over the steps instead of a block per step. NaN needles are found
+  with `fmax` during a group's first step and fixed up afterwards.
+  (b) Below 64 elements keep the sixteen-needle code but replace the last four
+  probes, which all fall in `a[base .. base+7]`, by loading those eight
+  elements and counting the ones below the key (one step in the chain
+  instead of four).
+- **check:** pass
+- **compare:** significantly faster, 1.17x [1.16 – 1.17]
+- **Kept:** yes
+- **Notes:** 1.23x at 16 (from (b)), 1.42x at 64 falling to 1.10x at 262,144
+  (from (a)), unchanged from 1M (still the block sweeps of attempt 4; locally
+  the 64-needle path is equal to them at 1M and 4M and 6% slower at 16M).
+  Locally, (b) applied to every size in the sixteen-needle code was 0.97x to
+  1.01x from 64 up, and `and` + `add` in place of `mls` was 3% to 7% slower.
+  An experiment that dropped the needle loads (wrong results, timing only)
+  ran 1.3x to 1.4x faster, so the step is limited by its loads and
+  instruction count: 1.5 loads per probe against three load ports.
