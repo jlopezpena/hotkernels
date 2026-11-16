@@ -9,8 +9,13 @@
 //             compare every element with m and turn the compare results into
 //             a bit mask whose lowest set bit is the answer. The elements are
 //             covered by a front half and a back half that may overlap; the
-//             back half ends exactly at the end of the array.
-//   n  > 64   Blocks of 64 elements. Each block is reduced to its minimum (15
+//             back half ends exactly at the end of the array. Above 32
+//             elements the search takes two steps: first the "quads" (lane
+//             minima of 16 consecutive elements) the minimum tree passes
+//             through, then the 16 elements of the first quad that holds m.
+//   129..256  The same two steps as for 33..64, over sixteen quads: straight
+//             line, and cheaper than the block loop plus its rescan.
+//   otherwise Blocks of 64 elements. Each block is reduced to its minimum (15
 //             `fmin` and one `fminv`). A scalar compare with the minimum so
 //             far sets the flags once: unordered means the block holds a NaN,
 //             strictly less moves the "best block" pointer with `csel`. No
@@ -19,8 +24,8 @@
 //             general register matters: its address is ready before the loop
 //             ends, so the rescan does not wait for a vector-to-integer move.
 //
-// A NaN makes m NaN. A scalar loop then finds the first NaN, in the whole
-// input when n <= 64 and inside the offending block otherwise.
+// A NaN makes m NaN. A scalar loop then finds the first NaN: inside the
+// offending block on the block path, in the whole input otherwise.
 
 // v\d = lane-wise minimum of v\a and v\b (NaN if either is NaN).
 .macro MN d, a, b
@@ -131,10 +136,15 @@ Lscalar_new:
 
 Lover16:
     cmp     x1, #64
-    b.hi    Lbig
+    b.hi    Lover64
     cmp     x1, #32
     b.hi    Lupto64
     b       Lupto32
+Lover64:
+    sub     x10, x1, #129
+    cmp     x10, #127
+    b.hi    Lbig                        // n <= 128 or n > 256
+    b       Lupto256
 
 // ---- 8 <= n <= 16: vectors at 0, 4, n-8, n-4 -------------------------------
 Lupto16:
@@ -273,6 +283,115 @@ Lupto64:
     add     x0, x11, x10, lsr #2
     ret
 
+// Load one quad (16 elements at \base + \off) and leave its lane minima in
+// v\d. Clobbers v0..v3.
+.macro QUAD d, base, off
+    ldp     q0, q1, [\base, #\off]
+    ldp     q2, q3, [\base, #\off + 32]
+    MN 0, 0, 1
+    MN 2, 2, 3
+    MN \d, 0, 2
+.endm
+
+// ---- 128 < n <= 256: 128 elements at 0 and 128 ending at n -----------------
+// Sixteen quads, then the same two steps as for 32 < n <= 64.
+Lupto256:
+    QUAD 16, x0, 0
+    QUAD 17, x0, 64
+    QUAD 18, x0, 128
+    QUAD 19, x0, 192
+    QUAD 20, x0, 256
+    QUAD 21, x0, 320
+    QUAD 22, x0, 384
+    QUAD 23, x0, 448
+    QUAD 24, x9, -512
+    QUAD 25, x9, -448
+    QUAD 26, x9, -384
+    QUAD 27, x9, -320
+    QUAD 28, x9, -256
+    QUAD 29, x9, -192
+    QUAD 30, x9, -128
+    QUAD 31, x9, -64
+    MN 0, 16, 17
+    MN 1, 18, 19
+    MN 2, 20, 21
+    MN 3, 22, 23
+    MN 4, 24, 25
+    MN 5, 26, 27
+    MN 6, 28, 29
+    MN 7, 30, 31
+    MN 0, 0, 1
+    MN 2, 2, 3
+    MN 4, 4, 5
+    MN 6, 6, 7
+    MN 0, 0, 2
+    MN 4, 4, 6
+    MN 0, 0, 4
+    fminv   s0, v0.4s
+    dup     v0.4s, v0.s[0]              // m in every lane
+    LOAD_WEIGHTS
+    EQ 16
+    EQ 17
+    EQ 18
+    EQ 19
+    EQ 20
+    EQ 21
+    EQ 22
+    EQ 23
+    EQ 24
+    EQ 25
+    EQ 26
+    EQ 27
+    EQ 28
+    EQ 29
+    EQ 30
+    EQ 31
+    NARROW16 16, 17
+    NARROW16 18, 19
+    NARROW16 20, 21
+    NARROW16 22, 23
+    NARROW16 24, 25
+    NARROW16 26, 27
+    NARROW16 28, 29
+    NARROW16 30, 31
+    NARROW8 16, 18                      // quads  0..3, one byte per lane
+    NARROW8 20, 22                      // quads  4..7
+    NARROW8 24, 26                      // quads  8..11
+    NARROW8 28, 30                      // quads 12..15
+    and     v16.16b, v16.16b, v7.16b
+    and     v20.16b, v20.16b, v7.16b
+    and     v24.16b, v24.16b, v7.16b
+    and     v28.16b, v28.16b, v7.16b
+    addp    v16.16b, v16.16b, v20.16b
+    addp    v24.16b, v24.16b, v28.16b
+    addp    v16.16b, v16.16b, v24.16b
+    addp    v16.16b, v16.16b, v16.16b
+    fmov    x10, d16                    // bit 4q+l: lane l of quad q holds m
+    cbz     x10, Lnan_small             // nothing equals m: m is NaN
+    rbit    x10, x10
+    clz     x10, x10
+    lsr     x10, x10, #2                // q: the first quad that holds m
+    sub     x11, x1, #256
+    cmp     x10, #8
+    csel    x11, xzr, x11, lo           // quads 8..15 sit n-256 further on
+    add     x11, x11, x10, lsl #4       // index of the quad's first element
+    add     x12, x0, x11, lsl #2
+    ldp     q16, q17, [x12]
+    ldp     q18, q19, [x12, #32]
+    EQ 16
+    EQ 17
+    EQ 18
+    EQ 19
+    NARROW16 16, 17
+    NARROW16 18, 19
+    NARROW8 16, 18
+    shrn    v16.8b, v16.8h, #4
+    fmov    x10, d16
+    rbit    x10, x10
+    clz     x10, x10
+    add     x0, x11, x10, lsr #2
+    ret
+
 // ---- A NaN is present ------------------------------------------------------
 Lnan_small:
     mov     x8, x0
@@ -288,7 +407,7 @@ Lnan_scan:
     lsr     x0, x0, #2
     ret
 
-// ---- n > 64 ----------------------------------------------------------------
+// ---- 64 < n <= 128, and n > 256 --------------------------------------------
 // x8  start of the array          x0  current block
 // x12 end of the whole blocks     x5  first block that reached the minimum
 // x13 the block ending at n       s4  minimum so far
