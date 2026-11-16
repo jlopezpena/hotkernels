@@ -91,6 +91,7 @@ _maskfill_f64:
     sub     x3, x2, #32
     mov     x14, #1                 // blocks in this run
     mov     x16, #1                 // length the last run asked for
+    mov     x17, #2                 // so that a dense second block starts a run
     add     x15, x1, #16            // mask address where the last run ends
 
 Lrun:                               // blend x14 blocks without testing them
@@ -158,23 +159,69 @@ Ltest:
     b       Ltail
 
 Ldense:
+    // More than one selected in a half. x17 counts how many such blocks came
+    // directly before this one (blocks of a run included).
     sub     x7, x1, #16             // this block's mask bytes
     cmp     x7, x15
-    b.eq    Lgrow
-    // Not directly after a run: blend this block alone and carry on testing.
-    // x10 and x8 stay valid: with more than one byte set clz still finds a
-    // selected element.
-    ldur    q1, [x1, #-16]
-    BLEND
-    mov     x15, x1                 // counts as a run of one block
-    mov     x16, #1
+    csinc   x17, xzr, x17, ne
+    mov     x15, x1
+    cmp     x17, #2
+    b.hs    Lgrow                   // third in a row: start a run
+    mov     x16, #1                 // that run will be four blocks
+    // If neither half has more than two selected (w with its lowest set bit
+    // cleared has at most one bit left), store to the highest and the lowest
+    // selected element of each half: four stores, still without loading x.
+    // An empty half repeats its previous store.
+    sub     x6, x4, #1
+    and     x6, x6, x4
+    sub     x7, x6, #1
+    tst     x7, x6
+    b.ne    Lblend
+    sub     x6, x5, #1
+    and     x6, x6, x5
+    sub     x7, x6, #1
+    tst     x7, x6
+    b.ne    Lblend
+    clz     x6, x4
+    sub     x6, x0, x6
+    cmp     x4, #0
+    csel    x10, x6, x10, ne
+    stur    d0, [x10, #63]          // first half, highest
+    rbit    x6, x4
+    clz     x6, x6                  // 8 * index of the lowest set byte
+    add     x6, x0, x6
+    add     x7, x10, #63
+    csel    x6, x6, x7, ne
+    str     d0, [x6]                // first half, lowest
+    clz     x6, x5
+    sub     x6, x0, x6
+    cmp     x5, #0
+    csel    x8, x6, x8, ne
+    stur    d0, [x8, #127]          // second half, highest
+    rbit    x6, x5
+    clz     x6, x6
+    add     x6, x0, x6
+    add     x7, x8, #63
+    csel    x6, x6, x7, ne
+    str     d0, [x6, #64]           // second half, lowest
     add     x0, x0, #128
     subs    x3, x3, #16
     b.hs    Lloop
     b       Ltail
+
+Lblend:
+    // Blend this block alone and carry on testing. x10 and x8 stay valid:
+    // with more than one byte set clz still finds a selected element.
+    ldur    q1, [x1, #-16]
+    BLEND
+    add     x0, x0, #128
+    subs    x3, x3, #16
+    b.hs    Lloop
+    b       Ltail
+
 Lgrow:
-    // Directly after a run: blend four times as many blocks as that run asked
-    // for (at most 64), but never more than the full blocks that are left.
+    // Blend four times as many blocks as the last run asked for (at most 64),
+    // but never more than the full blocks that are left.
     mov     x1, x7                  // back to this block
     lsl     x6, x16, #2
     mov     x7, #64
