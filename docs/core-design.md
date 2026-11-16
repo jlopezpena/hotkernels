@@ -2,7 +2,7 @@
 
 This is a proposal for review. Nothing here is implemented yet.
 
-It covers the proof of concept only: a trustworthy judge, a survey of where NumPy is slow, and three kernels delivered end to end. Everything beyond that is listed under [Later](#later) without a plan.
+It covers the proof of concept only: a trustworthy judge, a survey of where NumPy is slow, and the surveyed kernels delivered end to end. Everything beyond that is listed under [Later](#later) without a plan.
 
 ## What we are building
 
@@ -13,7 +13,7 @@ import hotkernels
 hotkernels.install()
 ```
 
-Behind that line sits a set of hand-written assembly kernels. Each kernel is written and tuned by a coding agent, and it is only shipped if an automated judge confirms it is correct against NumPy and faster than both NumPy and a naive C version compiled with `clang -O3`.
+Behind that line sits a set of kernels. Each one is checked by an automated judge and only shipped if it is correct against NumPy and faster than NumPy. Where a naive C loop compiled with `clang -O3` is enough, the kernel is that C. Where hand-written assembly, written and tuned by a coding agent, beats the C as well, the kernel is the assembly.
 
 The first target is ARM64 NEON on Apple Silicon. x86-64 is planned and will be developed on a separate x86 machine, so the design keeps architectures apart from the start (see [Architectures](#architectures)).
 
@@ -28,7 +28,7 @@ Priorities, in order:
 1. **No friction.** One install command, one line to enable. No code changes, no configuration, no build step for the user.
 2. **Correct by a declared standard.** Every kernel declares how its output is compared with NumPy's (see [Correctness policy](#correctness-policy)). Exact is the default.
 3. **Never break anything.** If a kernel does not handle an input (dtype, memory layout, size, platform), the call goes to NumPy untouched. On an unsupported machine, `install()` does nothing.
-4. **Only ship real wins.** A kernel must beat NumPy and the naive C baseline. Matching the compiler is a loss, because C is easier to maintain.
+4. **Only ship real wins.** A kernel must beat NumPy. Assembly is shipped only when it also beats the naive C baseline; when it merely matches the compiler, the C is shipped instead, because C is easier to maintain.
 5. **Visible, reversible.** The user can see what was patched, how often each kernel ran, which kernels are inexact, and undo it all.
 
 ## What we know so far
@@ -56,13 +56,13 @@ A kernel is a directory:
 kernels/<name>/
   spec.py          signature, dtypes, NumPy oracle, correctness mode
   naive.c          naive C reference: the simplest correct loop
-  arm64/kernel.s   hand-written NEON
+  arm64/kernel.s   hand-written NEON (absent for a kernel shipped as C)
   x86_64/kernel.s  hand-written AVX (added later, on the x86 machine)
   attempts.md      log of what was tried and what the judge said
 ```
 
 - `spec.py` and `naive.c` are shared by all architectures.
-- `naive.c` has two jobs: it is the baseline the assembly must beat, and a second check on correctness alongside NumPy.
+- `naive.c` has three jobs: it is the baseline the assembly must beat, a second check on correctness alongside NumPy, and the shipped implementation when no assembly beats it.
 - `attempts.md` records every iteration, including failures, so later runs do not repeat dead ends.
 
 ## Correctness policy
@@ -113,15 +113,17 @@ Find out where NumPy is actually slow on ARM64 before choosing what to write. Nu
 - Measure NumPy's fixed per-call overhead on tiny arrays separately, since that is a different kind of win.
 - Rank candidates by how far NumPy is behind C, and by whether a known SIMD technique exists that the compiler will not find.
 
-**Exit criterion:** a ranked shortlist with numbers, and three kernels chosen for phase 3.
+**Exit criterion:** a ranked shortlist with numbers. Every candidate on it goes forward to phase 3; none is dropped in advance.
 
-### Phase 3: three kernels, end to end
+**Status:** a first pass is in [survey-design.md](survey-design.md): ten assembly candidates and six C-only candidates, with numbers.
 
-Take the three chosen kernels from assembly to `install()`.
+### Phase 3: the shortlisted kernels, end to end
+
+Take the shortlisted kernels to `install()`, in the order given in [survey-design.md](survey-design.md). Each candidate is tried; the judge decides whether it ships as assembly, as C, or not at all.
 
 **How:**
 
-- Prove the delivery path with the first kernel before writing the other two:
+- Prove the delivery path with the first kernel before writing the others:
   - Build a real C extension module for the binding. No `ctypes`.
   - Establish which patching mechanisms work on current NumPy. There are three, and each reaches different calls:
 
@@ -138,7 +140,7 @@ Take the three chosen kernels from assembly to `install()`.
 
 **Exit criterion:**
 
-- Three kernels beat both NumPy and the naive C baseline under the judge.
+- Every shortlisted candidate has a recorded verdict from the judge: shipped as assembly (beats NumPy and naive C), shipped as C (beats NumPy), or rejected with the reason logged.
 - An unmodified script runs faster after adding the one line, with output that meets each kernel's correctness mode, and `report()` shows the kernels being hit.
 - The overhead of a patched call that falls back is measured and negligible.
 
@@ -168,3 +170,5 @@ Mentioned so they are not forgotten. None of these is planned here.
 | How hands-on with the assembly? | Gains first, via `/goal` iteration; understanding later |
 | Other platforms | x86-64 planned on a separate machine; Linux ARM64 out of scope |
 | Agent loop as its own phase? | No; it is the judge, the contract and `AGENTS.md` |
+| Ship plain C kernels? | Yes, when C beats NumPy and assembly does not beat the C |
+| How many kernels in phase 3? | All shortlisted candidates are tried, not a chosen three |
