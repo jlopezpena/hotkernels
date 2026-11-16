@@ -69,6 +69,7 @@ Lsmall_loop:
     and     x4, x4, #7
     b       Ltail
 Lbig:
+    add     v21.2d, v18.2d, v18.2d      // 16, twice
     adrp    x12, Lbit_shifts@PAGE
     ldr     q19, [x12, Lbit_shifts@PAGEOFF]
     mov     x17, #0x8000000000000000
@@ -188,40 +189,57 @@ Lsparse_more:                           // more than 6 true bytes in this 64
     stp     x8, x15, [x5, #80]
     b       Lsparse_next
 Lsparse_fail:
-    mov     x14, #8
-Ldense:                                 // run x14 blocks of 8 bytes, all inside the mask
-    dup     v17.2d, x3                  // index of the block's first element, twice
+    mov     x14, #4
+Ldense:                                 // run x14 steps of 16 bytes, all inside the mask
+    dup     v17.2d, x3                  // index of the step's first element, twice
+    add     v20.2d, v17.2d, v18.2d      // and of its ninth
     mov     x13, x5
     mov     x16, x14
 Ldense_loop:
-    ldr     x6, [x0], #8                // eight mask bytes
+    ldp     x6, x15, [x0], #16          // sixteen mask bytes
     mul     x7, x6, x10
     mul     x8, x6, x11
+    mul     x12, x15, x10
+    mul     x15, x15, x11
     lsr     x7, x7, #56                 // 8-bit mask
-    lsr     x8, x8, #56                 // 8 * (number of true bytes)
+    lsr     x12, x12, #56
     ldr     d0, [x9, x7, lsl #3]        // positions of the true bytes
+    ldr     d16, [x9, x12, lsl #3]
+    lsr     x8, x8, #56                 // 8 * (number of true bytes)
+    lsr     x15, x15, #56
     ushll   v0.8h, v0.8b, #0
+    ushll   v16.8h, v16.8b, #0
     ushll   v1.4s, v0.4h, #0
     ushll2  v2.4s, v0.8h, #0
+    ushll   v7.4s, v16.4h, #0
+    ushll2  v16.4s, v16.8h, #0
     uaddw   v3.2d, v17.2d, v1.2s
     uaddw2  v4.2d, v17.2d, v1.4s
     uaddw   v5.2d, v17.2d, v2.2s
     uaddw2  v6.2d, v17.2d, v2.4s
     stp     q3, q4, [x5]
     stp     q5, q6, [x5, #32]
-    add     v17.2d, v17.2d, v18.2d
     add     x5, x5, x8
+    uaddw   v3.2d, v20.2d, v7.2s
+    uaddw2  v4.2d, v20.2d, v7.4s
+    uaddw   v5.2d, v20.2d, v16.2s
+    uaddw2  v6.2d, v20.2d, v16.4s
+    stp     q3, q4, [x5]
+    stp     q5, q6, [x5, #32]
+    add     x5, x5, x15
+    add     v17.2d, v17.2d, v21.2d
+    add     v20.2d, v20.2d, v21.2d
     subs    x14, x14, #1
     b.ne    Ldense_loop
-    add     x3, x3, x16, lsl #3
+    add     x3, x3, x16, lsl #4
     cmp     x0, x4
     b.hi    Lrest
     sub     x13, x5, x13                // 8 * (true bytes in this stretch)
-    cmp     x13, x16, lsl #3
+    cmp     x13, x16, lsl #4
     b.ls    Lsparse                     // at most one in eight was true
     sub     x14, x2, x0                 // else a longer dense stretch
-    lsr     x14, x14, #3
-    mov     x15, #64
+    lsr     x14, x14, #4
+    mov     x15, #32
     cmp     x14, x15
     csel    x14, x14, x15, lo
     b       Ldense
