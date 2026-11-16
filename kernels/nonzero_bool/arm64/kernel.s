@@ -1,35 +1,124 @@
 // size_t nonzero_bool(const bool *mask, int64_t *out, size_t n);
 // Writes the index of every true mask byte to out, ascending. Returns how many.
 //
-// Eight mask bytes per step. The bytes (each 0 or 1) are loaded as one 64-bit
-// word. One multiplication packs them into an 8-bit number, another gives the
-// number of true bytes (times 8). The 8-bit number indexes a table whose entry
-// lists the positions of the true bytes, in order, as eight bytes. Those are
-// widened to 64 bits, added to the index of the block's first element, and all
-// eight are stored at the write pointer. The ones past the true count are
-// rubbish that the next store overwrites (`out` is a scratch buffer).
+// Two ways of handling a stretch of mask bytes, chosen by how many are true.
 //
-// The 64-byte store is inside the capacity because the write position never
-// runs ahead of the read position.
+// Sparse (64 bytes per step): the 64 bytes (each 0 or 1) are packed into a
+// 64-bit word, one bit per byte, and the true ones are counted. If at most
+// 8 are true, the positions of the 8 lowest set bits are extracted one
+// after another, with no branches, and stored; the ones past the true count are
+// rubbish that the next store overwrites (`out` is a scratch buffer). If more
+// are true, the dense code handles those 64 bytes.
+//
+// Dense (8 bytes per step): the bytes are loaded as one 64-bit word. One
+// multiplication packs them into an 8-bit number, another gives the true count
+// (times 8). The 8-bit number indexes a table whose entry lists the positions
+// of the true bytes, in order, as eight bytes. Those are widened to 64 bits,
+// added to the index of the block's first element, and all eight are stored at
+// the write pointer.
+//
+// After a dense stretch the fraction of true bytes in it decides what handles
+// the next bytes: sparse if at most one in eight was true, else a longer dense
+// stretch. Stores are always inside the capacity because the write position
+// never runs ahead of the read position.
 .text
 .globl _nonzero_bool
 .p2align 2
 _nonzero_bool:
     mov     x5, x1                      // x5 = write pointer
     mov     x3, #0                      // x3 = index of the next mask byte
-    subs    x4, x2, #8                  // x4 = elements left after this block
-    b.lo    Ltail_setup
+    mov     x4, x2                      // x4 = mask bytes left
+    cmp     x2, #8
+    b.lo    Ltail
     adrp    x9, Lpositions@PAGE
     add     x9, x9, Lpositions@PAGEOFF
+    adrp    x10, Lbit_shifts@PAGE
+    ldr     q19, [x10, Lbit_shifts@PAGEOFF]
     mov     x10, #0x4080                // 0x0102040810204080: gathers the low
     movk    x10, #0x1020, lsl #16       // bit of each byte into the top byte
     movk    x10, #0x0408, lsl #32
     movk    x10, #0x0102, lsl #48
     mov     x11, #0x0808080808080808    // sums the bytes, times 8, into the top byte
-    movi    v17.2d, #0                  // index of the block's first element, twice
     mov     w12, #8
     dup     v18.2d, x12
-Lloop8:
+    cmp     x4, #64
+    b.lo    Lrest
+Lsparse:                                // at least 64 bytes left
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ushl    v0.16b, v0.16b, v19.16b     // byte j becomes bit (j mod 8)
+    ushl    v1.16b, v1.16b, v19.16b
+    ushl    v2.16b, v2.16b, v19.16b
+    ushl    v3.16b, v3.16b, v19.16b
+    addp    v0.16b, v0.16b, v1.16b      // three rounds of pairwise sums
+    addp    v2.16b, v2.16b, v3.16b      // leave one byte per 8 mask bytes
+    addp    v0.16b, v0.16b, v2.16b
+    addp    v0.16b, v0.16b, v0.16b
+    cnt     v1.8b, v0.8b
+    fmov    x6, d0                      // bit j = mask byte j
+    addv    b1, v1.8b
+    fmov    w7, s1                      // number of true bytes
+    cmp     w7, #8
+    b.hi    Lsparse_fail
+    rbit    x8, x6
+    clz     x8, x8                      // position of the lowest set bit (64 if none)
+    add     x8, x8, x3
+    sub     x12, x6, #1
+    and     x6, x6, x12                 // clear the lowest set bit
+    rbit    x15, x6
+    clz     x15, x15                      // position of the lowest set bit (64 if none)
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #0]
+    sub     x12, x6, #1
+    and     x6, x6, x12                 // clear the lowest set bit
+    rbit    x8, x6
+    clz     x8, x8                      // position of the lowest set bit (64 if none)
+    add     x8, x8, x3
+    sub     x12, x6, #1
+    and     x6, x6, x12                 // clear the lowest set bit
+    rbit    x15, x6
+    clz     x15, x15                      // position of the lowest set bit (64 if none)
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #16]
+    sub     x12, x6, #1
+    and     x6, x6, x12                 // clear the lowest set bit
+    rbit    x8, x6
+    clz     x8, x8                      // position of the lowest set bit (64 if none)
+    add     x8, x8, x3
+    sub     x12, x6, #1
+    and     x6, x6, x12                 // clear the lowest set bit
+    rbit    x15, x6
+    clz     x15, x15                      // position of the lowest set bit (64 if none)
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #32]
+    sub     x12, x6, #1
+    and     x6, x6, x12                 // clear the lowest set bit
+    rbit    x8, x6
+    clz     x8, x8                      // position of the lowest set bit (64 if none)
+    add     x8, x8, x3
+    sub     x12, x6, #1
+    and     x6, x6, x12                 // clear the lowest set bit
+    rbit    x15, x6
+    clz     x15, x15                      // position of the lowest set bit (64 if none)
+    add     x15, x15, x3
+    stp     x8, x15, [x5, #48]
+    add     x5, x5, x7, lsl #3
+    add     x0, x0, #64
+    add     x3, x3, #64
+    sub     x4, x4, #64
+    cmp     x4, #64
+    b.hs    Lsparse
+Lrest:                                  // fewer than 64 bytes left
+    lsr     x14, x4, #3
+    cbnz    x14, Ldense
+    b       Ltail
+Lsparse_fail:
+    mov     x14, #8
+Ldense:                                 // run x14 blocks of 8 bytes; x14 * 8 <= x4
+    dup     v17.2d, x3                  // index of the block's first element, twice
+    mov     x13, x5
+    mov     x16, x14
+Ldense_loop:
     ldr     x6, [x0], #8                // eight mask bytes
     mul     x7, x6, x10
     mul     x8, x6, x11
@@ -47,29 +136,42 @@ Lloop8:
     stp     q5, q6, [x5, #32]
     add     v17.2d, v17.2d, v18.2d
     add     x5, x5, x8
-    subs    x4, x4, #8
-    b.hs    Lloop8
-    fmov    x3, d17                     // index of the next mask byte
-Ltail_setup:
-    adds    x4, x4, #8                  // 0 to 7 elements left
-    b.eq    Ldone
-Ltail:
+    subs    x14, x14, #1
+    b.ne    Ldense_loop
+    add     x3, x3, x16, lsl #3
+    sub     x4, x4, x16, lsl #3
+    cmp     x4, #64
+    b.lo    Lrest
+    sub     x13, x5, x13                // 8 * (true bytes in this stretch)
+    cmp     x13, x16, lsl #3
+    b.ls    Lsparse                     // at most one in eight was true
+    lsr     x14, x4, #3                 // else a longer dense stretch
+    mov     x15, #64
+    cmp     x14, x15
+    csel    x14, x14, x15, lo
+    b       Ldense
+Ltail:                                  // 0 to 7 bytes left
+    cbz     x4, Ldone
+Ltail_loop:
     ldrb    w6, [x0], #1
     str     x3, [x5]
     add     x3, x3, #1
     add     x5, x5, x6, lsl #3
     subs    x4, x4, #1
-    b.ne    Ltail
+    b.ne    Ltail_loop
 Ldone:
     sub     x0, x5, x1
     lsr     x0, x0, #3
     ret
 
+.section __TEXT,__const
+.p2align 4
+// Left-shift amounts that give each of 8 consecutive bytes its own bit.
+Lbit_shifts:
+    .byte 0,1,2,3,4,5,6,7,0,1,2,3,4,5,6,7
 // For each 8-bit mask (bit j is mask byte j): the positions of its set bits,
 // in ascending order, one byte each. Unused bytes are zero. The comment shows
 // mask bytes 0 to 7.
-.section __TEXT,__const
-.p2align 3
 Lpositions:
     .byte 0,0,0,0,0,0,0,0  // 00000000
     .byte 0,0,0,0,0,0,0,0  // 10000000
