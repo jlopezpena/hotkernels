@@ -74,3 +74,27 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
 - **compare:** significantly faster, 1.01x [1.01 – 1.01]
 - **Kept:** yes
 - **Notes:** 1.02x to 1.03x up to 4,096, 1.00x to 1.01x above.
+
+## 6. From 1M points, prefetch `fp` for the whole group before stage 2
+
+- **Idea:** far beyond the cache every `fp[jc]` load of stage 2 is a miss and
+  only about thirty queries fit in the out-of-order window. Once stage 1 has
+  written the 64 indices, issue `prfm` for all 64 `fp[jc]` before the
+  arithmetic starts. Only when n >= 1,048,576.
+- **check:** pass
+- **compare:** significantly faster, 1.01x [1.01 – 1.01]
+- **Kept:** yes
+- **Notes:** 1.02x to 1.03x from 1M, unchanged below. Without the size test
+  it was 0.92x to 0.97x locally from 64 to 262,144 (the prefetches take load
+  ports and the data is already in the cache), so the test stays.
+
+## 7. Two search steps per load of the queries (rejected on local timing)
+
+- **Idea:** as attempt 8 of `searchsorted_f64`: do two consecutive search
+  steps for each four queries so the queries are loaded once per two steps.
+- **check:** not run through the judge (local harness: correct)
+- **compare:** not run through the judge; locally 0.96x to 0.97x from 64 to
+  65,536
+- **Kept:** no
+- **Notes:** the same result as in `searchsorted_f64`: the doubled dependency
+  chain per register costs more than the saved loads.

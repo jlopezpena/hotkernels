@@ -481,6 +481,23 @@ Lg64_pass:
     stp     q24, q25, [x6, #480]
     mov     x5, x9
     mov     x7, #64
+    // Far beyond the cache the fp loads of stage 2 are misses: start
+    // them all now. (Below that the extra loads only cost time.)
+    mov     x8, #1048576
+    cmp     x4, x8
+    b.lo    Lp2
+    mov     x8, #0
+Lg64_pf:
+    add     x0, x6, x8
+    ldp     x10, x16, [x0]
+    ldp     x17, x0, [x0, #16]
+    prfm    pldl1keep, [x2, x10, lsl #3]
+    prfm    pldl1keep, [x2, x16, lsl #3]
+    prfm    pldl1keep, [x2, x17, lsl #3]
+    prfm    pldl1keep, [x2, x0, lsl #3]
+    add     x8, x8, #32
+    cmp     x8, #512
+    b.lo    Lg64_pf
     b       Lp2
 
     // 16 <= n < 64: for sixteen queries at once, compare every element of a
