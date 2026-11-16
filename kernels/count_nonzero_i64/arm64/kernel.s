@@ -53,6 +53,16 @@
     ldp     q6, q7, [\base, #\off + 96]
 .endm
 
+// The same with `ldnp`, the load that hints the data will not be needed again
+// soon. Used in the main loop: it costs nothing while the array fits in the
+// caches and is a few percent faster once it does not.
+.macro LOAD16_STREAM base, off
+    ldnp    q0, q1, [\base, #\off]
+    ldnp    q2, q3, [\base, #\off + 32]
+    ldnp    q4, q5, [\base, #\off + 64]
+    ldnp    q6, q7, [\base, #\off + 96]
+.endm
+
 // \dst = minus the sum of the 16-bit lanes of v16 and v17, plus x6.
 // Clobbers v0, v16 and x7.
 .macro REDUCE dst
@@ -129,9 +139,9 @@ Lblock:
     csel    x5, x4, x5, lo          // steps in this block
     sub     x4, x4, x5
 Lstep:
-    LOAD16  x0, 0
+    LOAD16_STREAM x0, 0
     COUNT16 16
-    LOAD16  x0, 128
+    LOAD16_STREAM x0, 128
     add     x0, x0, #256
     COUNT16 17
     subs    x5, x5, #1
