@@ -79,3 +79,43 @@
 - **compare:** significantly faster, 1.016x [1.008 – 1.021] (a first, noisy run gave 1.020x [0.971 – 1.024])
 - **Kept:** yes
 - **Notes:** 1,024: 36.2 -> 33.0 ns (1.10x), 4,096 and 16,384: 1.04x, 256: 1.02x; no change once the data is outside the first-level cache. Side effects: the super-block loop is gone, a NaN is now noticed within its own 64-element block, and block numbers no longer limit n.
+
+## 11. Reduce each block to a scalar with two `fmaxp` instead of `fmaxv`
+
+- **Idea:** `fmaxp` on the vector, then scalar `fmaxp` on the low pair, in case `fmaxv` is the slower way to fold four lanes.
+- **check:** pass
+- **compare:** no significant difference, 1.002x [0.994 – 1.006]
+- **Kept:** no
+- **Notes:** mixed: 256 was 6% faster (12.8 -> 12.1 ns) but 1,024 and 4,096 were 3 to 4% slower. The change is one instruction, so part of this is probably code placement.
+
+## 12. Align the block loop to 64 bytes
+
+- **Idea:** check whether the mixed result of attempt 11 was code placement.
+- **check:** pass
+- **compare:** no significant difference, 1.002x [0.994 – 1.006]
+- **Kept:** no
+- **Notes:** no size moved, so placement is not what attempt 11 saw.
+
+## 13. Peel the block that ends at n and give only it the two-`fmaxp` reduction
+
+- **Idea:** if attempt 11 helped 256 through latency (the rescan waits for the last block's result), keep `fmaxv` in the loop and use the pairwise form only for the last block. The loop then covers every whole block except one ending at n, and the block ending at n always runs separately, which also removes the tail flag.
+- **check:** pass
+- **compare:** no significant difference, 0.998x [0.994 – 1.004]
+- **Kept:** no
+- **Notes:** 256 gained only 1%, so the 6% in attempt 11 came from using the pairwise form in every block, not from the last block's latency. Not understood; not pursued, since the same form costs 3 to 4% at 1,024 and 4,096.
+
+## 14. Shallower end of the rescan: four nibble masks and a `csel` tree
+
+- **Idea:** probes outside the judge (timed like the judge, cycling through a pool of inputs) split the rescan's cost at 256 into about 10 cycles of work and 4 cycles of waiting for the best-block pointer, so latency after the loop looked worth buying. Replace `and` + three levels of `addp` + one `fmov` by `shrn #4` on each of the four byte vectors, four `fmov` to general registers, and a `cmp`/`csel` tree that picks the first non-empty group before `rbit` + `clz`. One vector operation and the constant load fewer, eleven integer operations more, a shorter chain on paper.
+- **check:** pass
+- **compare:** significantly slower, 0.994x [0.989 – 1.000]
+- **Kept:** no
+- **Notes:** 256: 13.2 -> 13.6 ns, 4,096: 117.3 -> 122.8 ns. Four vector-to-integer moves cost more than the `addp` levels they replace. The single-`fmov` bit mask stays.
+
+## 15. Straight-line path for 128 < n <= 256 over sixteen quads
+
+- **Idea:** on argmax_f64 the dedicated two-step path for 64 doubles beats the block loop by 30% (6.3 ns against 9 ns, measured outside the judge). The same bytes for float32 are 129..256 elements: build sixteen quad maxima (eight from the start, eight ending at n), take the maximum, find the first quad that holds it from one 64-bit mask, then compare that quad's 16 elements. 68 loads and 111 vector operations instead of 80 and 114, and no per-block scalar work.
+- **check:** pass
+- **compare:** significantly faster, 1.006x [1.004 – 1.008], repeated: 1.005x [1.004 – 1.005]
+- **Kept:** yes
+- **Notes:** n = 256 goes from 13.2 to 12.5 ns (1.05x, 1.04x on the repeat); no other timed size changes. Only 256 is timed in this range, so the gain for 129..255 is not measured, only checked for correctness. 65..128 still uses the block loop; a matching eight-quad class would be the natural next step but no timed size falls in it.
