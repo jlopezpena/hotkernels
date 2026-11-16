@@ -1,6 +1,6 @@
 # Working in this repository
 
-hotkernels is a set of hand-written assembly kernels for NumPy operations, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project and [docs/judge-design.md](docs/judge-design.md) for the judge.
+hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project and [docs/judge-design.md](docs/judge-design.md) for the judge.
 
 This file is for coding agents. The first half applies to any work here; the second half applies when you are writing or tuning a kernel.
 
@@ -95,7 +95,7 @@ The failure categories:
 A kernel is a pure leaf function over the buffers it is given. The judge enforces all of this:
 
 - **No reads or writes outside the buffers, by even one byte.** This is strict: loading a full vector that extends past the end of an array is a failure, even though it would usually be harmless. Handle leftover elements inside the buffer, for example with a scalar loop, or with a final vector that overlaps the previous one and ends exactly at the end of the array.
-- **Inputs are read-only.** Writing to an input buffer crashes.
+- **Inputs are read-only.** Writing to an input buffer crashes. A buffer the spec declares `InOut` is the exception: the kernel reads and modifies it in place, and may store an element's own bits back to it.
 - **Write only the output you report.** If the kernel returns a count, it must not write beyond that many elements. The one exception is an output the spec declares `scratch=True`: there the kernel may write anywhere inside the buffer's capacity, and only the reported elements have to be right. Writing past the capacity is always a failure. Check `spec.py` before relying on this; the default is strict.
 - **No function calls, no system calls, no writable data.** Read-only constants are fine (`.section __TEXT,__const` or `__TEXT,__literal16`).
 - **Export exactly one symbol:** the kernel itself.
@@ -105,7 +105,8 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 
 - The symbol for C function `foo` is `_foo`. Declare it with `.globl _foo` and align with `.p2align 2`.
 - Labels that start with `L` are local to the file. Use them for everything except the kernel symbol.
-- Arguments arrive in `x0` to `x7` (integers and pointers) and `v0` to `v7` (floating point). The result goes in `x0` or `v0`.
+- Arguments arrive in `x0` to `x7` (integers and pointers) and `v0` to `v7` (floating point). The result goes in `x0` or `v0`. The two kinds are numbered separately: in `f(double *x, size_t n, double lo, double hi)` the pointer is `x0`, `n` is `x1`, `lo` is `d0` and `hi` is `d1`.
+- A leaf kernel may use stack memory below `sp` if it restores `sp` before returning and keeps it 16-byte aligned while it is moved.
 - You may freely use `x0` to `x17` and `v0` to `v7`, `v16` to `v31`.
 - You must preserve `x19` to `x28`, `x29`, the stack pointer, and the low 64 bits of `v8` to `v15`. Prefer not to use them at all.
 - Never use `x18`. The platform reserves it.
