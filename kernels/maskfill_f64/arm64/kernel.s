@@ -13,8 +13,8 @@
 // The 16 mask bytes are read as two 64-bit words. A word with at most one
 // byte set satisfies w & (w - 1) == 0, and clz gives the position of that
 // byte. Each half then does exactly one 8-byte store of value: to its selected
-// element, or, when it has none, to the element most recently selected (which
-// already holds value). Nothing is loaded from x and no unselected element is
+// element, or, when it has none, to the element that half selected most
+// recently (which already holds value). Nothing is loaded from x and no unselected element is
 // written, and there is still no branch per element.
 //
 // Every block reached by Ltest is tested; a block that fails the test starts a
@@ -23,9 +23,9 @@
 // a dense mask pays for one test per 64 blocks and a sparse mask loses little
 // to an isolated dense block. The first block is always blended.
 //
-// The address of the most recently selected element is not known until one is
-// found, so after a run Lscan skips blocks with no mask byte set (touching
-// nothing) and starts the address chain at the first block that has one.
+// The address of a selected element is not known until one is found, so after
+// a run Lscan skips blocks with no mask byte set (touching nothing) and starts
+// the address chains at the first block that has one.
 //
 // The leftover (n mod 16) is handled by one more block that ends exactly at
 // the end of the arrays and overlaps the previous one; doing a block twice
@@ -42,30 +42,8 @@ Lidx:
     .byte 12,12,12,12,12,12,12,12, 13,13,13,13,13,13,13,13
     .byte 14,14,14,14,14,14,14,14, 15,15,15,15,15,15,15,15
 
-.text
-.globl _maskfill_f64
-.p2align 2
-_maskfill_f64:
-    cmp     x2, #16
-    b.lo    Lsmall
-    adrp    x8, Lidx@PAGE
-    add     x8, x8, Lidx@PAGEOFF
-    ldp     q16, q17, [x8]
-    ldp     q18, q19, [x8, #32]
-    ldp     q20, q21, [x8, #64]
-    ldp     q22, q23, [x8, #96]
-    dup     v0.2d, v0.d[0]          // value in both lanes
-    add     x12, x0, x2, lsl #3     // end of x
-    add     x13, x1, x2             // end of mask
-    // x3 = (elements from x1 onwards) - 16, for the x1 that follows the
-    // current run; negative when no full block is left.
-    sub     x3, x2, #32
-    mov     x14, #1                 // blocks in this run
-    mov     x16, #1                 // length the last run asked for
-    add     x15, x1, #16            // mask address where the last run ends
-
-Lrun:                               // blend x14 blocks without testing them
-    ldr     q1, [x1], #16
+// Blend the 16 elements at x0 with the 16 raw mask bytes in v1.
+.macro BLEND
     ldp     q24, q25, [x0]
     ldp     q26, q27, [x0, #32]
     ldp     q28, q29, [x0, #64]
@@ -91,6 +69,33 @@ Lrun:                               // blend x14 blocks without testing them
     stp     q4, q5, [x0, #32]
     stp     q6, q7, [x0, #64]
     stp     q24, q25, [x0, #96]
+.endm
+
+.text
+.globl _maskfill_f64
+.p2align 2
+_maskfill_f64:
+    cmp     x2, #16
+    b.lo    Lsmall
+    adrp    x8, Lidx@PAGE
+    add     x8, x8, Lidx@PAGEOFF
+    ldp     q16, q17, [x8]
+    ldp     q18, q19, [x8, #32]
+    ldp     q20, q21, [x8, #64]
+    ldp     q22, q23, [x8, #96]
+    dup     v0.2d, v0.d[0]          // value in both lanes
+    add     x12, x0, x2, lsl #3     // end of x
+    add     x13, x1, x2             // end of mask
+    // x3 = (elements from x1 onwards) - 16, for the x1 that follows the
+    // current run; negative when no full block is left.
+    sub     x3, x2, #32
+    mov     x14, #1                 // blocks in this run
+    mov     x16, #1                 // length the last run asked for
+    add     x15, x1, #16            // mask address where the last run ends
+
+Lrun:                               // blend x14 blocks without testing them
+    ldr     q1, [x1], #16
+    BLEND
     add     x0, x0, #128
     subs    x14, x14, #1
     b.ne    Lrun
@@ -112,52 +117,69 @@ Ltail:
     b       Lscan
 
 Lfound:
-    // Start the address chain. x8 + 63 is the address of the selected element
-    // in the second half; if that half has none, the first half has one and
-    // Ltest never uses this x8.
-    add     x9, x0, #64             // second half of the block
-    clz     x8, x5
-    sub     x8, x9, x8
+    // Start the two address chains (see Ltest) from this block, which has a
+    // selected element. Each half's chain is given the other half's element;
+    // if that half is empty the value is wrong, but then this half is not
+    // empty and Ltest replaces it before it is used.
+    clz     x6, x5
+    sub     x10, x0, x6
+    add     x10, x10, #64           // second half's element, for the first half
+    clz     x7, x4
+    sub     x8, x0, x7
+    sub     x8, x8, #64             // first half's element, for the second half
     b       Ltest
 
 Lloop:
     ldp     x4, x5, [x1], #16
 Ltest:
     // For a word w of 0/1 bytes with one byte set, at byte k: clz(w) = 63 - 8k,
-    // so (base - clz(w)) + 63 = base + 8k, the address of element k.
-    // subs leaves the carry set exactly when w != 0.
+    // so x0 - clz(w) is the address of element k minus 63 (first half) or
+    // minus 127 (second half). x10 and x8 hold that for the element each half
+    // selected most recently, in the same biased form. subs leaves the carry
+    // set exactly when w != 0, and w & (w - 1) is non-zero when more than one
+    // byte is set.
     subs    x6, x4, #1
-    clz     x10, x4
-    sub     x10, x0, x10
-    csel    x10, x10, x8, hs        // first half: its element, or the previous one
-    and     x6, x6, x4              // non-zero when more than one byte is set
-    subs    x7, x5, #1
-    clz     x11, x5
-    sub     x11, x9, x11
-    csel    x8, x11, x10, hs        // second half likewise
-    and     x7, x7, x5
-    orr     x6, x6, x7
-    cbnz    x6, Ldense
+    clz     x7, x4
+    sub     x7, x0, x7
+    csel    x10, x7, x10, hs        // first half: its element, or the previous one
+    tst     x6, x4
+    b.ne    Ldense
+    subs    x6, x5, #1
+    clz     x7, x5
+    sub     x7, x0, x7
+    csel    x8, x7, x8, hs          // second half likewise
+    tst     x6, x5
+    b.ne    Ldense
     stur    d0, [x10, #63]
-    stur    d0, [x8, #63]
+    stur    d0, [x8, #127]
     add     x0, x0, #128
-    add     x9, x9, #128
     subs    x3, x3, #16
     b.hs    Lloop
     b       Ltail
 
 Ldense:
-    // Blend this block and the ones after it: four times the last run if this
-    // block follows it directly (at most 64), otherwise one block; never more
-    // than the full blocks that are left. x8 stays valid: with more than one
-    // byte set clz still finds a selected element.
-    sub     x1, x1, #16             // back to this block
+    sub     x7, x1, #16             // this block's mask bytes
+    cmp     x7, x15
+    b.eq    Lgrow
+    // Not directly after a run: blend this block alone and carry on testing.
+    // x10 and x8 stay valid: with more than one byte set clz still finds a
+    // selected element.
+    ldur    q1, [x1, #-16]
+    BLEND
+    mov     x15, x1                 // counts as a run of one block
+    mov     x16, #1
+    add     x0, x0, #128
+    subs    x3, x3, #16
+    b.hs    Lloop
+    b       Ltail
+Lgrow:
+    // Directly after a run: blend four times as many blocks as that run asked
+    // for (at most 64), but never more than the full blocks that are left.
+    mov     x1, x7                  // back to this block
     lsl     x6, x16, #2
     mov     x7, #64
     cmp     x6, #64
-    csel    x6, x6, x7, lo
-    cmp     x1, x15
-    csinc   x16, x6, xzr, eq
+    csel    x16, x6, x7, lo
     lsr     x14, x3, #4
     add     x14, x14, #1            // full blocks left, this one included
     cmp     x14, x16
