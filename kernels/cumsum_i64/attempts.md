@@ -112,3 +112,91 @@ the core.
     this form beat them: attempt 3 unrolled to 16 per iteration, 3.65 to 3.70;
     a 13-add variant with the carried chain three adds deep per 8 elements,
     3.76 to 3.82.
+
+## 7. Software prefetch of the input
+
+- **Idea:** two `prfm pldl1keep` per iteration, 512 bytes ahead of the loads,
+  to help once the data no longer fits in the first-level cache.
+- **check:** pass
+- **compare:** significantly slower, 0.98x [0.97 – 0.99]
+- **Kept:** no
+- **Notes:** 0.94x to 0.97x from 16 to 4,096 and 0.95x at 65,536 (two extra
+  instructions per iteration and nothing gained); no significant difference
+  from 1,048,576 up. In the standalone timer, distances of 256, 1,024, 2,048
+  and 4,096 bytes and `pldl2keep` were no better at any size, and 2,048 and
+  4,096 were far worse at 4,194,304 and above (0.69x and 0.35x). Prefetching
+  the output with `pstl1keep` was worse everywhere (0.80x at 65,536, 0.27x at
+  16,777,216, measured on the attempt 3 loop). The hardware prefetcher already
+  follows both streams.
+
+## 8. A second loop with fewer overlapping loads for large arrays
+
+- **Idea:** from 65,536 elements up the loop of attempt 6 slows from 3.35 to
+  about 3.7 cycles per 8 elements, and there the variant that loads two of the
+  shifted vectors and builds two with `ext` is faster (it is slower in the
+  first-level cache: 3.44 against 3.36). Use the attempt 6 loop below 32,768
+  elements and the two-load loop from there up.
+- **check:** pass
+- **compare:** five runs, because the gain is small and the machine was busy:
+  significantly faster 1.008x [1.003 – 1.011]; no significant difference
+  1.002x [0.972 – 1.017]; no significant difference 1.008x [0.998 – 1.019];
+  significantly faster 1.014x [1.002 – 1.020]; significantly faster 1.007x
+  [1.003 – 1.017].
+- **Kept:** yes, on three significant runs out of five with the same point
+  estimate in all of them. This is a marginal keep.
+- **Notes:** the whole effect is at three sizes: 1.04x to 1.05x at 65,536,
+  1.03x to 1.04x at 262,144 and about 1.02x at 1,048,576 in the quiet runs.
+  Sizes below the threshold run the same code as before and measure 1.00x. At
+  4,194,304 and 16,777,216 the intervals were wide in every run (other jobs
+  were using memory bandwidth) and the two runs that were not significant
+  were the ones where those two sizes were noisiest.
+
+## Screened in the standalone timer only (not taken to the judge)
+
+These were measured with the loop timer described under attempt 6 and were
+neutral or worse there, so no judge run was spent on them. Cycles are per 8
+elements; the attempt 6 loop is 3.35 at sizes up to 16,384.
+
+- **Four blocks (32 elements) per iteration:** 3.33 to 3.37 up to 4,096, so no
+  gain from the smaller loop overhead, and 5.6 at 16,384 and above (0.61x).
+  The same collapse appeared when each `ldp`/`stp` of q registers was split
+  into two single loads and stores (5.5 at 16,384). Both variants have more
+  load instructions per iteration (20 and 14 against 10), which is the only
+  thing they share; the cause was not established.
+- **One add fewer per block, carried chain two adds deep:** using
+  `out vector 3 = out vector 1 + steps 2..3` saves an add but puts two vector
+  adds (2 cycles each) on the carried chain. In every block: 4.0 to 4.2
+  (0.81x). In one block of two: 3.43 to 3.51 (0.96x).
+- **Other mixes of loaded and `ext` shifted vectors:** two loaded in both
+  blocks 3.44 to 3.49; three in one block and two in the other 3.43 to 3.48;
+  one loaded 3.65 to 3.72. Three loaded (attempt 6) is the best in cache.
+- **Loop alignment** to 16, 32 or 64 bytes: 3.33 to 3.37, no change (64 bytes
+  cost 10% at n=16).
+- **`stnp` in place of `stp`:** no difference at any size, including
+  4,194,304 and 16,777,216 (0.193 ns per element with either).
+- **`dc zva` on each output line before writing it**, to avoid reading the
+  line in: 260 to 300 cycles per line, about 70 times slower. Zeroing four
+  lines ahead: 22 cycles per line.
+- **`ld2`/`st2`** to de-interleave even and odd elements (pair sums, then a
+  prefix over half as many values, then even outputs by subtraction): a copy
+  loop with two `ld2` and two `st2` per 64 bytes takes 4.1 cycles against 2.3
+  for `ldp`/`stp`, more than the whole current loop.
+- **Removing one resource at a time from the attempt 6 loop** (results wrong,
+  timing only) shows what it is limited by: one vector add fewer per block
+  3.15 (-0.22), the three overlapping loads removed 3.20 (-0.18), the `ext`
+  removed 3.26 (-0.12), one of the two `stp` removed 3.14 (-0.24), no stores
+  3.08. Vector operations and stores are the expensive parts; the loop is at
+  12 vector operations per 8 elements on four vector pipes.
+
+## Where it stands
+
+- In the first-level cache: about 3.35 cycles per 8 elements (0.13 ns per
+  element) against 8 cycles for the one-add-per-element chain. A plain copy
+  with 16-byte loads and stores takes 2.3 to 2.8, so at most a fifth is left.
+- At 4,194,304 and 16,777,216 elements the kernel, the scalar version of
+  attempt 3 and a plain copy all run at 0.19 to 0.21 ns per element: memory
+  speed, not computation.
+- Not tried: blocks of three vectors (the vector operation count per element
+  is the same as with four, so no gain was expected), and carrying the
+  running sum in a general register with a broadcast per block (three more
+  micro-operations per block for a chain that is not the limit).

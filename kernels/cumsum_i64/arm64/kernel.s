@@ -17,13 +17,15 @@ _cumsum_i64:
     cmp     x2, #8
     b.lo    Lsmall
     movi    v16.2d, #0              // [out[i-2], out[i-1]], zero before the start
-    movi    v23.2d, #0              // [x[i-2], x[i-1]], zero before the start
+    movi    v17.2d, #0              // [x[i-2], x[i-1]], zero before the start
+    cmp     x2, #8, lsl #12         // 32,768 elements: the arrays no longer fit in the first-level cache
+    b.hs    Llarge
     subs    x2, x2, #16
-    b.lo    Lblock8
-Lblock16:
+    b.lo    Lrest
+Lmain:
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
-    ext     v4.16b, v23.16b, v0.16b, #8
+    ext     v4.16b, v17.16b, v0.16b, #8
     ldur    q5, [x0, #8]
     ldur    q6, [x0, #24]
     ldur    q7, [x0, #40]
@@ -37,41 +39,40 @@ Lblock16:
     add     v7.2d, v7.2d, v5.2d     // steps 0..3
     add     v5.2d, v5.2d, v16.2d    // out vector 1
     add     v6.2d, v6.2d, v5.2d     // out vector 2
-    add     v16.2d, v16.2d, v7.2d   // out vector 3, the next carry
+    add     v16.2d, v16.2d, v7.2d    // out vector 3, the next carry
     stp     q4, q5, [x1]
     stp     q6, q16, [x1, #32]
-    ldp     q20, q21, [x0, #64]
-    ldp     q22, q23, [x0, #96]
-    ext     v24.16b, v3.16b, v20.16b, #8
-    ldur    q25, [x0, #72]
-    ldur    q26, [x0, #88]
-    ldur    q27, [x0, #104]
+    ldp     q0, q1, [x0, #64]
+    ldp     q2, q17, [x0, #96]
+    ext     v4.16b, v3.16b, v0.16b, #8
+    ldur    q5, [x0, #72]
+    ldur    q6, [x0, #88]
+    ldur    q7, [x0, #104]
+    add     v4.2d, v4.2d, v0.2d
+    add     v5.2d, v5.2d, v1.2d
+    add     v6.2d, v6.2d, v2.2d
+    add     v7.2d, v7.2d, v17.2d
+    add     v5.2d, v5.2d, v4.2d
+    add     v7.2d, v7.2d, v6.2d
+    add     v4.2d, v4.2d, v16.2d
+    add     v7.2d, v7.2d, v5.2d
+    add     v5.2d, v5.2d, v16.2d
+    add     v6.2d, v6.2d, v5.2d
+    add     v16.2d, v16.2d, v7.2d
+    stp     q4, q5, [x1, #64]
+    stp     q6, q16, [x1, #96]
     add     x0, x0, #128
-    add     v24.2d, v24.2d, v20.2d
-    add     v25.2d, v25.2d, v21.2d
-    add     v26.2d, v26.2d, v22.2d
-    add     v27.2d, v27.2d, v23.2d
-    add     v25.2d, v25.2d, v24.2d
-    add     v27.2d, v27.2d, v26.2d
-    add     v24.2d, v24.2d, v16.2d
-    add     v27.2d, v27.2d, v25.2d
-    add     v25.2d, v25.2d, v16.2d
-    add     v26.2d, v26.2d, v25.2d
-    add     v16.2d, v16.2d, v27.2d
-    stp     q24, q25, [x1, #64]
-    stp     q26, q16, [x1, #96]
     add     x1, x1, #128
     subs    x2, x2, #16
-    b.hs    Lblock16
-Lblock8:
-    tbz     x2, #3, Lneon_done      // x2 is (elements left) - 16; bit 3 set means 8 or more left
+    b.hs    Lmain
+Lrest:
+    tbz     x2, #3, Lneon_done      // bit 3 of the count: 8 or more left
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
-    ext     v4.16b, v23.16b, v0.16b, #8
+    ext     v4.16b, v17.16b, v0.16b, #8
     ldur    q5, [x0, #8]
     ldur    q6, [x0, #24]
     ldur    q7, [x0, #40]
-    add     x0, x0, #64
     add     v4.2d, v4.2d, v0.2d
     add     v5.2d, v5.2d, v1.2d
     add     v6.2d, v6.2d, v2.2d
@@ -85,6 +86,7 @@ Lblock8:
     add     v16.2d, v16.2d, v7.2d
     stp     q4, q5, [x1]
     stp     q6, q16, [x1, #32]
+    add     x0, x0, #64
     add     x1, x1, #64
 Lneon_done:
     tst     x2, #7
@@ -98,13 +100,13 @@ Lblock4:
     ldp     x4, x5, [x0]
     ldp     x6, x7, [x0, #16]
     add     x0, x0, #32
-    add     x5, x4, x5
-    add     x7, x6, x7
-    add     x4, x4, x3
-    add     x7, x5, x7
-    add     x5, x5, x3
-    add     x6, x5, x6
-    add     x3, x3, x7
+    add     x5, x4, x5              // a+b
+    add     x7, x6, x7              // c+d
+    add     x4, x4, x3              // out0 = sum + a
+    add     x7, x5, x7              // a+b+c+d
+    add     x5, x5, x3              // out1 = sum + a+b
+    add     x6, x5, x6              // out2 = out1 + c
+    add     x3, x3, x7              // out3 = sum + a+b+c+d
     stp     x4, x5, [x1]
     stp     x6, x3, [x1, #16]
     add     x1, x1, #32
@@ -119,3 +121,52 @@ Ltail_loop:
     b.ne    Ltail_loop
 Ldone:
     ret
+// Same loop with one overlapping load per block replaced by an ext. It has one
+// more vector operation and one load fewer per block, which is slower while the
+// data is in the first-level cache and faster once it is not.
+Llarge:
+    sub     x2, x2, #16
+Lmain_large:
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ext     v4.16b, v17.16b, v0.16b, #8
+    ext     v5.16b, v0.16b, v1.16b, #8
+    ldur    q6, [x0, #24]
+    ldur    q7, [x0, #40]
+    add     v4.2d, v4.2d, v0.2d     // step 0
+    add     v5.2d, v5.2d, v1.2d     // step 1
+    add     v6.2d, v6.2d, v2.2d     // step 2
+    add     v7.2d, v7.2d, v3.2d     // step 3
+    add     v5.2d, v5.2d, v4.2d     // steps 0..1
+    add     v7.2d, v7.2d, v6.2d     // steps 2..3
+    add     v4.2d, v4.2d, v16.2d    // out vector 0
+    add     v7.2d, v7.2d, v5.2d     // steps 0..3
+    add     v5.2d, v5.2d, v16.2d    // out vector 1
+    add     v6.2d, v6.2d, v5.2d     // out vector 2
+    add     v16.2d, v16.2d, v7.2d    // out vector 3, the next carry
+    stp     q4, q5, [x1]
+    stp     q6, q16, [x1, #32]
+    ldp     q0, q1, [x0, #64]
+    ldp     q2, q17, [x0, #96]
+    ext     v4.16b, v3.16b, v0.16b, #8
+    ext     v5.16b, v0.16b, v1.16b, #8
+    ldur    q6, [x0, #88]
+    ldur    q7, [x0, #104]
+    add     v4.2d, v4.2d, v0.2d
+    add     v5.2d, v5.2d, v1.2d
+    add     v6.2d, v6.2d, v2.2d
+    add     v7.2d, v7.2d, v17.2d
+    add     v5.2d, v5.2d, v4.2d
+    add     v7.2d, v7.2d, v6.2d
+    add     v4.2d, v4.2d, v16.2d
+    add     v7.2d, v7.2d, v5.2d
+    add     v5.2d, v5.2d, v16.2d
+    add     v6.2d, v6.2d, v5.2d
+    add     v16.2d, v16.2d, v7.2d
+    stp     q4, q5, [x1, #64]
+    stp     q6, q16, [x1, #96]
+    add     x0, x0, #128
+    add     x1, x1, #128
+    subs    x2, x2, #16
+    b.hs    Lmain_large
+    b       Lrest
