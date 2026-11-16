@@ -23,18 +23,16 @@ _compress_f32:
     movk    x10, #0x1020, lsl #16       // bit of each byte into the top byte
     movk    x10, #0x0408, lsl #32
     movk    x10, #0x0102, lsl #48
-    mov     x11, #0x0404040404040404    // sums the bytes, times 4, into the top byte
+    mov     x11, #0x0404040404040404    // running sums of the bytes, times 4
 Lloop8:
     ldr     x6, [x1], #8                // eight mask bytes
     ldp     q0, q1, [x0], #32
-    mul     x7, x6, x10
-    mul     x8, x6, x11
-    mul     w12, w6, w11
-    lsr     x7, x7, #56                 // 8-bit mask
+    mul     x7, x6, x10                 // 8-bit mask in the top byte
+    mul     x8, x6, x11                 // byte j = 4 * (count in elements 0..j)
+    ubfx    x13, x7, #56, #4            // low nibble of the mask
+    lsr     x14, x7, #60                // high nibble
+    ubfx    x12, x8, #24, #8            // 4 * (count in the low four)
     lsr     x8, x8, #56                 // 4 * (count in all eight)
-    lsr     w12, w12, #24               // 4 * (count in the low four)
-    and     x13, x7, #15
-    lsr     x14, x7, #4
     ldr     q2, [x9, x13, lsl #4]
     ldr     q3, [x9, x14, lsl #4]
     tbl     v0.16b, {v0.16b}, v2.16b
