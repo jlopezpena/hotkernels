@@ -1,0 +1,9 @@
+*.o
+*.dylib
+*.so
+__pycache__/
+.venv/
+build/
+dist/
+*.egg-info/
+.DS_Store
