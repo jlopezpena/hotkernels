@@ -32,8 +32,6 @@ _nonzero_bool:
     b.lo    Ltail
     adrp    x9, Lpositions@PAGE
     add     x9, x9, Lpositions@PAGEOFF
-    adrp    x10, Lbit_shifts@PAGE
-    ldr     q19, [x10, Lbit_shifts@PAGEOFF]
     mov     x10, #0x4080                // 0x0102040810204080: gathers the low
     movk    x10, #0x1020, lsl #16       // bit of each byte into the top byte
     movk    x10, #0x0408, lsl #32
@@ -42,7 +40,36 @@ _nonzero_bool:
     mov     w12, #8
     dup     v18.2d, x12
     cmp     x4, #64
-    b.lo    Lrest
+    b.hs    Lbig
+    movi    v17.2d, #0
+Lsmall:                                 // 8 to 63 bytes left; v17 = their index
+    sub     x4, x4, #8
+Lsmall_loop:
+    ldr     x6, [x0], #8                // eight mask bytes
+    mul     x7, x6, x10
+    mul     x8, x6, x11
+    lsr     x7, x7, #56                 // 8-bit mask
+    lsr     x8, x8, #56                 // 8 * (number of true bytes)
+    ldr     d0, [x9, x7, lsl #3]        // positions of the true bytes
+    ushll   v0.8h, v0.8b, #0
+    ushll   v1.4s, v0.4h, #0
+    ushll2  v2.4s, v0.8h, #0
+    uaddw   v3.2d, v17.2d, v1.2s
+    uaddw2  v4.2d, v17.2d, v1.4s
+    uaddw   v5.2d, v17.2d, v2.2s
+    uaddw2  v6.2d, v17.2d, v2.4s
+    stp     q3, q4, [x5]
+    stp     q5, q6, [x5, #32]
+    add     v17.2d, v17.2d, v18.2d
+    add     x5, x5, x8
+    subs    x4, x4, #8
+    b.hs    Lsmall_loop
+    fmov    x3, d17
+    and     x4, x4, #7
+    b       Ltail
+Lbig:
+    adrp    x12, Lbit_shifts@PAGE
+    ldr     q19, [x12, Lbit_shifts@PAGEOFF]
 Lsparse:                                // at least 64 bytes left
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
@@ -109,9 +136,10 @@ Lsparse:                                // at least 64 bytes left
     cmp     x4, #64
     b.hs    Lsparse
 Lrest:                                  // fewer than 64 bytes left
-    lsr     x14, x4, #3
-    cbnz    x14, Ldense
-    b       Ltail
+    cmp     x4, #8
+    b.lo    Ltail
+    dup     v17.2d, x3
+    b       Lsmall
 Lsparse_fail:
     mov     x14, #8
 Ldense:                                 // run x14 blocks of 8 bytes; x14 * 8 <= x4

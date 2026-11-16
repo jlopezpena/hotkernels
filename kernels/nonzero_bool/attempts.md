@@ -25,3 +25,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.24x [1.24 – 1.24]
 - **Kept:** yes
 - **Notes:** few_selected 1.65x (1.9x from n=1,024 up). half_selected 0.93x: unchanged from n=1,024 to 1M, but n=16 is 0.67x (3.0 to 4.5 ns), n=64 0.85x, n=256 0.94x, from the extra setup and the failed sparse attempt on the first block. 16M half_selected read 0.88x in this run; other agents were timing at the same time and that size is memory-bound, so it needs a recheck. Next: cut the small-n overhead.
+
+## 4. Separate loop for n < 64 and for the leftover after the main loops
+
+- **Idea:** inputs under 64 bytes go straight to the plain 8-byte dense loop from attempt 2 (no bitmask constants, no stretch bookkeeping); the same loop finishes what is left after the sparse/dense main loops.
+- **check:** pass
+- **compare:** significantly faster, 1.03x [1.03 – 1.03]
+- **Kept:** yes
+- **Notes:** n=16 goes from 4.5 to 3.3 ns (1.40x); everything else within 1 to 2%. 16M half_selected read 0.96x, again while other agents were running.
