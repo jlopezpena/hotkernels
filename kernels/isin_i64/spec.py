@@ -18,10 +18,25 @@ def _mostly_misses(rng, n):
     return {"x": rng.integers(0, 1000, n), "test": rng.integers(0, 1000, TEST_VALUES)}
 
 
+def _wide_values(rng, n):
+    """Timing input: values and test values spread over the whole int64 range.
+
+    Small non-negative values, as in `mostly_misses`, allow tricks that narrow
+    the comparison. This distribution shows what a kernel does when they do not
+    apply. Half of x is drawn from the test values so that matches occur.
+    """
+    info = np.iinfo(np.int64)
+    test = rng.integers(info.min, info.max, TEST_VALUES)
+    x = rng.integers(info.min, info.max, n)
+    hit = rng.random(n) < 0.5
+    x[hit] = rng.choice(test, int(hit.sum()))
+    return {"x": x, "test": test}
+
+
 KERNEL = Kernel(
     name="isin_i64",
     returns="void",
     args=[In("x", "i64"), In("test", "i64", len=TEST_VALUES), Out("out", "bool"), Size("n")],
     oracle=oracle,
-    distributions={"mostly_misses": _mostly_misses},
+    distributions={"mostly_misses": _mostly_misses, "wide_values": _wide_values},
 )
