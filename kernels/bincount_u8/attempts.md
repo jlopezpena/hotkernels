@@ -50,3 +50,11 @@ agents were timing other kernels on the same machine, so timings are noisier tha
 - **compare:** significantly faster, 1.026x [1.023 – 1.028]
 - **Kept:** yes
 - **Notes:** 1.04–1.05x from 16,384 up, unchanged below. Micro-benchmark at 1M random bytes: 0.212 ns/byte against 0.227 (about 5.5 cycles per 8 elements; the ~42 micro-ops per 8 elements put the floor near 5.25). Side benefit the judge does not time: all-equal input 2.11 -> 0.59 ns/byte, four distinct values 0.94 -> 0.30.
+
+## 7. Small path: 16 bytes per step
+
+- **Idea:** give the single-table path the same loop shape as the large path: `ldp` of two words, pointer bump and one compare-and-branch per 16 bytes instead of a post-indexed load and a branch per 8. Increments stay strictly in order (one table). One optional 8-byte step and up to 7 single bytes finish the tail.
+- **check:** pass
+- **compare:** significantly faster, 1.003x [1.001 – 1.006]; rerun because it was marginal: significantly faster, 1.004x [1.002 – 1.007]
+- **Kept:** yes
+- **Notes:** the gain is at 1,024 (1.03–1.04x) and 4,096 (1.02x) only; 16–256 are within noise (first run showed 0.97x at 16, the rerun 1.00x) and sizes from 16,384 up use the other path.
