@@ -32,6 +32,8 @@
 // query, infinities, the NaN fallbacks) the four queries of that iteration
 // are recomputed by Lslow, which is naive.c line by line. Lslow also handles
 // everything when n < 16.
+// From 1,048,576 points the fp loads are cache misses, so they are prefetched
+// for the whole group as soon as stage 1 has produced the indices.
 //
 // Leftover queries (n not a multiple of the group size) are covered by one
 // more group that ends exactly at the last query and recomputes a few results.

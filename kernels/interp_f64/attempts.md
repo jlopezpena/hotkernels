@@ -98,3 +98,44 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
 - **Kept:** no
 - **Notes:** the same result as in `searchsorted_f64`: the doubled dependency
   chain per register costs more than the saved loads.
+
+## Final numbers
+
+`uv run judge run interp_f64 --unlocked` on the kernel of attempt 6 (check:
+pass, 53,227 cases), Apple M1 Pro, NumPy 2.5.5, 30 samples per point, with
+other agents timing on the machine:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 34.6 ns | 62.6 ns | 1.81x [1.81 – 1.82] | 773.7 ns | 22.4x [22.31 – 22.42] |
+| 64 | 122.1 ns | 408.5 ns | 3.34x [3.34 – 3.35] | 2.4 us | 20.0x [19.96 – 20.08] |
+| 256 | 583.8 ns | 2.2 us | 3.76x [3.76 – 3.76] | 11.2 us | 19.2x [19.15 – 19.17] |
+| 1,024 | 2.8 us | 12.1 us | 4.39x [4.39 – 4.39] | 53.8 us | 19.6x [19.54 – 19.57] |
+| 4,096 | 12.8 us | 64.2 us | 5.02x [5.02 – 5.02] | 251.2 us | 19.6x [19.63 – 19.67] |
+| 16,384 | 68.0 us | 371.7 us | 5.47x [5.38 – 5.47] | 1.31 ms | 19.3x [19.26 – 19.34] |
+| 65,536 | 426.1 us | 2.47 ms | 5.81x [5.80 – 6.22] | 8.00 ms | 18.8x [18.68 – 18.86] |
+| 262,144 | 2.30 ms | 13.03 ms | 5.65x [5.64 – 6.14] | 39.19 ms | 17.0x [16.96 – 17.16] |
+| 1,048,576 | 14.78 ms | 100.80 ms | 6.82x [6.79 – 6.85] | 343.96 ms | 23.3x [23.12 – 23.38] |
+| 4,194,304 | 142.55 ms | 1184.57 ms | 8.31x [8.26 – 8.34] | 4206.04 ms | 29.5x [29.33 – 29.72] |
+| 16,777,216 | 853.85 ms | 7409.28 ms | 8.68x [8.62 – 8.74] | 33346.41 ms | 39.1x [38.90 – 39.27] |
+| overall | | | 4.96x [4.95 – 5.00] | | 21.9x [21.84 – 21.89] |
+
+NumPy is timed from Python and includes its per-call overhead.
+
+Not tried, and why:
+
+- The ideas listed as untried in `searchsorted_f64/attempts.md` apply to
+  stage 1 here in the same way, with the same expectations.
+- At 16, one search step followed by a count over a window of eight (as
+  `searchsorted_f64` does below 64) would need about 150 vector operations
+  per sixteen queries against 224 for the full count; estimated at 15% at
+  that one size.
+- The judge's correctness check stops at 65,537 elements for this kernel
+  (the spec's `check_max_n`), so the prefetch of attempt 6, which only runs
+  from 1,048,576, is not exercised by it. It only issues `prfm` on addresses
+  inside `fp` and changes no result. As a substitute, a local program
+  compared the kernel's output with `naive.c` byte for byte at 1,048,576,
+  1,048,613 and 2,097,157 elements, with plain random data and with NaN,
+  infinite and repeated values mixed in: identical in all six runs. That
+  check has no guard pages, so it says nothing about out-of-bounds reads at
+  those sizes.
