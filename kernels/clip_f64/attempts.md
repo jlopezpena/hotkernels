@@ -9,3 +9,11 @@ The design was worked out on `clip_f32` first; see `kernels/clip_f32/attempts.md
 - **compare:** n/a (first version)
 - **Kept:** yes
 - **Notes:** starting point. Bit-exact for any bounds by construction: nothing is arithmetic, so NaN elements, NaN bounds, signed zeros and `lo > hi` all follow the C expression.
+
+## 2. `fmax`/`fmin` fast path, guarded so it stays bit-exact
+
+- **Idea:** as `clip_f32` attempt 2. `fmin(fmax(x, lo), hi)` is two vector operations per vector instead of four. It is not the C expression in four situations, and each is excluded: `lo > hi` or a NaN bound (`fcmp` at entry); `lo` is +0.0 or `hi` is -0.0 (bit test at entry); FPCR flush-to-zero or default-NaN mode (FPCR read at entry); a signalling NaN element, which `fmax` would return quieted (FPSR.IOC read after the loop; if set, the array is redone on the compare-and-select path from the untouched input). FPSR is also read at entry, and a flag the caller left set is cleared and set again afterwards.
+- **check:** pass
+- **compare:** significantly faster, 1.162x [1.157 – 1.165]
+- **Kept:** yes
+- **Notes:** 256: 1.43x, 1,024: 1.49x, 4,096: 1.50x, 16,384: 1.64x; nothing changes at 16 and 64 (below the threshold) or from 65,536 up (limited by moving the data). The equivalence argument is in the header of `kernel.s`. The guarded paths are not reachable with the judge's inputs, so they were verified outside it with the same harness as `clip_f32`, built for float64: 515,916 calls against the compiled `naive.c` over 19 x 19 bound pairs, quiet and signalling NaNs, zeros, denormals, FPSR clean and with flags set, seven FPCR modes; no difference, no flag lost, and removing any one guard makes it fail. Thresholds from local timing: the clean path breaks even at 80 elements (96 used); with the flag already set it breaks even at 512 (768 used).
