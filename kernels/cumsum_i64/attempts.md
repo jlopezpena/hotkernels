@@ -190,6 +190,10 @@ elements; the attempt 6 loop is 3.35 at sizes up to 16,384.
 
 ## Where it stands
 
+- Final `judge run` against naive C, on a run without a noise warning: 1.90x
+  [1.89 – 1.90] overall. By size: 1.36x at 16, 1.56x at 64, 2.15x at 256,
+  2.40x at 1,024, 2.41x at 4,096, 2.39x at 16,384, 1.88x at 65,536, 1.91x at
+  262,144, 1.95x at 1,048,576, 1.51x at 4,194,304, 1.70x at 16,777,216.
 - In the first-level cache: about 3.35 cycles per 8 elements (0.13 ns per
   element) against 8 cycles for the one-add-per-element chain. A plain copy
   with 16-byte loads and stores takes 2.3 to 2.8, so at most a fifth is left.

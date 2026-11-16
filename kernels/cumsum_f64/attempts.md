@@ -105,6 +105,24 @@ array.
   paired loop is slower than the floor there was not established; it does
   not happen at 4,096, where everything is in the first-level cache.
 
+## Screened in the standalone timer only (not taken to the judge)
+
+- **A separate unpaired loop for long arrays** (one `ldr`, `fadd`, `str` per
+  element from about 8,192 elements, as the compiler generates), to remove
+  the last few tenths of a percent over the floor: in the standalone timer it
+  was within the run-to-run noise of the paired loop at 16,384, 65,536,
+  1,048,576 and 4,194,304 (differences of 0.1% to 2% in both directions), so
+  it was dropped.
+
+## Final numbers
+
+`judge run` against naive C: 1.12x [1.12 – 1.13] overall (noisy-machine
+warning, 3.1%; another run gave 1.13x [1.12 – 1.13] with a 3.0% warning). By
+size: 1.76x at 16, 1.56x at 64, 1.27x at 256, 1.05x at 1,024, 1.01x at 4,096,
+and 1.00x at every size from 16,384 to 16,777,216. At those large sizes the
+kernel is 0.1% to 0.3% behind the C (982.4 us against 979.4 us at 1,048,576),
+which the table rounds to 1.00x.
+
 ## Why the exact kernel cannot beat the C on long arrays
 
 - Bit-identical output means the additions happen in the order

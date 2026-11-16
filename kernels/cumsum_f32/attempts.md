@@ -77,11 +77,21 @@ as the judge does; naive C is 5.0 / 30 / 205 and attempt 2 is 2.9 / 19.4 /
 - **Per pair `ldp`, `fadd`, `fadd`, `stp` (interleaved), or the same with
   post-indexed addressing:** 2.91 / 19.8 / 161 and 3.04 cycles per element
   at 65,536 and 262,144. Slower than loads, adds and stores in groups.
+- **A separate unpaired loop for long arrays** (one `ldr`, `fadd`, `str` per
+  element from about 8,192 elements, as the compiler generates), to remove
+  the last few tenths of a percent over the floor: in the standalone timer it
+  was within the run-to-run noise of the paired loop at 16,384, 65,536,
+  1,048,576 and 4,194,304 (differences of 0.1% to 2% in both directions), so
+  it was dropped.
 
 ## Result and why the long-array time cannot improve
 
-- `judge run` (see the final numbers in the commit that added this section):
-  the kernel is faster than the naive C only up to about 1,000 elements.
+- Final `judge run` against naive C: 1.12x [1.12 – 1.13] overall (noisy-
+  machine warning, 3.0%; a second run gave the same figure with a 5.0%
+  warning). By size: 1.76x at 16, 1.56x at 64, 1.27x at 256, 1.05x at 1,024,
+  1.01x at 4,096, and 1.00x at every size from 16,384 to 16,777,216. At those
+  large sizes the kernel is in fact 0.1% to 0.4% behind the C (981.6 us
+  against 977.8 us at 1,048,576), which the table rounds to 1.00x.
 - From 4,096 elements up the naive C is at 3.00 to 3.1 cycles per element
   and the `fadd` latency is 3. Bit-identical output fixes the order
   `((x0 + x1) + x2) + ...`, each result is an input of the next add, so no
