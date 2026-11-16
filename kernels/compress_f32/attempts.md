@@ -57,3 +57,35 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.30x [1.30 – 1.31] (first run 1.30x [1.30 – 1.33] with a NOISY MACHINE warning; rerun clean)
 - **Kept:** yes
 - **Notes:** few_selected 1.74x (2.2 to 2.4x from 256 to 16,384, 1.9x to 1M, 1.17x at 4M and 16M where scattered reads of x miss the cache). half_selected 0.98x: n=64 and n=256 are 0.91x (the failed sparse attempt on the first block), 1,024 to 16,384 0.97 to 1.0x.
+
+## 8. Longer dense stretch between density checks (4,096 elements instead of 512)
+
+- **Idea:** the dense loop stops every 32 iterations to decide whether to go back to sparse; raise that to 256 so the bookkeeping and the loop-exit misprediction are spread over more elements.
+- **check:** pass
+- **compare:** no significant difference, 0.996x [0.990 – 1.004]
+- **Kept:** no
+- **Notes:** a local microbenchmark showed 2 to 4% at 16,384 half_selected, the judge showed 0.99x there. The bookkeeping is already negligible at 512.
+
+## 9. Choose the starting mode from the first 16 mask bytes (local timing only)
+
+- **Idea:** count the first 16 mask bytes with one `ldp`/`add`/`mul`/`lsr`; start dense if more than 3 are true, to avoid building a 64-byte bitmask that half_selected then throws away.
+- **check:** not run through the judge
+- **compare:** not run; local microbenchmark only: n=64 half_selected 0.146 to 0.143 ns per element (the version without a sparse path is 0.131), n=64 few_selected 0.070 to 0.075.
+- **Kept:** no
+- **Notes:** the probe costs about as much as it saves; a 3% gain on one size against a 6% loss on another.
+
+## 10. `ld4` + `sli` bitmask in the sparse path (local timing only)
+
+- **Idea:** build the 64-bit bitmask with `ld4` (de-interleaving load), three `sli`, `usra`, `xtn` instead of two `ldp q`, four `ushl` and four `addp`.
+- **check:** not run through the judge
+- **compare:** not run; local microbenchmark at 5% density: 0.0423 to 0.0463 ns per element at n=1,024, 0.0441 to 0.0516 at n=256.
+- **Kept:** no
+- **Notes:** `ld4` costs more than the six instructions it saves.
+
+## 11. Dense stretch loop: 32 elements per iteration
+
+- **Idea:** two 16-element bodies per iteration of the dense stretch loop, sharing the counter and the branch.
+- **check:** pass
+- **compare:** significantly faster, 1.006x [1.004 – 1.007]; rerun 1.004x [1.004 – 1.006]
+- **Kept:** yes
+- **Notes:** half_selected 1.01x (2 to 3% from n=256 to 16,384, nothing above), few_selected 1.00x. Small but repeatable.

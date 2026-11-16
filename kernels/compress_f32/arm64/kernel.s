@@ -213,10 +213,38 @@ Lsparse_more:                           // more than 6 selected in this 64
     stp     s4, s5, [x5, #40]
     b       Lsparse_next
 Lsparse_fail:
-    mov     x14, #4
-Ldense:                                 // run x14 steps of 16; at least 16*x14 elements are left
-    add     x17, x5, x14, lsl #3        // write pointer if one in eight is selected
+    mov     x14, #2
+Ldense:                                 // run x14 steps of 32; at least 32*x14 elements are left
+    add     x17, x5, x14, lsl #4        // write pointer if one in eight is selected
 Ldense_loop:
+    ldp     x6, x15, [x1], #16          // sixteen mask bytes
+    ldp     q0, q1, [x0]
+    ldp     q4, q5, [x0, #32]
+    add     x0, x0, #64
+    mul     x7, x6, x10                 // mask bits, reversed, in bits 56-63
+    mul     x6, x6, x11                 // byte j = 4 * (count in elements 0..j)
+    mul     x16, x15, x10
+    mul     x15, x15, x11
+    lsr     x7, x7, #55                 // 2 * table index
+    lsr     x16, x16, #55
+    ldr     q2, [x9, x7, lsl #4]
+    ldr     q3, [x13, x7, lsl #4]
+    ldr     q6, [x9, x16, lsl #4]
+    ldr     q7, [x13, x16, lsl #4]
+    ubfx    x12, x6, #24, #8            // 4 * (count in the low four)
+    lsr     x6, x6, #56                 // 4 * (count in all eight)
+    ubfx    x8, x15, #24, #8
+    lsr     x15, x15, #56
+    tbl     v0.16b, {v0.16b}, v2.16b
+    tbl     v1.16b, {v1.16b}, v3.16b
+    tbl     v4.16b, {v4.16b}, v6.16b
+    tbl     v5.16b, {v5.16b}, v7.16b
+    str     q0, [x5]
+    str     q1, [x5, x12]
+    add     x5, x5, x6
+    str     q4, [x5]
+    str     q5, [x5, x8]
+    add     x5, x5, x15
     ldp     x6, x15, [x1], #16          // sixteen mask bytes
     ldp     q0, q1, [x0]
     ldp     q4, q5, [x0, #32]
@@ -253,8 +281,8 @@ Ldense_loop:
     b.ls    Lsparse                     // at most one in eight was selected
     add     x14, x4, #65                // else a longer dense stretch
     sub     x14, x14, x1
-    lsr     x14, x14, #4
-    mov     x12, #32
+    lsr     x14, x14, #5
+    mov     x12, #16
     cmp     x14, x12
     csel    x14, x14, x12, lo
     b       Ldense
