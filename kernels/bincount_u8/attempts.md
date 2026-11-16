@@ -58,3 +58,28 @@ agents were timing other kernels on the same machine, so timings are noisier tha
 - **compare:** significantly faster, 1.003x [1.001 – 1.006]; rerun because it was marginal: significantly faster, 1.004x [1.002 – 1.007]
 - **Kept:** yes
 - **Notes:** the gain is at 1,024 (1.03–1.04x) and 4,096 (1.02x) only; 16–256 are within noise (first run showed 0.97x at 16, the rerun 1.00x) and sizes from 16,384 up use the other path.
+
+## 8. Lower the four-table threshold from 8,192 to 4,096
+
+- **Idea:** let n=4,096 use the faster large-path loop.
+- **check:** pass
+- **compare:** no significant difference, 0.999x [0.997 – 1.001]
+- **Kept:** no
+- **Notes:** 0.98x at 4,096 (980 ns against 960 ns): the fixed cost of the large path (zero 4 KB of tables, sum them into `counts`, about 65 ns against 20 ns for zeroing `counts`) is not repaid there. 8,192 stays.
+
+## 9. Other shapes for the large-path loop (measured privately, never run through `compare`)
+
+- **Idea:** look for a loop body that gets past about 5.6 cycles per 8 elements.
+- **check:** private micro-benchmark with its own result check, which passed for every variant
+- **compare:** not run. 1M random bytes, two rounds each, kept version 0.217 ns/byte:
+  - one `ldrb` per element instead of extracting from a 64-bit word: 0.264 ns/byte (slower);
+  - half `ldrb`, half extracted from a 32-bit load: 0.245–0.247 (slower);
+  - load-add-store per element instead of grouped by four: 0.218 (same);
+  - 32 bytes per iteration: 0.217 (same).
+- **Kept:** no
+- **Notes:** more loads make it slower, more unrolling does nothing. Each element needs one counter load and one counter store whatever the loop shape, and the stores alone cost about 4 cycles per 8 elements at two per cycle. I found no way to count uniformly random bytes with fewer than one store per element that stays in the L1 cache (see attempt 4), so I stopped here.
+
+## Not tried
+
+- 16-bit counters in the stack tables (2 KB instead of 4 KB to zero, flushed every 262,128 bytes): would save about 20 ns per call on the large path, under 0.6% at 16,384 and less above. Too small to measure against the noise on a shared machine.
+- Fixing the single-table small path for skewed input (all-equal bytes run at 2.1 ns/byte below 8,192 elements): the judge times uniformly random bytes only, and a multi-table small path costs more than it gains there (attempt 3).
