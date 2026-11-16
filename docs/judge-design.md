@@ -162,7 +162,7 @@ A SIMD kernel handles several elements per step, say four. An array of 37 elemen
 
 Reading past the end changes nothing, so it is harmless as long as the extra bytes belong to the program. Memory is handed out in fixed-size pages. If the array happens to end at the very edge of the last page the program owns, the extra read lands on memory it does not own and the program crashes. Code that uses this trick therefore has to check how close it is to a page edge first.
 
-The trick only matters for tiny arrays, where the leftover is most of the work. For an array of a million elements the leftover is a rounding error. The strict rule is kept for the proof of concept because it is simple to state to an agent and simple to verify. It can be relaxed for specific kernels if the survey shows that tiny arrays are where the wins are.
+The trick only matters for tiny arrays, where the leftover is most of the work. For an array of a million elements the leftover is a rounding error. The rule stays strict because it is simple to state to an agent and simple to verify. It can be relaxed for specific kernels later if the survey shows that tiny arrays are where the wins are.
 
 ### Calling convention
 
@@ -299,7 +299,12 @@ The fixtures test the judge. They are not candidates for shipping; phase 2 decid
 Phase 1 also delivers the two documents that turn the judge into an agent loop. Their content follows directly from this design, so they are written alongside the implementation and not designed separately:
 
 - **`AGENTS.md`:** the kernel contract, the assembly conventions for the platform, the judge commands, how to read a failure, the files that may be edited, and the one rule: keep a change only if `judge check` passes and `judge compare` says it is significantly faster.
-- **Goal-spec template:** the prompt for a `/goal` run on one kernel. It names the kernel, the stopping condition (a set number of attempts without a significant improvement), and requires every attempt to be logged in `attempts.md` with what was tried and what the judge said.
+- **Goal-spec template:** the prompt for a `/goal` run on one kernel. It sets out:
+  - **The target.** A statistically significant overall speedup of at least 10% over naive C. This is a target given to the agent, not a threshold in the judge.
+  - **Do not stop at the target.** After reaching 10% the agent keeps going until it has exhausted the optimisations it can think of.
+  - **If the target cannot be reached.** The agent reports its best result and explains why 10% was not possible, for example that the compiler already vectorises the naive loop well, or that the operation is limited by memory speed.
+  - **The log.** Every attempt goes into `attempts.md` with what was tried and what the judge said.
+  - **The final report.** The best speedup with its confidence interval, the optimisations that worked, the ones that did not, and what was left untried.
 
 ## Out of scope
 
@@ -314,7 +319,9 @@ Phase 1 also delivers the two documents that turn the judge into an agent loop. 
 |---|---|
 | Spec format | One Python file per kernel, holding the signature and the oracle. Provisional; changes when a kernel needs it to. |
 | Win thresholds | None. The judge reports speedups with confidence intervals and significance; a person decides. |
-| Memory rule | Still open. Proposed: strict for the proof of concept, no reads outside the buffer. |
+| Memory rule | Strict: no reads outside the buffer. |
+| Keeping edits during iteration | The agent keeps an edit when `judge compare` says it is significantly faster. |
+| Agent target | At least 10% over naive C, then continue until options are exhausted. If 10% is not possible, report best effort and why. |
 | Committing results | Committed for now; revisit later. |
 | NumPy timing | Best effort: timed from Python with call overhead, labelled as such. Stricter if results warrant it. |
 | Fixture kernels | `argmax_f32` and `compress_f32`. |
