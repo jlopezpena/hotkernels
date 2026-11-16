@@ -89,3 +89,11 @@ All judge commands in this run were passed `--unlocked`, because the spec is not
 - **compare:** significantly faster, 1.006x [1.004 – 1.007]; rerun 1.004x [1.004 – 1.006]
 - **Kept:** yes
 - **Notes:** half_selected 1.01x (2 to 3% from n=256 to 16,384, nothing above), few_selected 1.00x. Small but repeatable.
+
+## 12. Dense: compact each 8-element block as one 32-byte unit with two-register `tbl`
+
+- **Idea:** instead of compacting each 4-lane half on its own and storing the second half at `write pointer + 4 * (count in the first half)`, look both output vectors up in the 32-byte pair with `tbl {v0, v1}` and store them together with one `stp`. The table entry becomes a 32-byte pattern over all eight lanes (still 8 KB). Removes the per-block `ubfx` for the low count and the register-offset store.
+- **check:** pass
+- **compare:** significantly faster, 1.015x [1.012 – 1.018] (third run, clean; the first two had NOISY MACHINE warnings and read 1.009x [1.008 – 1.010] and about the same)
+- **Kept:** yes
+- **Notes:** half_selected 1.02x: 4 to 6% from n=64 to 16,384, 0 to 1% above. n=65,536 read 0.92x and 0.95x in the two noisy runs and 1.02x in the clean one. few_selected unchanged.
