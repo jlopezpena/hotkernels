@@ -18,8 +18,9 @@ These apply to all Python in this repository.
 
 - **Command lines use `typer`.** Never `argparse`.
 - **Output uses the `logging` module.** Never a bare `print`. Each module gets `log = logging.getLogger(__name__)`; the CLI configures the handler.
-- **Generated text uses Jinja templates** in `judge/templates/`: reports, tables, Markdown, generated C. Python passes values in; it does not assemble multi-line or column-aligned text with string formatting.
+- **Generated text uses Jinja templates**, wherever it is produced: reports, tables, Markdown, progress lines, generated C. Each package keeps its templates in its own `templates/` directory (`judge/templates/`, `survey/templates/`). Python passes values in; it does not assemble multi-line or column-aligned text with string formatting, and it does not build a report out of consecutive `print` or `log` calls.
 - **Every module, class and function has a docstring**, including private and nested ones. Say what it does and anything a reader could not guess from the signature.
+- **Docstrings describe every parameter and the return value**, in `Args:` and `Returns:` sections: what each one means, its unit where it has one, and any constraint on it. A one-line docstring is enough only for a function with no parameters and an obvious result, or a nested function a few lines long.
 - **Every dataclass field has a comment** directly above it saying what it means.
 - **No magic constants.** Numbers and strings with meaning get a named module-level constant, with a comment explaining the value where it is not obvious.
 - **Comment the non-obvious.** Where code depends on something outside itself, such as a calling convention, a file format or a memory layout, explain it at the point of use.
@@ -95,7 +96,7 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 
 - **No reads or writes outside the buffers, by even one byte.** This is strict: loading a full vector that extends past the end of an array is a failure, even though it would usually be harmless. Handle leftover elements inside the buffer, for example with a scalar loop, or with a final vector that overlaps the previous one and ends exactly at the end of the array.
 - **Inputs are read-only.** Writing to an input buffer crashes.
-- **Write only the output you report.** If the kernel returns a count, it must not write beyond that many elements.
+- **Write only the output you report.** If the kernel returns a count, it must not write beyond that many elements. The one exception is an output the spec declares `scratch=True`: there the kernel may write anywhere inside the buffer's capacity, and only the reported elements have to be right. Writing past the capacity is always a failure. Check `spec.py` before relying on this; the default is strict.
 - **No function calls, no system calls, no writable data.** Read-only constants are fine (`.section __TEXT,__const` or `__TEXT,__literal16`).
 - **Export exactly one symbol:** the kernel itself.
 - **Match NumPy exactly** unless the spec declares a tolerance. This includes NaN, infinities, signed zeros and which element wins a tie.

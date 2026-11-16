@@ -1,0 +1,1 @@
+{{ "%-36s" | format(row.key) }} n={{ "%10s" | format("{:,}".format(row.n)) }}  NumPy {{ "%14s" | format("{:,.1f}".format(row.numpy_ns)) }} ns  C {{ "%14s" | format("{:,.1f}".format(row.c_ns)) }} ns  NumPy/C {{ "%8s" | format(row.numpy_over_c | ratio) }}{{ "  NAIVE C DISAGREES WITH NUMPY" if not row.naive_matches_numpy }}

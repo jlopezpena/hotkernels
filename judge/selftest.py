@@ -38,6 +38,12 @@ EXPECT = {
         "write_past_used": MEMORY_SAFETY,
         "write_input": MEMORY_SAFETY,
     },
+    # The same operation with a scratch output buffer. Its correct kernel and
+    # its naive C both leave a stray element past the reported output, which is
+    # exactly what compress_f32/write_past_used is rejected for.
+    "compress_scratch_f32": {
+        "write_past_capacity": MEMORY_SAFETY,
+    },
 }
 # A variant that is correct but slow: it must pass correctness and then be
 # reported as significantly slower than naive C.

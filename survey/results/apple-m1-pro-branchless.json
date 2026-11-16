@@ -1,0 +1,950 @@
+{
+ "meta": {
+  "cpu": "Apple M1 Pro",
+  "os": "macOS-27.2.1-arm64-arm-64bit",
+  "clang": "Apple clang version 21.0.0 (clang-2100.4.1.1)",
+  "cflags": [
+   "-O3",
+   "-mcpu=native",
+   "-std=c11",
+   "-Wall",
+   "-Wextra"
+  ],
+  "numpy": "2.5.5",
+  "python": "3.12.7",
+  "low_power_mode": false,
+  "reference_drift": 0.012133375098779542,
+  "git": "d2dea79d1414fc1e6591d20b6da3db04639d85f6",
+  "c_vectorised": {
+   "add_at_f64": [],
+   "add_f64_strided": [
+    "line 299: width 2"
+   ],
+   "all_bool": [],
+   "any_bool": [],
+   "argmax_f32": [],
+   "argmax_f64": [],
+   "argmax_i64": [],
+   "argmax_u8": [],
+   "argmin_f64": [],
+   "array_equal_f64": [],
+   "bincount_i64": [],
+   "cast_f64_f32": [
+    "line 352: width 4"
+   ],
+   "cast_i64_f64": [
+    "line 354: width 2"
+   ],
+   "cast_u8_f32": [
+    "line 353: width 16"
+   ],
+   "clip_f32": [
+    "line 225: width 4"
+   ],
+   "clip_f64": [
+    "line 226: width 2"
+   ],
+   "clip_i64": [
+    "line 227: width 2"
+   ],
+   "compress_f32": [],
+   "compress_f64": [],
+   "compress_f64_branchless": [],
+   "copy_f64_strided": [
+    "line 293: width 2"
+   ],
+   "correlate_f64": [
+    "line 408: width 2"
+   ],
+   "count_nonzero_bool": [
+    "line 143: width 16"
+   ],
+   "count_nonzero_f64": [
+    "line 145: width 2"
+   ],
+   "count_nonzero_i64": [
+    "line 144: width 2"
+   ],
+   "cummin_f64": [],
+   "cumsum_f32": [],
+   "cumsum_f64": [],
+   "cumsum_i64": [],
+   "diff_f64": [
+    "line 186: width 2"
+   ],
+   "dot_i64": [],
+   "histogram_f64": [],
+   "interp_f64": [
+    "line 358: width 2"
+   ],
+   "isin_i64": [
+    "line 265: width 16"
+   ],
+   "maskfill_f64": [
+    "line 398: width 16"
+   ],
+   "max_f32": [],
+   "nonzero_bool": [],
+   "nonzero_bool_branchless": [],
+   "packbits": [],
+   "put_f64": [],
+   "searchsorted_f64": [],
+   "searchsorted_i64": [],
+   "sum_f32": [
+    "line 116: width 4"
+   ],
+   "sum_f64": [
+    "line 117: width 2"
+   ],
+   "sum_u8": [
+    "line 311: width 16"
+   ],
+   "take_f64": [],
+   "where_f64": []
+  },
+  "numpy_simd_dispatch": {
+   "argmax": {
+    "b": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "B": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "h": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "H": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "i": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "I": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "l": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "L": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "q": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "Q": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "f": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "d": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "g": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    }
+   },
+   "argmin": {
+    "b": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "B": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "h": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "H": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "i": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "I": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "l": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "L": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "q": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "Q": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "f": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "d": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "g": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    }
+   },
+   "add": {
+    "???": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "bbb": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "BBB": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "hhh": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "HHH": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "iii": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "III": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "lll": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "LLL": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "qqq": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "QQQ": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "fff": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "ddd": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "FFF": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "DDD": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    }
+   },
+   "logical_and": {
+    "???": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "bb?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "BB?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "hh?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "HH?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "ii?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "II?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "ll?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "LL?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "qq?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "QQ?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    }
+   },
+   "logical_or": {
+    "???": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "bb?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "BB?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "hh?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "HH?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "ii?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "II?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "ll?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "LL?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "qq?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "QQ?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    }
+   },
+   "maximum": {
+    "???": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "bbb": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "BBB": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "hhh": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "HHH": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "iii": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "III": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "lll": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "LLL": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "qqq": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "QQQ": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "fff": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "ddd": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "ggg": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    }
+   },
+   "minimum": {
+    "???": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "bbb": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "BBB": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "hhh": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "HHH": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "iii": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "III": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "lll": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "LLL": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "qqq": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "QQQ": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "fff": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "ddd": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "ggg": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    }
+   },
+   "not_equal": {
+    "ff?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    },
+    "dd?": {
+     "current": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)",
+     "available": "baseline(NEON NEON_FP16 NEON_VFPV4 ASIMD)"
+    }
+   }
+  }
+ },
+ "rows": [
+  {
+   "key": "compress_f64 p=0.5 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 1,
+   "work": 1,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 200.50551156188854,
+   "c_ns": 20.107909462116247,
+   "numpy_min_ns": 197.31087771135103,
+   "c_min_ns": 19.53266454941103,
+   "numpy_over_c": 9.971474754232679
+  },
+  {
+   "key": "compress_f64 p=0.5 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 16,
+   "work": 16,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 237.83228680157117,
+   "c_ns": 25.813424907034985,
+   "numpy_min_ns": 234.6886377840816,
+   "c_min_ns": 24.625715683050434,
+   "numpy_over_c": 9.213511483195484
+  },
+  {
+   "key": "compress_f64 p=0.5 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 256,
+   "work": 256,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 734.5238092135961,
+   "c_ns": 103.77705444561482,
+   "numpy_min_ns": 701.7501811832371,
+   "c_min_ns": 100.52494344770425,
+   "numpy_over_c": 7.077901884356614
+  },
+  {
+   "key": "compress_f64 p=0.5 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 4096,
+   "work": 4096,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 11065.205005432452,
+   "c_ns": 1408.9246031746031,
+   "numpy_min_ns": 10027.52390777128,
+   "c_min_ns": 1381.7598039215686,
+   "numpy_over_c": 7.853653048928396
+  },
+  {
+   "key": "compress_f64 p=0.5 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 65536,
+   "work": 65536,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 309515.3676296928,
+   "c_ns": 21929.488461538458,
+   "numpy_min_ns": 295098.6841154334,
+   "c_min_ns": 21591.503846153846,
+   "numpy_over_c": 14.11411707904375
+  },
+  {
+   "key": "compress_f64 p=0.5 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 1048576,
+   "work": 1048576,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 5032082.961406559,
+   "c_ns": 358914.3333333333,
+   "numpy_min_ns": 4888541.996479034,
+   "c_min_ns": 353935.1666666667,
+   "numpy_over_c": 14.020289785231645
+  },
+  {
+   "key": "compress_f64 p=0.5 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 16777216,
+   "work": 16777216,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 81296832.99921453,
+   "c_ns": 6145625.0,
+   "numpy_min_ns": 79756209.04471725,
+   "c_min_ns": 5642250.0,
+   "numpy_over_c": 13.228407688268407
+  },
+  {
+   "key": "nonzero_bool p=0.5 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 1,
+   "work": 1,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 307.4129659251396,
+   "c_ns": 19.085772256315586,
+   "numpy_min_ns": 302.80893111322024,
+   "c_min_ns": 18.89534833441434,
+   "numpy_over_c": 16.106917854655578
+  },
+  {
+   "key": "nonzero_bool p=0.5 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 16,
+   "work": 16,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 335.0537745174739,
+   "c_ns": 25.49122944882535,
+   "numpy_min_ns": 324.43001499051087,
+   "c_min_ns": 25.10414986811715,
+   "numpy_over_c": 13.143884456028596
+  },
+  {
+   "key": "nonzero_bool p=0.5 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 256,
+   "work": 256,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 512.3540080442926,
+   "c_ns": 127.6382203859096,
+   "numpy_min_ns": 497.02586191431413,
+   "c_min_ns": 123.49320611662478,
+   "numpy_over_c": 4.0141111846844035
+  },
+  {
+   "key": "nonzero_bool p=0.5 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 4096,
+   "work": 4096,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 3399.6854317771918,
+   "c_ns": 1398.5521088019561,
+   "numpy_min_ns": 3315.7368657266807,
+   "c_min_ns": 1378.7121026894863,
+   "numpy_over_c": 2.430860752617555
+  },
+  {
+   "key": "nonzero_bool p=0.5 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 65536,
+   "work": 65536,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 47965.417496053524,
+   "c_ns": 24420.280991735537,
+   "numpy_min_ns": 46557.98985958867,
+   "c_min_ns": 23820.93801652893,
+   "numpy_over_c": 1.9641632097634862
+  },
+  {
+   "key": "nonzero_bool p=0.5 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 1048576,
+   "work": 1048576,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 760140.6250614673,
+   "c_ns": 393826.92307692306,
+   "numpy_min_ns": 734250.0030063093,
+   "c_min_ns": 380307.69230769225,
+   "numpy_over_c": 1.9301388008787685
+  },
+  {
+   "key": "nonzero_bool p=0.5 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 16777216,
+   "work": 16777216,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 11986583.00563693,
+   "c_ns": 6114041.0,
+   "numpy_min_ns": 11833709.02435854,
+   "c_min_ns": 6015875.0,
+   "numpy_over_c": 1.9605009200358536
+  },
+  {
+   "key": "compress_f64 p=0.05 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 1,
+   "work": 1,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 85.1756988735231,
+   "c_ns": 19.63447009882401,
+   "numpy_min_ns": 84.52483124346425,
+   "c_min_ns": 19.265564621388936,
+   "numpy_over_c": 4.338069652240049
+  },
+  {
+   "key": "compress_f64 p=0.05 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 16,
+   "work": 16,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 211.16515775615645,
+   "c_ns": 24.717030227354623,
+   "numpy_min_ns": 206.49633700173897,
+   "c_min_ns": 24.426861869285755,
+   "numpy_over_c": 8.543306206845898
+  },
+  {
+   "key": "compress_f64 p=0.05 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 256,
+   "work": 256,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 331.308236844642,
+   "c_ns": 102.65228610889002,
+   "numpy_min_ns": 318.0921763400218,
+   "c_min_ns": 100.04603111143419,
+   "numpy_over_c": 3.22748035531524
+  },
+  {
+   "key": "compress_f64 p=0.05 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 4096,
+   "work": 4096,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 2017.1836370475535,
+   "c_ns": 1357.9792499999999,
+   "numpy_min_ns": 1968.4966525885584,
+   "c_min_ns": 1330.59375,
+   "numpy_over_c": 1.485430382715755
+  },
+  {
+   "key": "compress_f64 p=0.05 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 65536,
+   "work": 65536,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 55466.41863920555,
+   "c_ns": 21479.8783269962,
+   "numpy_min_ns": 53107.14335123799,
+   "c_min_ns": 21076.84030418251,
+   "numpy_over_c": 2.5822501317195363
+  },
+  {
+   "key": "compress_f64 p=0.05 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 1048576,
+   "work": 1048576,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 972354.1637261709,
+   "c_ns": 357956.0,
+   "numpy_min_ns": 946437.4937427541,
+   "c_min_ns": 351694.44444444444,
+   "numpy_over_c": 2.7164069431052167
+  },
+  {
+   "key": "compress_f64 p=0.05 (branchless C)",
+   "group": "a[mask]",
+   "stmt": "x[mask]",
+   "cfn": "compress_f64_branchless",
+   "n": 16777216,
+   "work": 16777216,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 15600208.018440753,
+   "c_ns": 5535292.0,
+   "numpy_min_ns": 15279707.964509726,
+   "c_min_ns": 5391584.0,
+   "numpy_over_c": 2.8183170857907323
+  },
+  {
+   "key": "nonzero_bool p=0.05 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 1,
+   "work": 1,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 309.85506412867295,
+   "c_ns": 19.422017502474258,
+   "numpy_min_ns": 300.08125652345296,
+   "c_min_ns": 18.79710042106682,
+   "numpy_over_c": 15.953804185852428
+  },
+  {
+   "key": "nonzero_bool p=0.05 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 16,
+   "work": 16,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 311.65072997206113,
+   "c_ns": 25.22032679154377,
+   "numpy_min_ns": 302.5960229912789,
+   "c_min_ns": 24.93676128213968,
+   "numpy_over_c": 12.357124970979989
+  },
+  {
+   "key": "nonzero_bool p=0.05 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 256,
+   "work": 256,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 407.8729483719921,
+   "c_ns": 125.26608228762026,
+   "numpy_min_ns": 397.2256255610002,
+   "c_min_ns": 121.90693323028738,
+   "numpy_over_c": 3.256052563657937
+  },
+  {
+   "key": "nonzero_bool p=0.05 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 4096,
+   "work": 4096,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 1503.5721132192673,
+   "c_ns": 1392.2851340373682,
+   "numpy_min_ns": 1470.562278664569,
+   "c_min_ns": 1353.2131058759817,
+   "numpy_over_c": 1.0799311696011489
+  },
+  {
+   "key": "nonzero_bool p=0.05 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 65536,
+   "work": 65536,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 45533.241309079065,
+   "c_ns": 24036.290322580644,
+   "numpy_min_ns": 37282.06763881144,
+   "c_min_ns": 23505.375,
+   "numpy_over_c": 1.8943539413943313
+  },
+  {
+   "key": "nonzero_bool p=0.05 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 1048576,
+   "work": 1048576,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 918577.2838204034,
+   "c_ns": 381216.125,
+   "numpy_min_ns": 893178.5705499351,
+   "c_min_ns": 375473.9375,
+   "numpy_over_c": 2.4095971381598913
+  },
+  {
+   "key": "nonzero_bool p=0.05 (branchless C)",
+   "group": "nonzero",
+   "stmt": "np.nonzero(mask)[0]",
+   "cfn": "nonzero_bool_branchless",
+   "n": 16777216,
+   "work": 16777216,
+   "alloc": true,
+   "naive_matches_numpy": true,
+   "samples": 11,
+   "numpy_ns": 14968834.002502263,
+   "c_ns": 6117583.0,
+   "numpy_min_ns": 14716958.04502815,
+   "c_min_ns": 6082541.0,
+   "numpy_over_c": 2.446854256411766
+  }
+ ]
+}

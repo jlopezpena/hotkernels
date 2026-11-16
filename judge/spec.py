@@ -72,6 +72,12 @@ class Out:
     # How much of the buffer the kernel fills: USED_CAPACITY means all of it,
     # USED_RETURN means the kernel returns the number of elements it wrote.
     used: str = USED_CAPACITY
+    # True lets the kernel write anywhere inside the capacity, not only the
+    # elements it reports. Only the reported elements are compared with the
+    # oracle; the rest of the buffer may hold anything afterwards. Writing past
+    # the capacity is still a failure. Needs used=USED_RETURN. A binding must
+    # never show a caller the unreported part of such a buffer.
+    scratch: bool = False
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,9 @@ class Kernel:
             raise ValueError(f"{self.name}: at most one Out argument is supported")
         if self.out and self.out.used == USED_RETURN and self.returns != "usize":
             raise ValueError(f"{self.name}: used='return' needs returns='usize'")
+        if self.out and self.out.scratch and self.out.used != USED_RETURN:
+            raise ValueError(f"{self.name}: scratch=True needs used='return'; a buffer "
+                             "that is filled completely has no unreported part")
         if self.mode != EXACT and self.tolerance_ulp is None:
             raise ValueError(f"{self.name}: mode must be 'exact' or {{'tolerance_ulp': k}}")
 

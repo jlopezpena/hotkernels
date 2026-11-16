@@ -149,7 +149,7 @@ Buffers are not ordinary allocations. The judge maps them so that:
 
 - **Reads and writes past the end crash.** Each buffer ends exactly at the boundary of an inaccessible page, and a second arrangement starts it exactly after one. Any access outside the buffer, by even one byte, faults.
 - **Writes to inputs crash.** Input buffers are mapped read-only for the duration of the call.
-- **Writes past the used output are detected.** The unused part of an output buffer is filled with a known pattern and checked afterwards.
+- **Writes past the used output are detected.** The unused part of an output buffer is filled with a known pattern and checked afterwards. A spec can relax this for one buffer; see [Scratch output](#scratch-output-writing-inside-the-capacity).
 
 The rule is strict: a kernel may not read outside its buffers at all.
 
@@ -163,6 +163,35 @@ A SIMD kernel handles several elements per step, say four. An array of 37 elemen
 Reading past the end changes nothing, so it is harmless as long as the extra bytes belong to the program. Memory is handed out in fixed-size pages. If the array happens to end at the very edge of the last page the program owns, the extra read lands on memory it does not own and the program crashes. Code that uses this trick therefore has to check how close it is to a page edge first.
 
 The trick only matters for tiny arrays, where the leftover is most of the work. For an array of a million elements the leftover is a rounding error. The rule stays strict because it is simple to state to an agent and simple to verify. It can be relaxed for specific kernels later if the survey shows that tiny arrays are where the wins are.
+
+#### Scratch output: writing inside the capacity
+
+*Decided in review of the survey.*
+
+By default a kernel may write only the output it reports. A spec can relax this for one output buffer by declaring it as scratch:
+
+```python
+Out("out", "f32", capacity="n", used="return", scratch=True)
+```
+
+A kernel may then write anywhere inside the declared capacity of that buffer. Only the reported part is compared with NumPy; the rest holds unspecified values. Writing even one byte past the capacity is still a failure, as is every other memory rule.
+
+**Why it is needed.** Mask selection (`a[mask]`) copies the selected elements to the output. The simple loop asks "is this element selected?" before each store, and on an unpredictable mask the processor guesses that answer wrong about half the time. The fast loop does not ask: it stores every element at the current output position, and moves the position forward only if the element was selected. An unselected element is overwritten by the next one. The survey measured this at 0.34 ns per element against 3.2 ns for the loop that asks. The NEON version does the same with a whole block of elements per store.
+
+**The last-element problem.** Overwriting only works while there is a next element. Whatever was stored last and not selected stays where it is, just past the reported output. With the scalar loop that is at most one stray element; with NEON it is up to one block minus one. The reported count and the reported elements are correct. The slots after them are not empty, and not what they held before the call.
+
+That has consequences, which is why scratch is opt-in per buffer and not the default:
+
+| Consequence | What it means in practice |
+|---|---|
+| The tail of the buffer is garbage | The binding must hand the user exactly the reported elements and never a view of the whole buffer. Otherwise values the mask excluded become visible |
+| The buffer must be big enough for the stray writes | A block store at output position `k` is safe only because `k` never runs ahead of the input position, so a capacity of `n` always suffices. A binding that counts the selected elements first and allocates exactly that many cannot use a scratch kernel on that buffer: the last block would run past the end |
+| Capacity `n` costs memory | NumPy counts first and allocates only what is selected. Allocating `n` for a mask that selects 1% touches a hundred times more memory before the result is shrunk. The binding has to choose between that and a count pass followed by a strict tail |
+| A caller's own buffer cannot be scratch | With `np.compress(mask, a, out=buf)` the buffer belongs to the user. Stray writes past the result would change data the user can see. The binding must use a strict kernel, or a temporary buffer, whenever the output is not its own |
+| The judge checks less | For a scratch buffer the judge no longer detects a kernel that stores one element too many inside the capacity. A wrong count or a wrong reported element is still caught by the comparison, and a store past the capacity is still caught by the guard page |
+| Two correct kernels can differ | The tail is unspecified, so byte-for-byte comparison covers the reported part only |
+
+The assembly still needs care at the end of the input: the leftover elements that do not fill a block are handled one at a time, because a full block load would read past the input, which stays forbidden.
 
 ### Calling convention
 
@@ -277,6 +306,8 @@ An agent told to make a number go up will sometimes do it the wrong way. The jud
 
 There are two fixture kernels, matching the two spec examples above: `argmax_f32` (returns a value) and `compress_f32` (writes variable-length output). Each has a correct, deliberately simple assembly version, plus broken variants:
 
+A third fixture, `compress_scratch_f32`, covers [scratch output](#scratch-output-writing-inside-the-capacity). It is the same operation as `compress_f32` with the output declared `scratch=True`. Its correct kernel and its naive C both leave a stray element past the reported output, and must pass. The same assembly is a broken variant of `compress_f32`, where it must fail, so the two fixtures together prove the rule applies only where the spec asks for it.
+
 | Broken variant | Must be caught by |
 |---|---|
 | Skips the last element when the size is not a multiple of the vector width | Correctness |
@@ -285,6 +316,7 @@ There are two fixture kernels, matching the two spec examples above: `argmax_f32
 | Only correct when the buffer is aligned | Correctness |
 | Reads one vector past the end of the input | Memory safety |
 | Writes one element past the used output | Memory safety |
+| Writes one element past the capacity of a scratch output | Memory safety |
 | Writes to an input buffer | Memory safety |
 | Overwrites a register it must preserve | Calling convention |
 | Uses `x18` | Lint |
@@ -320,8 +352,9 @@ Phase 1 also delivers the two documents that turn the judge into an agent loop. 
 | Spec format | One Python file per kernel, holding the signature and the oracle. Provisional; changes when a kernel needs it to. |
 | Win thresholds | None. The judge reports speedups with confidence intervals and significance; a person decides. |
 | Memory rule | Strict: no reads outside the buffer. |
+| Writes inside the output capacity | Allowed per buffer when the spec declares it `scratch`. Strict by default. The tail is then garbage, so the binding must return only the reported elements and must not use a scratch kernel on a caller's buffer or an exactly sized one. |
 | Keeping edits during iteration | The agent keeps an edit when `judge compare` says it is significantly faster. |
 | Agent target | At least 10% over naive C, then continue until options are exhausted. If 10% is not possible, report best effort and why. |
 | Committing results | Committed for now; revisit later. |
 | NumPy timing | Best effort: timed from Python with call overhead, labelled as such. Stricter if results warrant it. |
-| Fixture kernels | `argmax_f32` and `compress_f32`. |
+| Fixture kernels | `argmax_f32`, `compress_f32` and `compress_scratch_f32`. |

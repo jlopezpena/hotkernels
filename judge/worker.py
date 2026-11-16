@@ -212,7 +212,10 @@ class Runner:
         """Compare what the kernel wrote to its output buffer with the oracle.
 
         Checks, in order: the reported element count, the elements themselves,
-        and that nothing beyond the reported count was touched.
+        and that nothing beyond the reported count was touched. The last check
+        is skipped for a scratch buffer, where the kernel may leave anything
+        between the reported elements and the capacity. A write past the
+        capacity never reaches this function: it faults on the guard page.
         """
         k, out = self.k, self.k.out
         dt = np_dtype(out.dtype)
@@ -234,6 +237,8 @@ class Runner:
             i = int(np.argmin(matches))  # first mismatch
             return self._failure(WRONG_RESULT, f"wrong value in {out.name}[{i}]", case,
                                  expected=_show(want[i]), got=_show(got[i]))
+        if out.scratch:
+            return None
         untouched = raw[used * dt.itemsize:]
         if untouched.count(_FILL_BYTE) != len(untouched):
             return self._failure(MEMORY_SAFETY,
