@@ -10,6 +10,7 @@ This file is for coding agents. The first half applies to any work here; the sec
 - Run everything through `uv`: `uv run judge <command>`. There is no other setup.
 - `uv run judge selftest` must pass before any change to `judge/` is proposed.
 - Timings are only meaningful on native hardware. Never report numbers taken under emulation.
+- READMEs describe the present state only: what exists and how to use it. No phases, status, roadmap or development history. Plans belong in `docs/`, and history belongs in git. When a change makes a README inaccurate, update it in the same change.
 
 ## Writing or tuning a kernel
 

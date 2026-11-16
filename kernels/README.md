@@ -10,7 +10,7 @@ kernels/<name>/
   attempts.md      log of what was tried and what the judge said
 ```
 
-There are no kernels yet. The survey in phase 2 decides which ones are worth writing.
+There are no kernels yet.
 
 ## Adding a kernel
 
