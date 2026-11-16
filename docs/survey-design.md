@@ -72,7 +72,7 @@ Ranked by how likely a hand-written kernel is to beat both NumPy and C, then by 
 | 3 | `argmax` / `argmin` on floats | NumPy is ahead of naive C (0.33x f32, 0.54x f64) | f32: 0.43 / 1.29; f64: 0.71 / 1.29 | No | Vector max with index tracking and a NaN check per block. NumPy has NEON here, but its float `argmax` is 8x slower than its own `np.max` (0.05) and 2.5x to 4x slower than its integer `argmax` (0.17), so there is room |
 | 4 | `searchsorted` on floats (and `digitize`) | 1.7x to 4.7x behind up to 1M; ahead at 16M | f64: 142 / 84 per needle | No | Branchless search, several needles advanced together so cache misses overlap. NumPy's int64 path (39 ns per needle) shows what is reachable |
 | 5 | `interp` | 3.4x to 5.3x behind from 4,096 up | 679 / 127 per point | Not the search | Same search core as 4, then the interpolation step in SIMD |
-| 6 | `cumsum` | 3.7x behind on floats, 6.5x on int64 | f64: 3.61 / 0.97; i64: 2.18 / 0.34 | No | SIMD prefix sum. Exact for integers. For floats it reorders additions, so it needs tolerance mode; in exact mode the C loop is already at the limit of one addition per element |
+| 6 | `cumsum` | 3.7x behind on floats, 6.5x on int64 | f64: 3.61 / 0.97; i64: 2.18 / 0.34 | No | SIMD prefix sum. Exact for integers. For floats it reorders additions, so it ships in tolerance mode (accepted in review); in exact mode the C loop is already at the limit of one addition per element |
 | 7 | `histogram`, uniform bins | 7.1x behind | 6.26 / 0.88 | No | Compute bin numbers in SIMD, count into several tables to avoid store-to-load stalls |
 | 8 | Masked assignment, `x[mask] = v` | 1.2x behind; both NumPy and C cost 3.4 to 3.9 ns per element at 50% density | 3.85 / 3.40 | Not usefully | Load, select, store whole vectors. The compiler may not do this because it writes elements the source code does not write |
 | 9 | `bincount` | 4.2x behind | 1.37 / 0.33 | No | Several count tables. C is already at about one cycle per element, so the gain over C is likely small |
@@ -132,9 +132,9 @@ Every candidate above is tried; none is dropped in advance. The judge decides wh
 | 2 | Mask selection and `nonzero` | Largest gap the compiler does not close; one compaction technique, two kernels; `compress_f32` is already a judge fixture |
 | 3 | `argmax` / `argmin` on floats | The harder case: beating NumPy where it already has NEON. Already a judge fixture |
 | 4 | `searchsorted` on float64, then `interp` | One search core serves `searchsorted`, `digitize` and `interp` |
-| 5 | `cumsum`: integers exact, then floats | Floats depend on open question 3 |
+| 5 | `cumsum`: integers exact, then floats in tolerance mode | Integers first because they need no tolerance |
 | 6 | `histogram`, `bincount` | Share the several-count-tables technique |
-| 7 | Masked assignment | Depends on open question 1 |
+| 7 | Masked assignment | Only `np.putmask` and `np.copyto` are reached until the indexing gap is resolved |
 | 8 | `isin` with a small test set | Least certain gain over C |
 | 9 | Remaining C kernels: `astype`, `np.sum` on uint8, `count_nonzero` on int64 and float64 | No assembly expected; can be done at any point |
 
@@ -146,11 +146,23 @@ The survey lands in its own pull request. The kernels follow in separate ones, b
 2. **Specs and baselines:** `kernels/<name>/spec.py` and `naive.c` for the candidates, reviewed by a person, since everything is measured against them.
 3. **One pull request per kernel or kernel family:** the assembly from `/goal` runs against the judge, with its `attempts.md` and recorded result. A candidate where assembly does not beat the C ships the C.
 
+## Known gap: indexing syntax
+
+`a[mask]`, `x[mask] = v` and `x.astype(...)` are indexing syntax or array methods. They are not module functions and not ufuncs, so none of the three patching mechanisms in the core design obviously reaches them. Their function forms are reachable: `np.compress`, `np.extract`, `np.putmask` and `np.copyto`.
+
+This limits what three shortlist entries are worth until it is resolved:
+
+| Candidate | Reached today | Not reached |
+|---|---|---|
+| Mask selection | `np.compress(mask, a)`, `np.extract(mask, a)` | `a[mask]` |
+| Masked assignment | `np.putmask(x, mask, v)`, `np.copyto(x, v, where=mask)` | `x[mask] = v` |
+| `astype` C kernels | nothing | `x.astype(...)` |
+
+The kernels are still worth building: the judge can measure them, and the function forms benefit at once. Whether the syntax can be reached is investigated during step 1 of the order of work. The gap is also recorded in [core-design.md](core-design.md) under phase 3.
+
 ## Open questions
 
-1. **Indexing syntax may not be reachable.** `a[mask]`, `x[mask] = v` and `x.astype(...)` are not module functions or ufuncs, so none of the three patching mechanisms in the core design obviously reaches them. `np.compress`, `np.extract`, `np.putmask` and `np.copyto` are reachable. This decides how much the mask kernels and the `astype` C kernels are worth, and should be checked during step 1.
-2. **Which loop is "naive C" for mask selection?** The branchy loop is the simplest, but the branchless loop is just as short and 9x faster at 50% density. The branchless loop is the honest baseline. It stores one element past the used output, still inside the buffer's capacity, which the judge's output rule currently rejects. The SIMD technique needs the same allowance. Proposed: a kernel may write anywhere inside the declared capacity.
-3. **Tolerance mode for `cumsum`.** A float `cumsum` kernel can only beat C by reordering additions. Is a tolerance-mode `cumsum` acceptable for `install()`, given that users may compare results bit for bit? If not, float `cumsum` ships as C.
+1. **Which loop is "naive C" for mask selection?** The branchy loop is the simplest, but the branchless loop is just as short and 9x faster at 50% density. The branchless loop is the honest baseline. It stores one element past the used output, still inside the buffer's capacity, which the judge's output rule currently rejects. The SIMD technique needs the same allowance. Proposed: a kernel may write anywhere inside the declared capacity.
 
 ## Limits of this survey
 
@@ -167,3 +179,5 @@ The survey lands in its own pull request. The kernels follow in separate ones, b
 |---|---|
 | Ship plain C where assembly only ties it? | Yes |
 | Choose three kernels for phase 3? | No. All candidates are tried |
+| Tolerance-mode float `cumsum`? | Acceptable. Float `cumsum` may reorder additions under a declared tolerance |
+| Indexing syntax not reachable | Recorded as a known gap here and in the core design |

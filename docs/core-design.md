@@ -133,6 +133,8 @@ Take the shortlisted kernels to `install()`, in the order given in [survey-desig
     | Replace NumPy's inner loops through its C API | Anything routed through a ufunc: operators, methods, reductions | Operations that are not ufuncs |
     | Decorator or own array type | Anything | Code the user has not opted in |
 
+    **Known gap: indexing syntax and array methods.** `a[mask]`, `x[mask] = v` and `x.astype(...)` are not module functions and are not ufuncs, so none of the three mechanisms obviously reaches them without the user opting in. Their function forms are reachable: `np.compress`, `np.extract`, `np.putmask`, `np.copyto`. This matters because mask selection is the largest gap the survey found that the compiler does not close (see [survey-design.md](survey-design.md)). Until a way to reach the syntax is found, the mask kernels and the `astype` C kernels only speed up code that uses the function forms. Finding out whether the syntax can be reached is part of the first task of this phase.
+
     The second mechanism is recalled from NumPy's C API and from how Intel's `mkl_umath` works. It has not been checked against NumPy 2.x. Verifying it is the first task of this phase.
   - Implement `install()`, `uninstall()`, a context manager, and `report()`.
   - Implement the fallback path and measure its cost. A call that falls back must cost almost nothing extra.
@@ -172,3 +174,5 @@ Mentioned so they are not forgotten. None of these is planned here.
 | Agent loop as its own phase? | No; it is the judge, the contract and `AGENTS.md` |
 | Ship plain C kernels? | Yes, when C beats NumPy and assembly does not beat the C |
 | How many kernels in phase 3? | All shortlisted candidates are tried, not a chosen three |
+| Float `cumsum` that reorders additions? | Acceptable, in tolerance mode. `report()` marks it as inexact |
+| Indexing syntax and methods (`a[mask]`, `x.astype`) | Recorded as a known gap in the delivery path; to be investigated at the start of phase 3 |
