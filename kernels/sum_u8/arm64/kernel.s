@@ -70,17 +70,14 @@ Ltwo:
 
 Lge32:
     mov     x6, #0                  // total of everything already widened
-    add     x3, x0, x1              // end of the array
     movi    v16.2d, #0
     movi    v17.2d, #0
-    movi    v18.2d, #0
-    movi    v19.2d, #0
     cmp     x1, #128
     b.hs    Lge128
 
     // ---- Lean path, fewer than 128 bytes left: x0 = cursor, x1 = a count
-    //      whose low seven bits are the bytes left, x3 = end, x6 = total so
-    //      far, v16-v19 = 16-bit accumulators.
+    //      whose low seven bits are the bytes left, x6 = total so far,
+    //      v16 and v17 = 16-bit accumulators.
 Llean64:
     tbz     x1, #6, Llean32
     ldp     q0, q1, [x0]
@@ -88,8 +85,8 @@ Llean64:
     add     x0, x0, #64
     uadalp  v16.8h, v0.16b
     uadalp  v17.8h, v1.16b
-    uadalp  v18.8h, v2.16b
-    uadalp  v19.8h, v3.16b
+    uadalp  v16.8h, v2.16b
+    uadalp  v17.8h, v3.16b
 Llean32:
     tbnz    x1, #5, Ldo32
 Llean16:
@@ -99,8 +96,6 @@ Lleanpart:
     b.ne    Ldopart
 Lleanreduce:
     add     v16.8h, v16.8h, v17.8h
-    add     v18.8h, v18.8h, v19.8h
-    add     v16.8h, v16.8h, v18.8h
     uaddlv  s0, v16.8h
     fmov    w0, s0
     add     x0, x0, x6
@@ -112,27 +107,30 @@ Ldo32:
     uadalp  v17.8h, v1.16b
     b       Llean16
 Ldo16:
-    ldr     q0, [x0]
-    uadalp  v18.8h, v0.16b
+    ldr     q0, [x0], #16
+    uadalp  v16.8h, v0.16b
     b       Lleanpart
 Ldopart:
-    // 1..15 bytes left: load the last 16 bytes of the array (it has at least
-    // 32) and keep only the ones not yet counted.
+    // 1..15 bytes left, starting at x0: load the last 16 bytes of the array
+    // (it has at least 32) and keep only the ones not yet counted.
     and     x4, x1, #15
-    ldur    q0, [x3, #-16]
-    adrp    x5, Lmask@PAGE
-    add     x5, x5, Lmask@PAGEOFF
-    ldr     q1, [x5, x4]
+    add     x5, x0, x4              // end of the array
+    ldur    q0, [x5, #-16]
+    adrp    x7, Lmask@PAGE
+    add     x7, x7, Lmask@PAGEOFF
+    ldr     q1, [x7, x4]
     and     v0.16b, v0.16b, v1.16b
-    uadalp  v19.8h, v0.16b
+    uadalp  v17.8h, v0.16b
     b       Lleanreduce
 
 Lge128:
     cmp     x1, #BIG_MIN_N
     b.hs    Lbig
     // ---- Lean path, 128..2047 bytes left: eight accumulators, 128 bytes per
-    //      step, folded into v16-v19 afterwards.
+    //      step, folded into v16 and v17 afterwards.
 Llean128:
+    movi    v18.2d, #0
+    movi    v19.2d, #0
     movi    v20.2d, #0
     movi    v21.2d, #0
     movi    v22.2d, #0
@@ -154,17 +152,17 @@ Lleanstep:
     uadalp  v23.8h, v7.16b
     subs    x4, x4, #128
     b.hs    Lleanstep
+    add     v16.8h, v16.8h, v18.8h
+    add     v17.8h, v17.8h, v19.8h
+    add     v20.8h, v20.8h, v22.8h
+    add     v21.8h, v21.8h, v23.8h
     add     v16.8h, v16.8h, v20.8h
     add     v17.8h, v17.8h, v21.8h
-    add     v18.8h, v18.8h, v22.8h
-    add     v19.8h, v19.8h, v23.8h
     tst     x1, #127
     b.ne    Llean64
     // Nothing left: the same reduction as Lleanreduce, repeated here so a
     // multiple of 128 does not take another branch.
     add     v16.8h, v16.8h, v17.8h
-    add     v18.8h, v18.8h, v19.8h
-    add     v16.8h, v16.8h, v18.8h
     uaddlv  s0, v16.8h
     fmov    w0, s0
     add     x0, x0, x6
@@ -172,6 +170,8 @@ Lleanstep:
 
     // ---- Big path: n >= 2048.
 Lbig:
+    movi    v18.2d, #0
+    movi    v19.2d, #0
     movi    v20.2d, #0
     movi    v21.2d, #0
     movi    v22.2d, #0
