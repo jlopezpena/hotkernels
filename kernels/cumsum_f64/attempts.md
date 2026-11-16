@@ -61,3 +61,47 @@ array.
     removed: 2.17, 15.8, 126. Stores are still the main limit after pairing,
     and 16 bytes per store is the most one entry holds, so there is no
     further step of this kind for 8-byte elements.
+
+## 3. Regrouped additions (block prefix sums), to confirm they are not exact
+
+- **Idea:** the trick that works for `cumsum_i64`: in a block of four build
+  a+b, (a+b)+c, ((a+b)+c)+d from the inputs only and add the running sum to
+  each, so the carried chain is one `fadd` per four elements. This changes
+  which values are rounded, so it must fail an exact check. Tried once, in
+  the main loop only (first block and leftovers left strictly sequential).
+- **check:** FAIL, wrong result:
+  ```
+  wrong value in out[9]
+  case:     n=16 arr=end seed=1 x=random
+  expected: -1.909338883059168
+  got:      -1.9093388830591684
+  ```
+  One unit in the last place, on plain random data, at the second element of
+  the first regrouped block.
+- **compare:** not run (check failed)
+- **Kept:** no, reverted
+- **Notes:** for the record, in the standalone timer the regrouped loop takes
+  0.29 to 0.30 ns per element from 1,024 to 1,048,576 elements against 0.92
+  to 0.97 for the exact chain: 3.2x. That is what the exactness requirement
+  costs on long arrays, and no reordering-free code can recover it. A spec
+  with a tolerance would be a different kernel.
+
+## Why the exact kernel cannot beat the C on long arrays
+
+- Bit-identical output means the additions happen in the order
+  `((x0 + x1) + x2) + ...`. Each result is an input of the next, so n elements
+  take at least n times the latency of one floating-point add.
+- That latency is 3 cycles here: 0.929 ns at 3.228 GHz. Measured, from 4,096
+  to 16,777,216 elements: naive C 0.95 to 0.97 ns per element (3.9 us for
+  4,096, 16.00 ms for 16,777,216), this kernel 0.95 to 0.97 (3.9 us,
+  15.97 ms). Both are within 5% of the bound; the judge reports 1.00x or
+  1.01x with intervals that include 1.0 at every one of those sizes.
+- Everything else in the loop (two loads, a store and the loop overhead per
+  element) needs about 0.4 cycles per element of throughput, so there is
+  nothing to save by tightening it: unrolling by 8, 16 or 32, `ldp`/`stp`
+  and 32-byte stores all measure the same from 4,096 elements up.
+- Any change that makes the chain shorter (attempt 3, pairwise sums, several
+  accumulators, vector lanes) changes the rounding and fails `check`.
+- The only gain an exact kernel has is at short lengths (attempt 2), where
+  the benchmark runs many independent calls back to back and the limit is
+  how many of them fit in the core at once, not the chain of one call.
