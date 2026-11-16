@@ -1,79 +1,108 @@
-"""Compiles kernels, naive references and the timing harness with flags the judge controls."""
+"""Compiles kernels, naive references and the timing harness.
+
+The judge owns every compiler flag. A kernel directory cannot change how its
+naive reference is built, so the baseline cannot be weakened.
+"""
 from __future__ import annotations
 
 import platform
-import re
 import subprocess
 from pathlib import Path
 
+from .render import render
 from .spec import DTYPES, RETURNS, In, Kernel, Out, Size
 
 ROOT = Path(__file__).resolve().parent.parent
 C_DIR = Path(__file__).resolve().parent / "c"
+# Compiled libraries and generated sources. Not committed.
 BUILD = ROOT / ".judge" / "build"
 
-ARCH = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "x86_64", "AMD64": "x86_64"}.get(
-    platform.machine(), platform.machine()
-)
-NATIVE = "-mcpu=native" if ARCH == "arm64" else "-march=native"
+# Normalise the names different systems use for the same architecture.
+_ARCH_ALIASES = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "x86_64", "AMD64": "x86_64"}
+ARCH = _ARCH_ALIASES.get(platform.machine(), platform.machine())
+
+# Tune for the processor the judge is running on.
+_NATIVE_FLAG = "-mcpu=native" if ARCH == "arm64" else "-march=native"
 # The naive reference is always built with exactly these flags.
-C_FLAGS = ["-O3", NATIVE, "-std=c11", "-Wall"]
+C_FLAGS = ["-O3", _NATIVE_FLAG, "-std=c11", "-Wall"]
+
+# `nm -g` prints "U _name" for a symbol the object needs from elsewhere, and
+# "<address> <type> _name" for one it defines.
+_NM_UNDEFINED_FIELDS = 2
+_NM_DEFINED_FIELDS = 3
+# In `otool -l` output, a section that lives in the writable data segment.
+_WRITABLE_SEGMENT_MARKER = "segname __DATA"
 
 
 class BuildError(Exception):
-    pass
+    """A compiler, assembler or linker step failed. The message is the tool's output."""
 
 
-def _run(cmd: list[str]) -> str:
+def _run(cmd: list) -> str:
+    """Run a build tool and return its standard output, raising BuildError on failure."""
     proc = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
     if proc.returncode != 0:
         raise BuildError((proc.stderr or proc.stdout).strip())
     return proc.stdout
 
 
-def _c_args(k: Kernel) -> list[str]:
-    parts = []
-    for a in k.args:
-        if isinstance(a, In):
-            parts.append(f"const {DTYPES[a.dtype][1]} *{a.name}")
-        elif isinstance(a, Out):
-            parts.append(f"{DTYPES[a.dtype][1]} *{a.name}")
-        elif isinstance(a, Size):
-            parts.append(f"size_t {a.name}")
-    return parts
+def _c_type(arg: In | Out | Size) -> str:
+    """Return the C type of one kernel argument."""
+    if isinstance(arg, In):
+        return f"const {DTYPES[arg.dtype][1]} *"
+    if isinstance(arg, Out):
+        return f"{DTYPES[arg.dtype][1]} *"
+    return "size_t"
 
 
 def c_prototype(k: Kernel) -> str:
-    return f"{RETURNS[k.returns]} {k.name}({', '.join(_c_args(k))})"
+    """Return the C prototype the spec implies, without a trailing semicolon."""
+    params = [f"{_c_type(a)}{'' if _c_type(a).endswith('*') else ' '}{a.name}" for a in k.args]
+    return f"{RETURNS[k.returns]} {k.name}({', '.join(params)})"
 
 
-def _dir(k: Kernel) -> Path:
+def _build_dir(k: Kernel) -> Path:
+    """Return the kernel's build directory, creating it if needed."""
     d = BUILD / k.name
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def build_asm(k: Kernel, src: Path, tag: str = "kernel") -> tuple[Path | None, list[str]]:
-    """Assemble a kernel. Returns (dylib, issues); the dylib is None when issues were found."""
-    d = _dir(k)
-    obj, dylib = d / f"{tag}.o", d / f"{tag}.dylib"
-    _run(["clang", "-c", src, "-o", obj])
+def _object_issues(k: Kernel, obj: Path) -> list[str]:
+    """Check an assembled object file against the rules a kernel must obey.
 
+    A kernel must export exactly one symbol (itself), need nothing from outside,
+    and contain no writable data.
+    """
     issues: list[str] = []
     wanted = f"_{k.name}"
     defined: set[str] = set()
     for line in _run(["nm", "-g", obj]).splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[0] == "U":
-            issues.append(f"references external symbol {parts[1]}")
-        elif len(parts) == 3:
-            defined.add(parts[2])
+        fields = line.split()
+        if len(fields) == _NM_UNDEFINED_FIELDS and fields[0] == "U":
+            issues.append(f"references external symbol {fields[1]}")
+        elif len(fields) == _NM_DEFINED_FIELDS:
+            defined.add(fields[2])
     if wanted not in defined:
         issues.append(f"does not export {wanted}")
     for extra in sorted(defined - {wanted}):
         issues.append(f"exports extra symbol {extra}")
-    if re.search(r"segname __DATA", _run(["otool", "-l", obj])):
+    if _WRITABLE_SEGMENT_MARKER in _run(["otool", "-l", obj]):
         issues.append("declares writable data")
+    return issues
+
+
+def build_asm(k: Kernel, src: Path, tag: str = "kernel") -> tuple[Path | None, list[str]]:
+    """Assemble a kernel into a shared library.
+
+    `tag` names the output files, so several versions of one kernel can be built
+    side by side. Returns (library, issues). When the object breaks a rule the
+    library is not linked and is returned as None.
+    """
+    d = _build_dir(k)
+    obj, dylib = d / f"{tag}.o", d / f"{tag}.dylib"
+    _run(["clang", "-c", src, "-o", obj])
+    issues = _object_issues(k, obj)
     if issues:
         return None, issues
     _run(["clang", "-shared", obj, "-o", dylib])
@@ -81,63 +110,44 @@ def build_asm(k: Kernel, src: Path, tag: str = "kernel") -> tuple[Path | None, l
 
 
 def build_naive(k: Kernel, src: Path) -> Path:
-    d = _dir(k)
+    """Compile the naive C reference into a shared library with the fixed flags.
+
+    A generated header with the prototype from the spec is force-included, so a
+    `naive.c` whose signature disagrees with the spec fails to compile.
+    """
+    d = _build_dir(k)
     header = d / "kernel.h"
-    header.write_text(
-        "#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n" + c_prototype(k) + ";\n"
-    )
+    header.write_text(render("kernel.h.j2", prototype=c_prototype(k)))
     dylib = d / "naive.dylib"
     _run(["clang", *C_FLAGS, "-shared", "-include", header, src, "-o", dylib])
     return dylib
 
 
 def _bench_source(k: Kernel) -> str:
-    ret = RETURNS[k.returns]
-    arg_types, params, call = [], [], []
-    for a in k.args:
-        if isinstance(a, In):
-            t = f"const {DTYPES[a.dtype][1]} *"
-        elif isinstance(a, Out):
-            t = f"{DTYPES[a.dtype][1]} *"
-        else:
-            arg_types.append("size_t")
-            call.append("(size_t)n")
-            continue
-        arg_types.append(t)
-        params.append(f"void **p_{a.name}")
-        call.append(f"({t})p_{a.name}[p]")
-    sink_decl = "" if ret == "void" else f"volatile {ret} sink;"
-    sink = "" if ret == "void" else "sink = "
-    return f"""// Generated by the judge. Do not edit.
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-
-uint64_t hk_now(void);
-typedef {ret} (*kernel_fn)({', '.join(arg_types)});
-
-// Calls the kernel `reps` times, cycling through a pool of inputs.
-// Returns elapsed nanoseconds.
-uint64_t hk_bench(void *f, uint64_t reps, uint64_t npool, {', '.join(params)}, uint64_t n) {{
-    kernel_fn fn = (kernel_fn)f;
-    uint64_t p = 0;
-    {sink_decl}
-    uint64_t t0 = hk_now();
-    for (uint64_t r = 0; r < reps; r++) {{
-        {sink}fn({', '.join(call)});
-        if (++p == npool) p = 0;
-    }}
-    uint64_t t1 = hk_now();
-    return t1 - t0;
-}}
-"""
+    """Generate the C timing loop for this kernel's signature."""
+    pointer_args = [a for a in k.args if not isinstance(a, Size)]
+    call_args = [
+        "(size_t)n" if isinstance(a, Size) else f"({_c_type(a)})p_{a.name}[p]" for a in k.args
+    ]
+    return render(
+        "bench.c.j2",
+        ret=RETURNS[k.returns],
+        arg_types=[_c_type(a) for a in k.args],
+        pointer_names=[a.name for a in pointer_args],
+        call_args=call_args,
+    )
 
 
 def build_harness(k: Kernel) -> Path:
+    """Build the per-kernel harness library.
+
+    It contains the generated timing loop, the shared timing helpers, and the
+    architecture-specific wrapper that checks the calling convention.
+    """
     abi = C_DIR / f"abi_{ARCH}.s"
     if not abi.exists():
         raise BuildError(f"the judge does not support the {ARCH} architecture yet")
-    d = _dir(k)
+    d = _build_dir(k)
     bench_c = d / "bench.c"
     bench_c.write_text(_bench_source(k))
     dylib = d / "harness.dylib"

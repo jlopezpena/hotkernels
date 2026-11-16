@@ -1,0 +1,9 @@
+{% for o in outcomes %}
+  {{ ("ok" if o.ok else "FAIL") | ljust(4) }}  {{ o.label | ljust(34) }} {{ o.detail }}
+{% endfor %}
+
+{% if failed %}
+selftest FAILED: {{ failed }} problem(s)
+{% else %}
+selftest passed
+{% endif %}

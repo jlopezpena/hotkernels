@@ -1,0 +1,8 @@
+timing stability over {{ runs }} runs ({{ name }}, {{ arch }})
+
+{{ "n" | rjust(12) }}  {{ "fastest" | rjust(10) }}  {{ "slowest" | rjust(10) }}  {{ "spread" | rjust(7) }}
+{% for row in rows %}
+{{ row.n | thousands | rjust(12) }}  {{ row.fastest | ns | rjust(10) }}  {{ row.slowest | ns | rjust(10) }}  {{ row.spread | pct | rjust(7) }}
+{% endfor %}
+
+worst spread {{ worst | pct }} ({{ "within" if ok else "OUTSIDE" }} the {{ limit | pct }} target)

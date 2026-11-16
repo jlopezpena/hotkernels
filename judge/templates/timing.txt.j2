@@ -1,0 +1,36 @@
+{# One table per input distribution: a row per array size, then the overall figure. #}
+{% macro header() %}
+{% for b in baselines %}  {{ labels[b] | rjust(10) }}  {{ "speedup  [95% interval]" | ljust(30) }}{% endfor %}
+{% endmacro %}
+{% macro cells(stats, medians) %}
+{% for b in baselines %}  {{ (medians[b] | ns if medians else "") | rjust(10) }}  {{ stats["vs_" ~ b] | speedup_cell | ljust(30) }}{% endfor %}
+{% endmacro %}
+{{ title }}
+
+{% for warning in warnings %}
+*** {{ warning }}
+
+{% endfor %}
+{% for dist, section in report.distributions.items() %}
+{% if report.distributions | length > 1 or dist != "random" %}
+distribution: {{ dist }}
+{% endif %}
+{{ "n" | rjust(12) }}  {{ labels[kernel] | rjust(10) }}{{ header() }}
+{% for row in section.sizes %}
+{{ row.n | thousands | rjust(12) }}  {{ row.median_ns[kernel] | ns | rjust(10) }}{{ cells(row, row.median_ns) }}
+{% endfor %}
+{{ "overall" | rjust(12) }}  {{ "" | rjust(10) }}{{ cells(section.overall, none) }}
+
+{% endfor %}
+{% if report.distributions | length > 1 %}
+{{ "all" | rjust(12) }}  {{ "" | rjust(10) }}{{ cells(report.overall, none) }}
+
+{% endif %}
+n.s. = not statistically significant (the 95% interval includes 1.0)
+{% for note in notes %}
+{{ note }}
+{% endfor %}
+{% if verdict %}
+
+RESULT: {{ verdict }}
+{% endif %}

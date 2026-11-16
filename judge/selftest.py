@@ -1,115 +1,175 @@
-"""Proves the judge catches kernels that are wrong in known ways."""
+"""Proves the judge catches kernels that are wrong in known ways.
+
+Each fixture kernel has a correct version and several deliberately broken
+variants. The selftest passes only if the correct versions pass and every
+broken variant is caught for the reason it was built to trigger.
+"""
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 
 from . import bench as B
 from .build import ARCH
-from .check import build_all, check
+from .check import KERNEL, LINT, NAIVE, CheckResult, build_all, check
+from .render import render
+from .worker import CALLING_CONVENTION, MEMORY_SAFETY, WRONG_RESULT
+
+log = logging.getLogger(__name__)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
-# fixture kernel -> broken variant -> how the judge must catch it
+# Fixture kernel -> broken variant -> the failure category that must catch it.
 EXPECT = {
     "argmax_f32": {
-        "skip_tail": "wrong result",
-        "ignore_nan": "wrong result",
-        "last_tie": "wrong result",
-        "aligned_only": "wrong result",
-        "overread": "memory safety",
-        "clobber_register": "calling convention",
-        "uses_x18": "lint",
+        "skip_tail": WRONG_RESULT,
+        "ignore_nan": WRONG_RESULT,
+        "last_tie": WRONG_RESULT,
+        "aligned_only": WRONG_RESULT,
+        "overread": MEMORY_SAFETY,
+        "clobber_register": CALLING_CONVENTION,
+        "uses_x18": LINT,
     },
     "compress_f32": {
-        "write_past_used": "memory safety",
-        "write_input": "memory safety",
+        "write_past_used": MEMORY_SAFETY,
+        "write_input": MEMORY_SAFETY,
     },
 }
-SLOW = ("argmax_f32", "slow")  # correct, but must be reported as significantly slower
+# A variant that is correct but slow: it must pass correctness and then be
+# reported as significantly slower than naive C.
+SLOW_KERNEL, SLOW_VARIANT = "argmax_f32", "slow"
+# The slow variant is timed on a reduced sweep; the gap is large enough.
+_SLOW_SIZES = [1024, 65536]
+_SLOW_SAMPLES = 15
+
+# The stability check repeats the full timing sweep this many times ...
+STABILITY_RUNS = 10
+# ... and passes when no size varies by more than this between runs.
 STABILITY_LIMIT = 0.03
+STABILITY_KERNEL = "argmax_f32"
 
 
-def selftest(speed: bool = True) -> int:
-    failures = 0
+@dataclass
+class Outcome:
+    """The result of one selftest step."""
 
-    def report(ok: bool, label: str, detail: str) -> None:
-        nonlocal failures
-        failures += not ok
-        print(f"  {'ok  ' if ok else 'FAIL'}  {label:<34} {detail}")
+    # What was tested, such as "argmax_f32/skip_tail".
+    label: str
+    # True when the judge behaved as required.
+    ok: bool
+    # One-line explanation of what happened.
+    detail: str
 
-    print(f"judge selftest ({ARCH})\n")
+
+def _variant_path(name: str, variant: str) -> Path:
+    """Return the assembly source of a broken variant of a fixture kernel."""
+    return FIXTURES / name / ARCH / "broken" / f"{variant}.s"
+
+
+def _describe_failure(result: CheckResult) -> str:
+    """Summarise a check failure in one line."""
+    f = result.failure
+    return f"{f.category}: {f.message}"
+
+
+def _correct_outcome(name: str) -> Outcome:
+    """Check that the correct version of a fixture kernel passes."""
+    result = check(FIXTURES / name)
+    if result.ok:
+        return Outcome(f"{name} (correct)", True, f"passed {result.cases:,} cases")
+    return Outcome(f"{name} (correct)", False,
+                   f"unexpectedly failed: {_describe_failure(result)} [{result.failure.case}]")
+
+
+def _broken_outcome(name: str, variant: str, expected: str) -> Outcome:
+    """Check that a broken variant is rejected, and for the expected reason."""
+    label = f"{name}/{variant}"
+    result = check(FIXTURES / name, asm=_variant_path(name, variant), tag=f"broken-{variant}")
+    if result.ok:
+        return Outcome(label, False, f"was NOT caught (expected: {expected})")
+    caught_correctly = result.failure.category == expected and result.failure.who == KERNEL
+    if caught_correctly:
+        return Outcome(label, True, f"caught as {_describe_failure(result)}")
+    return Outcome(label, False, f"caught as {_describe_failure(result)}, expected {expected}")
+
+
+def _slow_outcomes(speed: bool) -> Iterator[Outcome]:
+    """Check the slow variant: it must pass correctness, then be reported as slower."""
+    label = f"{SLOW_KERNEL}/{SLOW_VARIANT}"
+    result = check(FIXTURES / SLOW_KERNEL, asm=_variant_path(SLOW_KERNEL, SLOW_VARIANT),
+                   tag=f"broken-{SLOW_VARIANT}")
+    if not result.ok:
+        yield Outcome(f"{label} (correctness)", False,
+                      f"unexpectedly failed: {_describe_failure(result)}")
+        return
+    yield Outcome(f"{label} (correctness)", True, "passes correctness, as intended")
+    if not speed:
+        return
+
+    built = result.built
+    harness = B.Harness(built.k, built.harness)
+    kernel_fn, _kernel_lib = B.function_address(built.kernel, built.k.name)
+    naive_fn, _naive_lib = B.function_address(built.naive, built.k.name)
+    data = B.measure(built.k, harness, {KERNEL: kernel_fn, NAIVE: naive_fn},
+                     sizes=_SLOW_SIZES, samples=_SLOW_SAMPLES)
+    overall = B.analyse(data, KERNEL, [NAIVE])["overall"][f"vs_{NAIVE}"]
+    reported_slower = overall["significant"] and overall["speedup"] < 1
+    verdict = "significantly slower" if reported_slower else "NOT significantly slower"
+    yield Outcome(f"{label} (speed)", reported_slower,
+                  f"reported as {verdict}: {overall['speedup']:.2f}x "
+                  f"[{overall['lo']:.2f} – {overall['hi']:.2f}]")
+
+
+def _outcomes(speed: bool) -> Iterator[Outcome]:
+    """Yield the outcome of every selftest step, in order."""
     for name, variants in EXPECT.items():
-        kernel_dir = FIXTURES / name
-        result = check(kernel_dir)
-        detail = f"passed {result.cases:,} cases" if result.ok else (
-            f"unexpectedly failed: {result.failure.category}: {result.failure.message}"
-            f" [{result.failure.case}]")
-        report(result.ok, f"{name} (correct)", detail)
-
+        yield _correct_outcome(name)
         for variant, expected in variants.items():
-            asm = kernel_dir / ARCH / "broken" / f"{variant}.s"
-            result = check(kernel_dir, asm=asm, tag=f"broken-{variant}")
-            if result.ok:
-                report(False, f"{name}/{variant}", f"was NOT caught (expected: {expected})")
-                continue
-            f = result.failure
-            ok = f.category == expected and f.who == "kernel"
-            report(ok, f"{name}/{variant}",
-                   f"caught as {f.category}: {f.message}" if ok
-                   else f"caught as {f.category} ({f.message}), expected {expected}")
-
-    name, variant = SLOW
-    kernel_dir = FIXTURES / name
-    asm = kernel_dir / ARCH / "broken" / f"{variant}.s"
-    result = check(kernel_dir, asm=asm, tag=f"broken-{variant}")
-    report(result.ok, f"{name}/{variant} (correctness)",
-           "passes correctness, as intended" if result.ok
-           else f"unexpectedly failed: {result.failure.category}: {result.failure.message}")
-    if speed and result.ok:
-        built = result.built
-        harness = B.Harness(built.k, built.harness)
-        kernel_fn, _keep1 = B.function_address(built.kernel, built.k.name)
-        naive_fn, _keep2 = B.function_address(built.naive, built.k.name)
-        data = B.measure(built.k, harness, {"kernel": kernel_fn, "naive": naive_fn},
-                         sizes=[1024, 65536], samples=15)
-        overall = B.analyse(data, "kernel", ["naive"])["overall"]["vs_naive"]
-        ok = overall["significant"] and overall["speedup"] < 1
-        report(ok, f"{name}/{variant} (speed)",
-               f"reported as {'significantly slower' if ok else 'NOT significantly slower'}: "
-               f"{overall['speedup']:.2f}x [{overall['lo']:.2f} – {overall['hi']:.2f}]")
-    elif not speed:
-        print(f"  skip  {name}/{variant} (speed){'':<13} timing skipped")
-
-    print(f"\n{'selftest passed' if not failures else f'selftest FAILED: {failures} problem(s)'}")
-    return 1 if failures else 0
+            yield _broken_outcome(name, variant, expected)
+    yield from _slow_outcomes(speed)
 
 
-def stability(runs: int = 10) -> int:
-    """Times the correct argmax fixture repeatedly and reports the spread per size."""
-    kernel_dir = FIXTURES / "argmax_f32"
-    built, failure, k = build_all(kernel_dir)
+def selftest(speed: bool = True) -> bool:
+    """Run every selftest step and log the results. Returns True when all passed.
+
+    With `speed` off, the slow variant is checked for correctness only; shared
+    CI runners are too noisy to time anything.
+    """
+    log.info("judge selftest (%s)%s\n", ARCH, "" if speed else ", timing skipped")
+    outcomes = list(_outcomes(speed))
+    failed = sum(not outcome.ok for outcome in outcomes)
+    log.info(render("selftest.txt.j2", outcomes=outcomes, failed=failed).rstrip())
+    return failed == 0
+
+
+def stability(runs: int = STABILITY_RUNS) -> bool:
+    """Repeat the timing sweep on a correct fixture and log how much it varies.
+
+    Returns True when, at every size, the slowest run's median is within
+    STABILITY_LIMIT of the fastest run's.
+    """
+    built, failure, k = build_all(FIXTURES / STABILITY_KERNEL)
     if failure:
-        print(f"build failed: {failure.message}")
-        return 1
+        log.error("build failed: %s", failure.message)
+        return False
     harness = B.Harness(k, built.harness)
-    kernel_fn, _keep = B.function_address(built.kernel, k.name)
-    medians: dict[int, list[float]] = {n: [] for n in B.SIZES}
-    for run in range(runs):
-        data = B.measure(k, harness, {"kernel": kernel_fn})
-        for n, times in data["random"].items():
-            medians[n].append(float(np.median(times["kernel"])))
-        print(f"  run {run + 1}/{runs} done", flush=True)
+    kernel_fn, _kernel_lib = B.function_address(built.kernel, k.name)
 
-    print(f"\ntiming stability over {runs} runs ({k.name}, {ARCH})\n")
-    print(f"{'n':>12}  {'fastest':>10}  {'slowest':>10}  {'spread':>7}")
-    worst = 0.0
-    for n, values in medians.items():
-        spread = max(values) / min(values) - 1
-        worst = max(worst, spread)
-        print(f"{n:>12,}  {B.fmt_ns(min(values)):>10}  {B.fmt_ns(max(values)):>10}  {spread:>6.1%}")
+    medians: dict[int, list[float]] = {n: [] for n in B.SIZES}
+    for run in range(1, runs + 1):
+        data = B.measure(k, harness, {KERNEL: kernel_fn})
+        for n, times in data[B.DEFAULT_DISTRIBUTION].items():
+            medians[n].append(float(np.median(times[KERNEL])))
+        log.info("  run %d/%d done", run, runs)
+
+    rows = [{"n": n, "fastest": min(values), "slowest": max(values),
+             "spread": max(values) / min(values) - 1} for n, values in medians.items()]
+    worst = max(row["spread"] for row in rows)
     ok = worst <= STABILITY_LIMIT
-    print(f"\nworst spread {worst:.1%} "
-          f"({'within' if ok else 'OUTSIDE'} the {STABILITY_LIMIT:.0%} target)")
-    return 0 if ok else 1
+    log.info("\n" + render("stability.txt.j2", runs=runs, name=k.name, arch=ARCH, rows=rows,
+                           worst=worst, ok=ok, limit=STABILITY_LIMIT).rstrip())
+    return ok

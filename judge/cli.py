@@ -1,92 +1,145 @@
-"""Command-line entry point: uv run judge <command>."""
+"""The judge: checks hotkernels assembly kernels against NumPy and times them.
+
+Run with `uv run judge <command>`.
+"""
 from __future__ import annotations
 
-import argparse
 import json
+import logging
 import platform
 import re
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
+import typer
 
 from . import bench as B
+from . import selftest as S
 from .build import ARCH, BUILD, ROOT, BuildError, build_asm
-from .check import Built, CheckResult, build_all, check, format_result
+from .check import KERNEL, NAIVE, Built, CheckResult, build_all, check, format_result
+from .render import render
+
+log = logging.getLogger(__name__)
 
 KERNELS = ROOT / "kernels"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+# Recorded results, committed to the repository.
 RESULTS = ROOT / "results"
+# The latest report of every run. Not committed.
 RUNS = ROOT / ".judge" / "runs"
+LEADERBOARD = ROOT / "LEADERBOARD.md"
+
+# Exit codes. Speed never fails a run; only correctness and misuse do.
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_REFUSED = 2
+
+# Contender names used in timing reports.
+NUMPY = "numpy"
+NEW, OLD = "new", "old"
+_BENCH_LABELS = {KERNEL: "kernel", NAIVE: "naive C", NUMPY: "NumPy*"}
+_COMPARE_LABELS = {NEW: "new", OLD: "old"}
 
 NUMPY_NOTE = (
     "NumPy is timed from Python and includes its per-call overhead; the kernel is timed "
-    "without a binding.\nAt small sizes the NumPy column flatters the kernel. Naive C is the "
+    "without a binding. At small sizes the NumPy column flatters the kernel. Naive C is the "
     "honest baseline."
 )
 
+# Branch the reference files must match during a kernel run.
+_REFERENCE_BRANCH = "main"
+# Anything that is not a lowercase letter or digit becomes a dash in a file name.
+_SLUG_SEPARATORS = re.compile(r"[^a-z0-9]+")
+_JSON_INDENT = 2
+
+app = typer.Typer(add_completion=False, no_args_is_help=True, help=__doc__)
+
+KernelArg = typer.Argument(..., help="Kernel name: a directory under kernels/.")
+UnlockedOpt = typer.Option(
+    False, "--unlocked",
+    help="Allow modified reference files. For people creating a kernel or changing the "
+         "judge; never for agent runs.",
+)
+QuickOpt = typer.Option(False, "--quick", help="Two sizes and few samples, as a smoke test.")
+
+
+@app.callback()
+def configure(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show progress while timing."),
+) -> None:
+    """Set up logging. Reports go to standard output as plain lines."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
+
 
 def _git(*args: str) -> subprocess.CompletedProcess:
+    """Run a git command in the repository and return the completed process."""
     return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
 
 
 def resolve(name: str) -> tuple[Path, bool]:
-    """Kernel directory and whether it is a judge fixture."""
+    """Find a kernel by name. Returns (directory, whether it is a judge fixture)."""
     if (KERNELS / name / "spec.py").exists():
         return KERNELS / name, False
     if (FIXTURES / name / "spec.py").exists():
         return FIXTURES / name, True
-    sys.exit(f"unknown kernel {name!r}: no kernels/{name}/spec.py")
-
-
-def locked_paths(name: str) -> list[str]:
-    return ["judge", "pyproject.toml", "uv.lock", f"kernels/{name}/spec.py", f"kernels/{name}/naive.c"]
+    log.error("unknown kernel %r: no kernels/%s/spec.py", name, name)
+    raise typer.Exit(EXIT_REFUSED)
 
 
 def reference_changes(name: str) -> list[str]:
-    """Files an agent must not touch that differ from the main branch."""
-    if _git("rev-parse", "--verify", "--quiet", "main").returncode != 0:
+    """List the locked files that differ from the reference branch.
+
+    The locked files are the judge itself, its dependencies, and the kernel's
+    spec and naive reference: everything a kernel is measured against.
+    """
+    if _git("rev-parse", "--verify", "--quiet", _REFERENCE_BRANCH).returncode != 0:
         return []
-    paths = locked_paths(name)
-    changed = _git("diff", "--name-only", "main", "--", *paths).stdout.split()
-    untracked = _git("ls-files", "--others", "--exclude-standard", "--", *paths).stdout.split()
+    locked = ["judge", "pyproject.toml", "uv.lock",
+              f"kernels/{name}/spec.py", f"kernels/{name}/naive.c"]
+    changed = _git("diff", "--name-only", _REFERENCE_BRANCH, "--", *locked).stdout.split()
+    untracked = _git("ls-files", "--others", "--exclude-standard", "--", *locked).stdout.split()
     return sorted(set(changed + untracked))
 
 
 def guard(name: str, is_fixture: bool, unlocked: bool) -> bool:
-    """Returns True when the reference files are verified unchanged."""
+    """Refuse to run when the reference files were modified.
+
+    Returns True when the reference files are verified unchanged, and False
+    when they differ but `unlocked` allowed the run anyway. Fixtures are part
+    of the judge and are not guarded.
+    """
     if is_fixture:
         return True
     changed = reference_changes(name)
     if not changed:
         return True
+    log.info(render("guard.txt.j2", unlocked=unlocked, changed=changed, name=name, arch=ARCH))
     if unlocked:
-        print("UNLOCKED: these reference files differ from main; results are not trustworthy "
-              "for an agent run:")
-        for path in changed:
-            print(f"  {path}")
-        print()
         return False
-    print(f"FAIL {name} ({ARCH}): reference files modified")
-    print("  The spec, the naive reference and the judge must match the main branch.")
-    for path in changed:
-        print(f"  changed: {path}")
-    print("  Only kernel.s and attempts.md may be edited during a kernel run.")
-    sys.exit(2)
+    raise typer.Exit(EXIT_REFUSED)
 
 
 def machine() -> str:
+    """Return a human-readable name for this machine's processor."""
     if platform.system() == "Darwin":
-        out = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
-                             capture_output=True, text=True).stdout.strip()
-        if out:
-            return out
+        brand = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                               capture_output=True, text=True).stdout.strip()
+        if brand:
+            return brand
     return platform.processor() or platform.machine()
 
 
 def environment(locked: bool) -> dict:
+    """Describe where and how a report was produced, for the JSON record."""
     clang = subprocess.run(["clang", "--version"], capture_output=True, text=True).stdout
     return {
         "arch": ARCH,
@@ -102,217 +155,207 @@ def environment(locked: bool) -> dict:
     }
 
 
-def _progress(dist: str, n: int) -> None:
-    print(f"  timed {dist} n={n:,}", file=sys.stderr, flush=True)
+def _log_progress(dist: str, n: int) -> None:
+    """Log that one size has been timed. Shown only with --verbose."""
+    log.debug("  timed %s n=%s", dist, f"{n:,}")
+
+
+def _sweep(quick: bool) -> tuple[list[int], int]:
+    """Return the (sizes, samples) to time: the full sweep, or the quick one."""
+    return (B.QUICK_SIZES, B.QUICK_SAMPLES) if quick else (B.SIZES, B.SAMPLES)
 
 
 def run_bench(built: Built, quick: bool, locked: bool) -> dict:
+    """Time the kernel against naive C and NumPy and return the full report."""
     k = built.k
     harness = B.Harness(k, built.harness)
-    kernel_fn, _keep1 = B.function_address(built.kernel, k.name)
-    naive_fn, _keep2 = B.function_address(built.naive, k.name)
-    sizes = [1024, 65536] if quick else B.SIZES
-    samples = 10 if quick else B.SAMPLES
+    kernel_fn, _kernel_lib = B.function_address(built.kernel, k.name)
+    naive_fn, _naive_lib = B.function_address(built.naive, k.name)
+    sizes, samples = _sweep(quick)
 
-    before = harness.canary()
-    data = B.measure(k, harness, {"kernel": kernel_fn, "naive": naive_fn, "numpy": None},
-                     sizes, samples, _progress)
-    after = harness.canary()
+    canary_before = harness.canary()
+    data = B.measure(k, harness, {KERNEL: kernel_fn, NAIVE: naive_fn, NUMPY: None},
+                     sizes, samples, _log_progress)
+    canary_after = harness.canary()
 
-    report = B.analyse(data, "kernel", ["naive", "numpy"])
-    report.update(kernel=k.name, samples=samples, warnings=B.noise_warnings(before, after),
+    report = B.analyse(data, KERNEL, [NAIVE, NUMPY])
+    report.update(kernel=k.name, samples=samples,
+                  warnings=B.noise_warnings(canary_before, canary_after),
                   environment=environment(locked))
     return report
 
 
-def print_bench(report: dict) -> None:
+def log_bench(report: dict) -> None:
+    """Log the timing table for a kernel against naive C and NumPy."""
     env = report["environment"]
-    print(f"{report['kernel']} ({env['arch']}, {env['machine']}), NumPy {env['numpy']}, "
-          f"{report['samples']} samples per point\n")
-    for warning in report["warnings"]:
-        print(f"*** {warning}\n")
-    labels = {"kernel": "kernel", "naive": "naive C", "numpy": "NumPy*"}
-    print(B.format_table(report, "kernel", ["naive", "numpy"], labels))
-    print(f"* {NUMPY_NOTE}")
+    title = (f"{report['kernel']} ({env['arch']}, {env['machine']}), NumPy {env['numpy']}, "
+             f"{report['samples']} samples per point")
+    log.info(render("timing.txt.j2", title=title, warnings=report["warnings"], report=report,
+                    kernel=KERNEL, baselines=[NAIVE, NUMPY], labels=_BENCH_LABELS,
+                    notes=[f"* {NUMPY_NOTE}"], verdict=None).rstrip())
 
 
 def save_run(report: dict, record: bool) -> None:
-    RUNS.mkdir(parents=True, exist_ok=True)
+    """Write the report as JSON under .judge/runs, and under results/ when recording."""
     env = report["environment"]
+    text = json.dumps(report, indent=_JSON_INDENT) + "\n"
+    RUNS.mkdir(parents=True, exist_ok=True)
     path = RUNS / f"{report['kernel']}-{env['arch']}.json"
-    path.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"\nfull report: {path.relative_to(ROOT)}")
+    path.write_text(text)
+    log.info("\nfull report: %s", path.relative_to(ROOT))
     if record:
-        slug = re.sub(r"[^a-z0-9]+", "-", env["machine"].lower()).strip("-")
+        slug = _SLUG_SEPARATORS.sub("-", env["machine"].lower()).strip("-")
         target = RESULTS / report["kernel"] / f"{env['arch']}-{slug}.json"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(report, indent=2) + "\n")
-        print(f"recorded:    {target.relative_to(ROOT)}")
+        target.write_text(text)
+        log.info("recorded:    %s", target.relative_to(ROOT))
 
 
-def cmd_check(args) -> int:
-    kernel_dir, is_fixture = resolve(args.kernel)
-    guard(args.kernel, is_fixture, args.unlocked)
-    result = check(kernel_dir, case=args.case)
-    print(format_result(result, args.kernel))
-    return 0 if result.ok else 1
+def _checked(kernel: str, kernel_dir: Path, case: Optional[str] = None) -> CheckResult:
+    """Run the correctness check, log its outcome, and exit if it failed."""
+    result = check(kernel_dir, case=case)
+    log.info(format_result(result, kernel))
+    if not result.ok:
+        raise typer.Exit(EXIT_FAILED)
+    return result
 
 
-def cmd_bench(args) -> int:
-    kernel_dir, is_fixture = resolve(args.kernel)
-    locked = guard(args.kernel, is_fixture, args.unlocked)
+@app.command("check")
+def check_command(
+    kernel: str = KernelArg,
+    case: Optional[str] = typer.Option(None, help="Run a single case, as printed by a failure."),
+    unlocked: bool = UnlockedOpt,
+) -> None:
+    """Lint and correctness only. Fast enough to run after every edit."""
+    kernel_dir, is_fixture = resolve(kernel)
+    guard(kernel, is_fixture, unlocked)
+    _checked(kernel, kernel_dir, case)
+
+
+@app.command()
+def bench(kernel: str = KernelArg, quick: bool = QuickOpt, unlocked: bool = UnlockedOpt) -> None:
+    """Timing report only, without the correctness check."""
+    kernel_dir, is_fixture = resolve(kernel)
+    locked = guard(kernel, is_fixture, unlocked)
     built, failure, k = build_all(kernel_dir)
     if failure:
-        print(format_result(CheckResult(k.name, False, failure), args.kernel))
-        return 1
-    report = run_bench(built, args.quick, locked)
-    print_bench(report)
+        log.info(format_result(CheckResult(k.name, False, failure), kernel))
+        raise typer.Exit(EXIT_FAILED)
+    report = run_bench(built, quick, locked)
+    log_bench(report)
     save_run(report, record=False)
-    return 0
 
 
-def cmd_run(args) -> int:
-    kernel_dir, is_fixture = resolve(args.kernel)
-    locked = guard(args.kernel, is_fixture, args.unlocked)
-    result = check(kernel_dir)
-    print(format_result(result, args.kernel))
-    if not result.ok:
-        return 1
-    print()
-    report = run_bench(result.built, args.quick, locked)
+@app.command()
+def run(
+    kernel: str = KernelArg,
+    quick: bool = QuickOpt,
+    record: bool = typer.Option(False, "--record", help="Also save the report under results/."),
+    unlocked: bool = UnlockedOpt,
+) -> None:
+    """Correctness, then the timing report against naive C and NumPy."""
+    kernel_dir, is_fixture = resolve(kernel)
+    locked = guard(kernel, is_fixture, unlocked)
+    result = _checked(kernel, kernel_dir)
+    log.info("")
+    report = run_bench(result.built, quick, locked)
     report["correctness"] = {"cases": result.cases, "fresh_seed": result.fresh_seed}
-    print_bench(report)
-    save_run(report, args.record)
-    return 0
+    log_bench(report)
+    save_run(report, record)
 
 
-def cmd_compare(args) -> int:
-    kernel_dir, is_fixture = resolve(args.kernel)
-    guard(args.kernel, is_fixture, args.unlocked)
-    result = check(kernel_dir)
-    print(format_result(result, args.kernel))
-    if not result.ok:
-        return 1
-    built, k = result.built, result.built.k
+def _build_old_version(built: Built, revision: str) -> Path:
+    """Build the kernel as it was at an earlier git revision.
 
-    rel = built.asm.relative_to(ROOT)
-    shown = _git("show", f"{args.against}:{rel.as_posix()}")
+    Exits with a message when the kernel did not exist then, or no longer
+    builds or passes lint.
+    """
+    k = built.k
+    relative = built.asm.relative_to(ROOT).as_posix()
+    shown = _git("show", f"{revision}:{relative}")
     if shown.returncode != 0:
-        print(f"\ncannot compare: {rel} does not exist at {args.against}")
-        return 2
-    old_src = BUILD / k.name / "old.s"
-    old_src.write_text(shown.stdout)
+        log.error("\ncannot compare: %s does not exist at %s", relative, revision)
+        raise typer.Exit(EXIT_REFUSED)
+    source = BUILD / k.name / "old.s"
+    source.write_text(shown.stdout)
     try:
-        old_dylib, issues = build_asm(k, old_src, "old")
+        dylib, issues = build_asm(k, source, OLD)
     except BuildError as e:
-        print(f"\ncannot compare: the version at {args.against} does not build: {e}")
-        return 2
+        log.error("\ncannot compare: the version at %s does not build: %s", revision, e)
+        raise typer.Exit(EXIT_REFUSED)
     if issues:
-        print(f"\ncannot compare: the version at {args.against} fails lint: {issues[0]}")
-        return 2
+        log.error("\ncannot compare: the version at %s fails lint: %s", revision, issues[0])
+        raise typer.Exit(EXIT_REFUSED)
+    return dylib
+
+
+def _compare_verdict(overall: dict) -> str:
+    """Describe the overall difference as one of three outcomes, with its interval."""
+    if not overall["significant"]:
+        outcome = "no significant difference"
+    elif overall["speedup"] > 1:
+        outcome = "significantly faster"
+    else:
+        outcome = "significantly slower"
+    return (f"{outcome} ({overall['speedup']:.3f}x, "
+            f"95% interval {overall['lo']:.3f} – {overall['hi']:.3f})")
+
+
+@app.command()
+def compare(
+    kernel: str = KernelArg,
+    against: str = typer.Option(..., help="Git revision to compare with, for example HEAD."),
+    quick: bool = QuickOpt,
+    unlocked: bool = UnlockedOpt,
+) -> None:
+    """Is the working copy of a kernel faster than an earlier version of it?
+
+    Both versions are timed interleaved in one process, which detects much
+    smaller differences than comparing against numbers recorded earlier.
+    """
+    kernel_dir, is_fixture = resolve(kernel)
+    guard(kernel, is_fixture, unlocked)
+    built = _checked(kernel, kernel_dir).built
+    k = built.k
+    old_dylib = _build_old_version(built, against)
 
     harness = B.Harness(k, built.harness)
-    new_fn, _keep1 = B.function_address(built.kernel, k.name)
-    old_fn, _keep2 = B.function_address(old_dylib, k.name)
-    sizes = [1024, 65536] if args.quick else B.SIZES
-    samples = 10 if args.quick else B.SAMPLES
-    before = harness.canary()
-    data = B.measure(k, harness, {"new": new_fn, "old": old_fn}, sizes, samples, _progress)
-    after = harness.canary()
-    report = B.analyse(data, "new", ["old"])
+    new_fn, _new_lib = B.function_address(built.kernel, k.name)
+    old_fn, _old_lib = B.function_address(old_dylib, k.name)
+    sizes, samples = _sweep(quick)
+    canary_before = harness.canary()
+    data = B.measure(k, harness, {NEW: new_fn, OLD: old_fn}, sizes, samples, _log_progress)
+    canary_after = harness.canary()
 
-    print(f"\n{k.name} ({ARCH}): working copy vs {args.against}\n")
-    for warning in B.noise_warnings(before, after):
-        print(f"*** {warning}\n")
-    print(B.format_table(report, "new", ["old"], {"new": "new", "old": "old"}))
-    overall = report["overall"]["vs_old"]
-    if not overall["significant"]:
-        verdict = "no significant difference"
-    elif overall["speedup"] > 1:
-        verdict = "significantly faster"
-    else:
-        verdict = "significantly slower"
-    print(f"\nRESULT: {verdict} "
-          f"({overall['speedup']:.3f}x, 95% interval {overall['lo']:.3f} – {overall['hi']:.3f})")
-    return 0
+    report = B.analyse(data, NEW, [OLD])
+    log.info("\n" + render(
+        "timing.txt.j2",
+        title=f"{k.name} ({ARCH}): working copy vs {against}",
+        warnings=B.noise_warnings(canary_before, canary_after),
+        report=report, kernel=NEW, baselines=[OLD], labels=_COMPARE_LABELS, notes=[],
+        verdict=_compare_verdict(report["overall"][f"vs_{OLD}"]),
+    ).rstrip())
 
 
-def cmd_selftest(args) -> int:
-    from .selftest import selftest, stability
-    if args.stability:
-        return stability()
-    return selftest(speed=not args.no_speed)
+@app.command()
+def selftest(
+    no_speed: bool = typer.Option(False, "--no-speed", help="Skip the timing fixture, for CI."),
+    stability: bool = typer.Option(
+        False, "--stability", help="Repeat the timing sweep and report how much it varies."),
+) -> None:
+    """Prove the judge catches kernels that are wrong in known ways."""
+    passed = S.stability() if stability else S.selftest(speed=not no_speed)
+    if not passed:
+        raise typer.Exit(EXIT_FAILED)
 
 
-def cmd_leaderboard(args) -> int:
-    rows = []
-    for path in sorted(RESULTS.glob("*/*.json")):
-        r = json.loads(path.read_text())
-        env, overall = r["environment"], r["overall"]
-
-        def cell(s):
-            return f"{s['speedup']:.2f}x ({s['lo']:.2f} – {s['hi']:.2f})"
-
-        rows.append(f"| `{r['kernel']}` | {env['arch']} | {env['machine']} | "
-                    f"{cell(overall['vs_naive'])} | {cell(overall['vs_numpy'])} | "
-                    f"{env['numpy']} | {env['timestamp'][:10]} |")
-    lines = [
-        "# Leaderboard",
-        "",
-        "Generated by `uv run judge leaderboard` from the files in `results/`. Do not edit.",
-        "",
-        "Speedups are geometric means across array sizes, with 95% confidence intervals.",
-        NUMPY_NOTE.replace("\n", " "),
-        "",
-        "| Kernel | Arch | Machine | vs naive C | vs NumPy | NumPy | Date |",
-        "|---|---|---|---|---|---|---|",
-        *(rows or ["| _no recorded results yet_ | | | | | | |"]),
-        "",
-    ]
-    (ROOT / "LEADERBOARD.md").write_text("\n".join(lines))
-    print(f"wrote LEADERBOARD.md ({len(rows)} results)")
-    return 0
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(prog="judge", description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    def kernel_command(name, func, help_text):
-        p = sub.add_parser(name, help=help_text)
-        p.add_argument("kernel")
-        p.add_argument("--unlocked", action="store_true",
-                       help="allow modified reference files (for people creating a kernel or "
-                            "changing the judge; never for agent runs)")
-        p.set_defaults(func=func)
-        return p
-
-    p = kernel_command("check", cmd_check, "lint and correctness only")
-    p.add_argument("--case", help="run a single case, as printed by a failure")
-
-    p = kernel_command("bench", cmd_bench, "timing report only")
-    p.add_argument("--quick", action="store_true", help="two sizes, few samples (smoke test)")
-
-    p = kernel_command("run", cmd_run, "correctness, then the timing report")
-    p.add_argument("--quick", action="store_true", help="two sizes, few samples (smoke test)")
-    p.add_argument("--record", action="store_true", help="also save the report under results/")
-
-    p = kernel_command("compare", cmd_compare, "is the working copy faster than an earlier version?")
-    p.add_argument("--against", required=True, help="git revision to compare with, e.g. HEAD")
-    p.add_argument("--quick", action="store_true", help="two sizes, few samples (smoke test)")
-
-    p = sub.add_parser("selftest", help="prove the judge catches known-bad kernels")
-    p.add_argument("--no-speed", action="store_true", help="skip the timing fixture (for CI)")
-    p.add_argument("--stability", action="store_true",
-                   help="run the timing ten times and report how much it varies")
-    p.set_defaults(func=cmd_selftest)
-
-    p = sub.add_parser("leaderboard", help="regenerate LEADERBOARD.md from results/")
-    p.set_defaults(func=cmd_leaderboard)
-
-    args = parser.parse_args()
-    return args.func(args)
+@app.command()
+def leaderboard() -> None:
+    """Regenerate LEADERBOARD.md from the recorded results."""
+    results = [json.loads(path.read_text()) for path in sorted(RESULTS.glob("*/*.json"))]
+    LEADERBOARD.write_text(render("leaderboard.md.j2", results=results, numpy_note=NUMPY_NOTE))
+    log.info("wrote %s (%d results)", LEADERBOARD.name, len(results))
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    app()

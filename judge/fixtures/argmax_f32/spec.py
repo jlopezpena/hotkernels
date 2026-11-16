@@ -5,6 +5,7 @@ from judge.spec import In, Kernel, Size
 
 
 def oracle(x):
+    """Index of the maximum, as NumPy defines it."""
     return np.argmax(x)
 
 

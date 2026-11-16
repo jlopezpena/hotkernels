@@ -1,0 +1,16 @@
+{% if result.ok %}
+PASS {{ result.name }} ({{ arch }}): {{ result.cases | thousands }} cases, fresh seed {{ result.fresh_seed }}
+{% else %}
+{% set f = result.failure %}
+FAIL {{ result.name }} ({{ arch }}): {{ f.category }}
+  {{ f.message }}
+{% if f.case %}
+  case:     {{ f.case }}
+{% endif %}
+{% for detail in f.details %}
+  {{ detail }}
+{% endfor %}
+{% if f.case and command_name %}
+  rerun:    uv run judge check {{ command_name }} --case '{{ f.case }}'
+{% endif %}
+{% endif %}

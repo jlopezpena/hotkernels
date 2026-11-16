@@ -5,10 +5,14 @@ description = "Development judge for hotkernels: checks assembly kernels against
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = ["numpy>=2.0"]
+dependencies = [
+    "jinja2>=3.1.6",
+    "numpy>=2.0",
+    "typer>=0.29.1",
+]
 
 [project.scripts]
-judge = "judge.cli:main"
+judge = "judge.cli:app"
 
 [build-system]
 requires = ["hatchling"]

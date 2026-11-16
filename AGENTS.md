@@ -12,6 +12,19 @@ This file is for coding agents. The first half applies to any work here; the sec
 - Timings are only meaningful on native hardware. Never report numbers taken under emulation.
 - READMEs describe the present state only: what exists and how to use it. No phases, status, roadmap or development history. Plans belong in `docs/`, and history belongs in git. When a change makes a README inaccurate, update it in the same change.
 
+## Python code standards
+
+These apply to all Python in this repository.
+
+- **Command lines use `typer`.** Never `argparse`.
+- **Output uses the `logging` module.** Never a bare `print`. Each module gets `log = logging.getLogger(__name__)`; the CLI configures the handler.
+- **Generated text uses Jinja templates** in `judge/templates/`: reports, tables, Markdown, generated C. Python passes values in; it does not assemble multi-line or column-aligned text with string formatting.
+- **Every module, class and function has a docstring**, including private and nested ones. Say what it does and anything a reader could not guess from the signature.
+- **Every dataclass field has a comment** directly above it saying what it means.
+- **No magic constants.** Numbers and strings with meaning get a named module-level constant, with a comment explaining the value where it is not obvious.
+- **Comment the non-obvious.** Where code depends on something outside itself, such as a calling convention, a file format or a memory layout, explain it at the point of use.
+- **Small functions over closures that mutate outer state.** Return values; do not use `nonlocal` counters.
+
 ## Writing or tuning a kernel
 
 ### The one rule

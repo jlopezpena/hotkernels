@@ -1,13 +1,20 @@
 """Fixture kernel: tests the judge on a kernel that writes variable-length output."""
-from judge.spec import In, Kernel, Out, Size
+from judge.spec import USED_RETURN, In, Kernel, Out, Size
+
+# Share of mask elements that are True in each timing distribution.
+HALF_SELECTED = 0.5
+FEW_SELECTED = 0.05
 
 
 def oracle(x, mask):
+    """The elements of x where mask is True, as NumPy selects them."""
     return x[mask]
 
 
 def _masked(fraction):
+    """Return a timing distribution in which `fraction` of the mask is True."""
     def make(rng, n):
+        """Build random data and a random mask for one timing input."""
         return {"x": rng.standard_normal(n).astype("float32"), "mask": rng.random(n) < fraction}
     return make
 
@@ -18,10 +25,9 @@ KERNEL = Kernel(
     args=[
         In("x", "f32"),
         In("mask", "bool"),
-        Out("out", "f32", used="return"),
+        Out("out", "f32", used=USED_RETURN),
         Size("n"),
     ],
     oracle=oracle,
-    mode="exact",
-    distributions={"half_selected": _masked(0.5), "few_selected": _masked(0.05)},
+    distributions={"half_selected": _masked(HALF_SELECTED), "few_selected": _masked(FEW_SELECTED)},
 )
