@@ -31,8 +31,9 @@ array.
   elements, 0.33 ns per element, a third of the `fadd` latency: successive
   calls are independent, so the core runs several of them at once, and the
   time per call is set by how many elements it can hold in flight. Each
-  element holds one store-queue entry until its `fadd` finishes. `stp d, d`
-  stores two elements with one entry, so twice as many elements fit. Eight
+  element has an add and a store waiting until the chain reaches it.
+  `stp d, d` stores two elements with one store operation, so fewer
+  operations wait per element and more elements fit. Eight
   elements per iteration; the first eight have their own block (element 0 is
   stored as loaded) so sizes that are multiples of eight never enter the
   leftover code. Order of additions and operand order are unchanged.
@@ -54,13 +55,15 @@ array.
   - 16 or 32 elements per iteration: 2.86 and 2.90 at 16, 19.0 and 19.1 at
     64, 160 and 161 at 256. No gain over 8, so 8 was kept.
   - packing two sums into a q register and storing four elements with
-    `stp q, q`: 2.85 at 16, 19.2 at 64, 161 at 256. No gain: a 32-byte pair
-    store still takes two store-queue entries.
+    `stp q, q`: 2.85 at 16, 19.2 at 64, 161 at 256. No gain.
   - timing-only variants with wrong results, to see what limits the overlap:
     half of the `stp` removed: 2.40 at 16, 17.7 at 64, 134 at 256; all stores
-    removed: 2.17, 15.8, 126. Stores are still the main limit after pairing,
-    and 16 bytes per store is the most one entry holds, so there is no
-    further step of this kind for 8-byte elements.
+    removed: 2.17, 15.8, 126. So waiting stores are still a limit after
+    pairing, but nothing was found that reduces them further: wider stores
+    need extra operations to assemble their data, and those wait on the chain
+    too (see the packed-store result in `cumsum_f32/attempts.md`, which was
+    slightly worse). Which structure of the core fills up first (store queue,
+    scheduler, reorder buffer) was not established.
 
 ## 3. Regrouped additions (block prefix sums), to confirm they are not exact
 
@@ -85,6 +88,22 @@ array.
   to 0.97 for the exact chain: 3.2x. That is what the exactness requirement
   costs on long arrays, and no reordering-free code can recover it. A spec
   with a tolerance would be a different kernel.
+
+## 4. Sixteen elements per iteration
+
+- **Idea:** the paired loop of attempt 2 runs just over the latency floor
+  once the data is outside the first-level cache: in the standalone timer
+  3.02 to 3.03 cycles per element at 65,536 and 1,048,576 against 3.00 to
+  3.01 for the naive C. With 16 or 32 elements per iteration it is 3.01 to
+  3.02. Use 16.
+- **check:** pass (18,136 cases)
+- **compare:** significantly faster, 1.004x [1.002 – 1.005]; rerun 1.004x
+  [1.004 – 1.006]
+- **Kept:** yes
+- **Notes:** 1.00x to 1.01x at every size. It gives back most of the half
+  percent that attempt 2 lost at the larger sizes; nothing more. Why the
+  paired loop is slower than the floor there was not established; it does
+  not happen at 4,096, where everything is in the first-level cache.
 
 ## Why the exact kernel cannot beat the C on long arrays
 
