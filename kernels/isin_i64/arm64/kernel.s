@@ -1,26 +1,39 @@
 // void isin_i64(const int64_t *x, const int64_t *test, bool *out, size_t n);
 // x0 = x (n values), x1 = test (exactly 8 values), x2 = out (n bytes), x3 = n.
 //
-// 16 elements per iteration, in one of two ways, chosen once from the test
-// values.
+// 16 elements per iteration. How a block is done is chosen once per call, from
+// the test values and n.
 //
-// Narrow keys (Lnarrow, Lbiased), when there is a base for which every test
-// value minus base is below 0xFFFF. Base 0 is tried first, then
-// test[0] - 0x7FFF, which works when all 8 test values lie within 32,767 of
-// test[0]. Each element (minus the base, if it is not 0) is narrowed from 64
-// to 16 bits with unsigned saturation (uqxtn twice), which keeps values below
-// 0xFFFF exact and turns everything else into 0xFFFF. An element is in the set
-// exactly when its 16-bit key equals a test key, because no test key is
-// 0xFFFF. The 8 compares and the OR tree then run on vectors of eight keys
-// instead of two elements.
+// Narrow keys, when there is a base for which every test value minus base is
+// below 0xFFFF. Base 0 is tried first, then test[0] - 0x7FFF, which works
+// when all 8 test values lie within 32,767 of test[0]. Each element (minus
+// the base, if it is not 0) is narrowed from 64 to 16 bits with unsigned
+// saturation (uqxtn twice), which keeps values below 0xFFFF exact and turns
+// everything else into 0xFFFF. An element is in the set exactly when its
+// 16-bit key equals a test key, because no test key is 0xFFFF. The keys are
+// then matched in one of two ways:
+//
+//   - n >= TABLE_MIN_N (Ltable, Lbiased_table): nibble tables. Each key is
+//     split into four nibbles, and each nibble looks up, in a 16-entry table
+//     for its position, a byte with one bit per test key: set when that test
+//     key has the same nibble there. A key equals test key j exactly when bit
+//     j is set in all four lookups, so the AND of the four is non-zero exactly
+//     for members. Building the four tables costs about as much as six blocks.
+//
+//   - smaller n (Lnarrow, Lbiased): 8 compares and an OR tree on vectors of
+//     eight keys.
 //
 // Wide (Lwide), for any other test values: each vector of two elements is
 // compared with the 8 broadcast test values at 64 bits.
 //
-// Either way the lane masks are narrowed to 16 bytes and shifted down to 0 or
-// 1. The leftover (n mod 16) is handled by one more block that ends exactly at
+// The leftover (n mod 16) is handled by one more block that ends exactly at
 // the end of the arrays and overlaps the previous one. Fewer than 16 elements
 // take a scalar loop.
+
+.section __TEXT,__literal16,16byte_literals
+.p2align 4
+Liota:
+    .byte 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 
 // \res = all-ones in each lane (of arrangement \sz) of \src that equals one of
 // the values broadcast in v16-v23. \a-\f are scratch registers.
@@ -101,6 +114,104 @@
     b       \name
 .endm
 
+// Build the four nibble tables in v16-v19 from the eight 16-bit test keys in
+// \src. Table q, entry v, has bit j set when nibble q of key j is v. Needs
+// 0..15 in v22 and 0x0F bytes in v20. Uses v1-v7.
+.macro BUILDTABLES src
+    xtn     v1.8b, \src\().8h        // low byte of each key
+    shrn    v2.8b, \src\().8h, #8    // high byte of each key
+    and     v4.16b, v1.16b, v20.16b // nibble 0 of each key
+    ushr    v5.16b, v1.16b, #4      // nibble 1
+    and     v6.16b, v2.16b, v20.16b // nibble 2
+    ushr    v7.16b, v2.16b, #4      // nibble 3
+    ONETABLE v16, v4
+    ONETABLE v17, v5
+    ONETABLE v18, v6
+    ONETABLE v19, v7
+.endm
+
+// \tab = table for the nibbles in bytes 0-7 of \nib. For each key j, a vector
+// that is all-ones in the entry equal to its nibble is shifted to bit j and
+// inserted above the bits already there (sli keeps the low j bits of \tab).
+.macro ONETABLE tab, nib
+    dup     v1.16b, \nib\().b[0]
+    cmeq    \tab\().16b, v1.16b, v22.16b
+    dup     v1.16b, \nib\().b[1]
+    dup     v2.16b, \nib\().b[2]
+    dup     v3.16b, \nib\().b[3]
+    cmeq    v1.16b, v1.16b, v22.16b
+    cmeq    v2.16b, v2.16b, v22.16b
+    cmeq    v3.16b, v3.16b, v22.16b
+    sli     \tab\().16b, v1.16b, #1
+    sli     \tab\().16b, v2.16b, #2
+    sli     \tab\().16b, v3.16b, #3
+    dup     v1.16b, \nib\().b[4]
+    dup     v2.16b, \nib\().b[5]
+    dup     v3.16b, \nib\().b[6]
+    cmeq    v1.16b, v1.16b, v22.16b
+    cmeq    v2.16b, v2.16b, v22.16b
+    cmeq    v3.16b, v3.16b, v22.16b
+    sli     \tab\().16b, v1.16b, #4
+    sli     \tab\().16b, v2.16b, #5
+    sli     \tab\().16b, v3.16b, #6
+    dup     v1.16b, \nib\().b[7]
+    cmeq    v1.16b, v1.16b, v22.16b
+    sli     \tab\().16b, v1.16b, #7
+.endm
+
+// The nibble-table loop, ending in a branch to Ldone. Each 16-bit key is split
+// into four nibbles; each nibble looks up, in its table, the set of test keys
+// that have the same nibble there (one bit per test key). A key equals test
+// key j when bit j survives the AND of its four lookups. With \biased, the
+// base in v31 is subtracted from every element first. Needs 0x0F bytes in v20
+// and 0x01 bytes in v21.
+.macro TABLELOOP name, biased
+\name:
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ldp     q4, q5, [x0, #64]
+    ldp     q6, q7, [x0, #96]
+.if \biased
+    sub     v0.2d, v0.2d, v31.2d
+    sub     v1.2d, v1.2d, v31.2d
+    sub     v2.2d, v2.2d, v31.2d
+    sub     v3.2d, v3.2d, v31.2d
+    sub     v4.2d, v4.2d, v31.2d
+    sub     v5.2d, v5.2d, v31.2d
+    sub     v6.2d, v6.2d, v31.2d
+    sub     v7.2d, v7.2d, v31.2d
+.endif
+    NARROW8 v0, v1, v2, v3          // keys of elements 0-7
+    NARROW8 v4, v5, v6, v7          // keys of elements 8-15
+    uzp1    v1.16b, v0.16b, v4.16b  // low byte of each key
+    uzp2    v2.16b, v0.16b, v4.16b  // high byte of each key
+    and     v3.16b, v1.16b, v20.16b
+    ushr    v1.16b, v1.16b, #4
+    and     v5.16b, v2.16b, v20.16b
+    ushr    v2.16b, v2.16b, #4
+    tbl     v3.16b, {v16.16b}, v3.16b
+    tbl     v1.16b, {v17.16b}, v1.16b
+    tbl     v5.16b, {v18.16b}, v5.16b
+    tbl     v2.16b, {v19.16b}, v2.16b
+    and     v3.16b, v3.16b, v1.16b
+    and     v5.16b, v5.16b, v2.16b
+    and     v3.16b, v3.16b, v5.16b
+    umin    v3.16b, v3.16b, v21.16b // non-zero -> 1
+    str     q3, [x2], #16
+    add     x0, x0, #128
+    subs    x3, x3, #16
+    b.hs    \name
+    cmn     x3, #16                 // x3 = leftover - 16
+    b.eq    Ldone
+    sub     x0, x9, #128            // last 16 elements, overlapping
+    sub     x2, x10, #16
+    mov     x3, #0
+    b       \name
+.endm
+
+// Smallest n for which the nibble tables are built.
+.set TABLE_MIN_N, 96
+
 .text
 .globl _isin_i64
 .p2align 2
@@ -121,8 +232,17 @@ _isin_i64:
     umaxv   h1, v1.8h
     fmov    w8, s1
     cbnz    w8, Lbiased_setup
+    cmp     x3, #TABLE_MIN_N - 16
+    b.hs    Ltable_setup
     DUPKEYS v0
     NARROWLOOP Lnarrow, 0
+Ltable_setup:
+    adrp    x8, Liota@PAGE
+    ldr     q22, [x8, Liota@PAGEOFF]
+    movi    v20.16b, #0x0f
+    movi    v21.16b, #0x01
+    BUILDTABLES v0
+    TABLELOOP Ltable, 0
 
 Lbiased_setup:
     ldp     q0, q1, [x1]
@@ -140,8 +260,17 @@ Lbiased_setup:
     umaxv   h1, v1.8h
     fmov    w8, s1
     cbnz    w8, Lwide_setup
+    cmp     x3, #TABLE_MIN_N - 16
+    b.hs    Lbiased_table_setup
     DUPKEYS v0
     NARROWLOOP Lbiased, 1
+Lbiased_table_setup:
+    adrp    x8, Liota@PAGE
+    ldr     q22, [x8, Liota@PAGEOFF]
+    movi    v20.16b, #0x0f
+    movi    v21.16b, #0x01
+    BUILDTABLES v0
+    TABLELOOP Lbiased_table, 1
 
 Lwide_setup:
     ld1r    {v16.2d}, [x1]

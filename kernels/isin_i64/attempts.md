@@ -35,3 +35,11 @@ wider than usual.
 - **compare:** significantly faster, 1.17x [1.17 – 1.17]; 1.32x at 16, 1.14x–1.16x from 256 up
 - **Kept:** yes
 - **Notes:** 0.229 ns per element, 11.8 cycles per 16 elements: still four vector instructions per cycle, so the count is what matters.
+
+## 5. Nibble tables instead of 8 compares, for n >= 96
+
+- **Idea:** match the 16-bit keys with table lookups. Split the 16 keys into low bytes and high bytes (`uzp1`, `uzp2`), each byte into two nibbles (`and`, `ushr`), and look each nibble up with `tbl` in a 16-entry table for its position; the table byte has one bit per test key, set when that test key has the same nibble there. AND the four lookups: bit j survives exactly when the key equals test key j, so `umin` with 1 gives the answer. 14 instructions for 16 keys instead of 32, so 26 per 16 elements with the narrowing (34 with a base). The tables are built without memory: for each nibble position and each test key, `dup` its nibble, `cmeq` against 0..15, and `sli` the result in at bit j (98 instructions in all), so the tables are only used from n = 96; below that the compare loops of attempt 4 run.
+- **check:** pass (private fuzzer, 2,000,000 cases with the threshold lowered to 16 so the table path sees every size: no failure)
+- **compare:** significantly faster, 1.50x [1.49 – 1.50]: 1.37x at 256, 1.60x–1.73x from 1,024 up, unchanged at 16 and 64
+- **Kept:** yes
+- **Notes:** 0.131 ns per element in the table loop, 6.7 cycles per 16 elements. Building the tables takes about 8.7 ns; measured with the threshold at 16, n = 16 took 12.1 ns against 5.4 and n = 64 17.6 against 16.0, and the break-even is near 90 elements.
