@@ -21,14 +21,13 @@
 // reach 65,536.
 
 // Steps of the main loop (32 elements, one group into each accumulator)
-// between flushes. Each lane is then at most 2 * 8192 = 16,384, the two
-// accumulators added together at most 32,768, and the 4 more that the last
-// groups can add still fit in 16 bits.
+// between flushes. Each lane is then at most 2 * 8192 = 16,384 and the two
+// accumulators added together at most 32,768, which fits in 16 bits.
 .set BLOCK_STEPS, 8192
 
 // v0-v7 = eight vectors (sixteen elements; absent ones must be zero).
-// Subtracts the number of non-zero elements from the 16-bit lanes of v\acc.
-.macro COUNT16 acc
+// Leaves sixteen bytes in v\dst: -1 for a non-zero element, 0 for a zero one.
+.macro BYTES16 dst
     umaxp   v0.4s, v0.4s, v1.4s
     umaxp   v2.4s, v2.4s, v3.4s
     umaxp   v4.4s, v4.4s, v5.4s
@@ -36,7 +35,13 @@
     umaxp   v0.8h, v0.8h, v2.8h
     umaxp   v4.8h, v4.8h, v6.8h
     umaxp   v0.16b, v0.16b, v4.16b
-    cmtst   v0.16b, v0.16b, v0.16b
+    cmtst   v\dst\().16b, v0.16b, v0.16b
+.endm
+
+// The same, subtracting the number of non-zero elements from the 16-bit
+// lanes of v\acc.
+.macro COUNT16 acc
+    BYTES16 0
     sadalp  v\acc\().8h, v0.16b
 .endm
 
@@ -62,22 +67,26 @@
 .globl _count_nonzero_i64
 .p2align 2
 _count_nonzero_i64:
-    movi    v16.2d, #0              // minus the count, 16-bit lanes
-    movi    v17.2d, #0
-    mov     x6, #0                  // counts already flushed
+    mov     x6, #0                  // count so far
     cmp     x1, #32
     b.hs    Lbig
 
     // ---- Fewer than 32 elements left; the low five bits of x1 say how many.
+    //      At most two groups, so their bytes are simply added: the sum of
+    //      the sixteen bytes is minus the count and fits in a signed byte.
 Ltail:
+    movi    v16.2d, #0
     tbz     x1, #4, Ltail15
     LOAD16  x0, 0
     add     x0, x0, #128
-    COUNT16 16
+    BYTES16 16
 Ltail15:
     tst     x1, #15
     b.ne    Lladder
-    REDUCE  x0
+Lfinish:
+    addv    b0, v16.16b
+    smov    w7, v0.b[0]
+    sub     x0, x6, w7, sxtw
     ret
 
     // 1..15 elements left: load what is there into v0-v7, leave the rest
@@ -105,12 +114,14 @@ Lladder1:
     tbz     x1, #0, Lladder0
     ldr     d7, [x0]                // one element; the upper half of v7 is zeroed
 Lladder0:
-    COUNT16 17
-    REDUCE  x0
-    ret
+    BYTES16 0
+    add     v16.16b, v16.16b, v0.16b
+    b       Lfinish
 
     // ---- 32 elements or more.
 Lbig:
+    movi    v16.2d, #0              // minus the count, 16-bit lanes
+    movi    v17.2d, #0
     lsr     x4, x1, #5              // steps left
 Lblock:
     mov     x5, #BLOCK_STEPS
@@ -126,11 +137,13 @@ Lstep:
     subs    x5, x5, #1
     b.ne    Lstep
     cbnz    x4, Lflush
-    // Last block: its counts stay in the accumulators.
     tst     x1, #31
-    b.ne    Ltail
+    b.ne    Lbigtail
     REDUCE  x0
     ret
+Lbigtail:
+    REDUCE  x6
+    b       Ltail
 Lflush:
     REDUCE  x6
     movi    v16.2d, #0
