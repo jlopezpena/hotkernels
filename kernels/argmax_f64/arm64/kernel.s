@@ -161,44 +161,48 @@ Lupto8:
     ret
 
 // ---- 8 < n <= 16: 8 elements at 0 and 8 ending at n ------------------------
+// Two steps, like the larger classes: first the four pairs of vectors (4
+// elements each), then the two vectors of the first pair that holds m.
 Lupto16:
     ldp     q16, q17, [x0]
     ldp     q18, q19, [x0, #32]
     ldp     q20, q21, [x9, #-64]
     ldp     q22, q23, [x9, #-32]
-    MX 0, 16, 17
-    MX 1, 18, 19
-    MX 2, 20, 21
-    MX 3, 22, 23
+    MX 16, 16, 17                       // pair 0: elements 0..3
+    MX 18, 18, 19                       // pair 1: elements 4..7
+    MX 20, 20, 21                       // pair 2: elements n-8..n-5
+    MX 22, 22, 23                       // pair 3: elements n-4..n-1
+    MX 0, 16, 18
+    MX 1, 20, 22
     MX 0, 0, 1
-    MX 2, 2, 3
-    MX 0, 0, 2
-    BROADCAST_MAX 0, 0
-    EQ 16, 0
-    EQ 17, 0
-    EQ 18, 0
-    EQ 19, 0
-    EQ 20, 0
-    EQ 21, 0
-    EQ 22, 0
-    EQ 23, 0
-    NARROW32 16, 17
-    NARROW32 18, 19
-    NARROW32 20, 21
-    NARROW32 22, 23
-    NARROW16 16, 18
-    NARROW16 20, 22
-    NARROW8 16, 20
-    shrn    v16.8b, v16.8h, #4          // four mask bits per element
+    BROADCAST_MAX 1, 0                  // m in both lanes
+    EQ 16, 1
+    EQ 18, 1
+    EQ 20, 1
+    EQ 22, 1
+    NARROW32 16, 18
+    NARROW32 20, 22
+    NARROW16 16, 20
+    xtn     v16.8b, v16.8h              // eight mask bits per pair lane
     fmov    x10, d16
-    cbz     x10, Lnan_small
+    cbz     x10, Lnan_small             // nothing equals m: m is NaN
     rbit    x10, x10
     clz     x10, x10
-    lsr     x10, x10, #2                // k: position among the 16 loaded
+    lsr     x10, x10, #4                // p: the first pair that holds m
     sub     x11, x1, #16
-    cmp     x10, #8
-    add     x11, x11, x10               // back half: index = n - 16 + k
-    csel    x0, x10, x11, lo
+    cmp     x10, #2
+    csel    x11, xzr, x11, lo           // pairs 2 and 3 sit n-16 further on
+    add     x11, x11, x10, lsl #2       // index of the pair's first element
+    add     x12, x0, x11, lsl #3
+    ldp     q16, q17, [x12]
+    EQ 16, 1
+    EQ 17, 1
+    NARROW32 16, 17
+    xtn     v16.4h, v16.4s              // sixteen mask bits per element
+    fmov    x10, d16
+    rbit    x10, x10
+    clz     x10, x10
+    add     x0, x11, x10, lsr #4
     ret
 
 // ---- 16 < n <= 32: 16 elements at 0 and 16 ending at n ---------------------
