@@ -27,3 +27,11 @@ wider than usual.
 - **compare:** significantly faster, 2.30x [2.29 – 2.30] (NOISY MACHINE warning on this run; every size from 256 up was 2.37x–2.43x, n = 16 1.60x, n = 64 2.14x)
 - **Kept:** yes
 - **Notes:** 0.265 ns per element. The speedup exists only for test values that fit a 16-bit window; unrelated 64-bit test values run at the speed of attempt 2, which is the speed of naive C. The benchmark's only distribution draws test values from [0, 1000), so it always takes the narrow path.
+
+## 4. Skip the subtraction when the test values are already below 0xFFFF
+
+- **Idea:** try base 0 first: if every test value, read as unsigned, is below 0xFFFF, the elements can be narrowed as they are and the 8 `sub` per 16 elements disappear (44 vector instructions instead of 52). The biased loop of attempt 3 stays for other close-together sets (negative values, large values), the 64-bit loop for the rest.
+- **check:** pass (private fuzzer extended with test values in [0, 66000) and around 65,534: 2,000,000 cases, no failure)
+- **compare:** significantly faster, 1.17x [1.17 – 1.17]; 1.32x at 16, 1.14x–1.16x from 256 up
+- **Kept:** yes
+- **Notes:** 0.229 ns per element, 11.8 cycles per 16 elements: still four vector instructions per cycle, so the count is what matters.

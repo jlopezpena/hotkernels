@@ -4,13 +4,15 @@
 // 16 elements per iteration, in one of two ways, chosen once from the test
 // values.
 //
-// Narrow keys (Lnarrow), when all 8 test values lie within 32,767 of test[0].
-// With base = test[0] - 0x7FFF, every test value minus base is below 0xFFFF.
-// Each element minus base is narrowed from 64 to 16 bits with unsigned
-// saturation (uqxtn twice), which keeps values below 0xFFFF exact and turns
-// everything else into 0xFFFF. An element is in the set exactly when its
-// 16-bit key equals a test key, because no test key is 0xFFFF. The 8 compares
-// and the OR tree then run on vectors of eight keys instead of two elements.
+// Narrow keys (Lnarrow, Lbiased), when there is a base for which every test
+// value minus base is below 0xFFFF. Base 0 is tried first, then
+// test[0] - 0x7FFF, which works when all 8 test values lie within 32,767 of
+// test[0]. Each element (minus the base, if it is not 0) is narrowed from 64
+// to 16 bits with unsigned saturation (uqxtn twice), which keeps values below
+// 0xFFFF exact and turns everything else into 0xFFFF. An element is in the set
+// exactly when its 16-bit key equals a test key, because no test key is
+// 0xFFFF. The 8 compares and the OR tree then run on vectors of eight keys
+// instead of two elements.
 //
 // Wide (Lwide), for any other test values: each vector of two elements is
 // compared with the 8 broadcast test values at 64 bits.
@@ -51,6 +53,54 @@
     uqxtn2  \a\().8h, \c\().4s
 .endm
 
+// Broadcast the eight 16-bit keys in \src into v16-v23.
+.macro DUPKEYS src
+    dup     v16.8h, \src\().h[0]
+    dup     v17.8h, \src\().h[1]
+    dup     v18.8h, \src\().h[2]
+    dup     v19.8h, \src\().h[3]
+    dup     v20.8h, \src\().h[4]
+    dup     v21.8h, \src\().h[5]
+    dup     v22.8h, \src\().h[6]
+    dup     v23.8h, \src\().h[7]
+.endm
+
+// The narrow-key loop, ending in a branch to Ldone. With \biased, the base in
+// v31 is subtracted from every element first.
+.macro NARROWLOOP name, biased
+\name:
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ldp     q4, q5, [x0, #64]
+    ldp     q6, q7, [x0, #96]
+.if \biased
+    sub     v0.2d, v0.2d, v31.2d
+    sub     v1.2d, v1.2d, v31.2d
+    sub     v2.2d, v2.2d, v31.2d
+    sub     v3.2d, v3.2d, v31.2d
+    sub     v4.2d, v4.2d, v31.2d
+    sub     v5.2d, v5.2d, v31.2d
+    sub     v6.2d, v6.2d, v31.2d
+    sub     v7.2d, v7.2d, v31.2d
+.endif
+    NARROW8 v0, v1, v2, v3          // keys of elements 0-7
+    NARROW8 v4, v5, v6, v7          // keys of elements 8-15
+    MEMBER  v24, v0, 8h, v1, v2, v3, v5, v6, v7
+    MEMBER  v25, v4, 8h, v1, v2, v3, v5, v6, v7
+    uzp1    v24.16b, v24.16b, v25.16b
+    ushr    v24.16b, v24.16b, #7    // 0xFF -> 1
+    str     q24, [x2], #16
+    add     x0, x0, #128
+    subs    x3, x3, #16
+    b.hs    \name
+    cmn     x3, #16                 // x3 = leftover - 16
+    b.eq    Ldone
+    sub     x0, x9, #128            // last 16 elements, overlapping
+    sub     x2, x10, #16
+    mov     x3, #0
+    b       \name
+.endm
+
 .text
 .globl _isin_i64
 .p2align 2
@@ -61,8 +111,20 @@ _isin_i64:
     add     x10, x2, x3             // end of out
     sub     x3, x3, #16             // elements left after the first block
 
-    // Test keys: test[j] - base, narrowed. A key of 0xFFFF means that value is
-    // out of range and the narrow path cannot be used.
+    // Test keys: the test values narrowed like the elements. A key of 0xFFFF
+    // means that value is out of range for that base. Try base 0 first.
+    ldp     q0, q1, [x1]
+    ldp     q2, q3, [x1, #32]
+    movi    v30.16b, #0xff
+    NARROW8 v0, v1, v2, v3
+    cmeq    v1.8h, v0.8h, v30.8h
+    umaxv   h1, v1.8h
+    fmov    w8, s1
+    cbnz    w8, Lbiased_setup
+    DUPKEYS v0
+    NARROWLOOP Lnarrow, 0
+
+Lbiased_setup:
     ldp     q0, q1, [x1]
     ldp     q2, q3, [x1, #32]
     ldr     x8, [x1]
@@ -74,49 +136,12 @@ _isin_i64:
     sub     v2.2d, v2.2d, v31.2d
     sub     v3.2d, v3.2d, v31.2d
     NARROW8 v0, v1, v2, v3
-    movi    v1.16b, #0xff
-    cmeq    v1.8h, v0.8h, v1.8h
+    cmeq    v1.8h, v0.8h, v30.8h
     umaxv   h1, v1.8h
     fmov    w8, s1
     cbnz    w8, Lwide_setup
-    dup     v16.8h, v0.h[0]
-    dup     v17.8h, v0.h[1]
-    dup     v18.8h, v0.h[2]
-    dup     v19.8h, v0.h[3]
-    dup     v20.8h, v0.h[4]
-    dup     v21.8h, v0.h[5]
-    dup     v22.8h, v0.h[6]
-    dup     v23.8h, v0.h[7]
-
-Lnarrow:
-    ldp     q0, q1, [x0]
-    ldp     q2, q3, [x0, #32]
-    ldp     q4, q5, [x0, #64]
-    ldp     q6, q7, [x0, #96]
-    sub     v0.2d, v0.2d, v31.2d
-    sub     v1.2d, v1.2d, v31.2d
-    sub     v2.2d, v2.2d, v31.2d
-    sub     v3.2d, v3.2d, v31.2d
-    sub     v4.2d, v4.2d, v31.2d
-    sub     v5.2d, v5.2d, v31.2d
-    sub     v6.2d, v6.2d, v31.2d
-    sub     v7.2d, v7.2d, v31.2d
-    NARROW8 v0, v1, v2, v3          // keys of elements 0-7
-    NARROW8 v4, v5, v6, v7          // keys of elements 8-15
-    MEMBER  v24, v0, 8h, v1, v2, v3, v5, v6, v7
-    MEMBER  v25, v4, 8h, v1, v2, v3, v5, v6, v7
-    uzp1    v24.16b, v24.16b, v25.16b
-    ushr    v24.16b, v24.16b, #7    // 0xFF -> 1
-    str     q24, [x2], #16
-    add     x0, x0, #128
-    subs    x3, x3, #16
-    b.hs    Lnarrow
-    cmn     x3, #16                 // x3 = leftover - 16
-    b.eq    Ldone
-    sub     x0, x9, #128            // last 16 elements, overlapping
-    sub     x2, x10, #16
-    mov     x3, #0
-    b       Lnarrow
+    DUPKEYS v0
+    NARROWLOOP Lbiased, 1
 
 Lwide_setup:
     ld1r    {v16.2d}, [x1]
