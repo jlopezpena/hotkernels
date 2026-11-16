@@ -534,7 +534,7 @@ Lg16_element:
     // Stage 2 for x7 queries (a multiple of 4) at x5, with jc in out at x6.
     // Two queries per vector.
 Lp2:
-    movi    v24.2d, #0xffffffffffffffff
+    movi    v24.2d, #0
     ldp     x8, x10, [x6, #0]       // jc of the two queries
     ldr     q0, [x5, #0]            // v
     add     x16, x1, x8, lsl #3
@@ -555,10 +555,9 @@ Lp2:
     fdiv    v6.2d, v6.2d, v5.2d     // slope
     mov     v5.16b, v3.16b
     fmla    v5.2d, v6.2d, v7.2d     // slope * t + fp[jc], fused
-    fcmeq   v6.2d, v5.2d, v5.2d     // all ones unless that is NaN
+    fmax    v24.2d, v24.2d, v5.2d   // stays NaN once any fma result is NaN
     fcmgt   v7.2d, v7.2d, #0.0
     fcmge   v0.2d, v0.2d, v2.2d
-    and     v24.16b, v24.16b, v6.16b
     bif     v5.16b, v3.16b, v7.16b  // !(t > 0): fp[jc]
     bit     v5.16b, v4.16b, v0.16b  // v >= xp[jc+1]: fp[jc+1]
     str     q5, [x6, #0]
@@ -582,18 +581,15 @@ Lp2:
     fdiv    v6.2d, v6.2d, v5.2d     // slope
     mov     v5.16b, v3.16b
     fmla    v5.2d, v6.2d, v7.2d     // slope * t + fp[jc], fused
-    fcmeq   v6.2d, v5.2d, v5.2d     // all ones unless that is NaN
+    fmax    v24.2d, v24.2d, v5.2d   // stays NaN once any fma result is NaN
     fcmgt   v7.2d, v7.2d, #0.0
     fcmge   v0.2d, v0.2d, v2.2d
-    and     v24.16b, v24.16b, v6.16b
     bif     v5.16b, v3.16b, v7.16b  // !(t > 0): fp[jc]
     bit     v5.16b, v4.16b, v0.16b  // v >= xp[jc+1]: fp[jc+1]
     str     q5, [x6, #16]
-    fmov    x8, d24
-    mov     x10, v24.d[1]
-    and     x8, x8, x10
-    cmn     x8, #1
-    b.ne    Lp2_redo                // some fma result was NaN
+    fmaxp   d24, v24.2d
+    fcmp    d24, d24
+    b.vs    Lp2_redo                // some fma result was NaN
 Lp2_next:
 
     add     x5, x5, #32

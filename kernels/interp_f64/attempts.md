@@ -62,3 +62,15 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
 - **Notes:** 1.26x at 16, every other size unchanged (different code path).
   The same idea in `searchsorted_f64` was 4% slower than the code it would
   replace there, which already counts over a window of eight.
+
+## 5. Detect NaN results with one `fmax` per pair
+
+- **Idea:** stage 2 flagged NaN fma results with `fcmeq r, r` and an `and`
+  into an accumulator, then moved both lanes to integer registers. Accumulate
+  `fmax(acc, r)` instead (it stays NaN once any result is NaN) and test it
+  with `fmaxp` + `fcmp` once per four queries: one vector operation per pair
+  fewer, and no moves to integer registers.
+- **check:** pass
+- **compare:** significantly faster, 1.01x [1.01 – 1.01]
+- **Kept:** yes
+- **Notes:** 1.02x to 1.03x up to 4,096, 1.00x to 1.01x above.
