@@ -54,14 +54,14 @@ A kernel is a directory:
 
 ```
 kernels/<name>/
-  spec.toml        signature, dtypes, NumPy oracle, correctness mode
+  spec.py          signature, dtypes, NumPy oracle, correctness mode
   naive.c          naive C reference: the simplest correct loop
   arm64/kernel.s   hand-written NEON
   x86_64/kernel.s  hand-written AVX (added later, on the x86 machine)
   attempts.md      log of what was tried and what the judge said
 ```
 
-- `spec.toml` and `naive.c` are shared by all architectures.
+- `spec.py` and `naive.c` are shared by all architectures.
 - `naive.c` has two jobs: it is the baseline the assembly must beat, and a second check on correctness alongside NumPy.
 - `attempts.md` records every iteration, including failures, so later runs do not repeat dead ends.
 
