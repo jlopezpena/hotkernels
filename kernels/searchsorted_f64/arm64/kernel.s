@@ -28,6 +28,9 @@
 // Leftover needles (n not a multiple of 16) are covered by one more group that
 // ends exactly at the last needle and recomputes a few results.
 //
+// From 1,048,576 elements up the array is far larger than the cache and the
+// search is done a different way, at Lbig (described there).
+//
 // All sixteen bases live in x0-x15, so everything else is parked in vector
 // registers and fetched when needed:
 //   x0-x15   bases          x16 scratch        x17 &a[h - 1]
@@ -51,6 +54,9 @@ _searchsorted_f64:
     sub     x6, x3, x5              // n - p
     add     x7, x0, x5, lsl #3
     ldur    d27, [x7, #-8]          // a[p - 1]
+    mov     x9, #1048576
+    cmp     x3, x9
+    b.hs    Lbig
     add     x7, x0, x5, lsl #2
     sub     x7, x7, #8              // &a[p/2 - 1]
     fmov    d28, x7
@@ -2406,6 +2412,116 @@ Lnext:
     b       Lgroup
 Ldone:
     ret
+
+
+    // ---- Large n: the array is far bigger than the cache, so what matters is
+    // how many probes are in flight at once. Needles are taken 128 at a time
+    // and the block is swept once per level, with the bases kept in `out`.
+    // x0 a, x3 n, x4 k, x9 block's needles, x10 block's out, x11 last block's
+    // needles, x12 out - v, x13 h, x17 &a[h - 1], x16 passes left, x8 NaN seen
+Lbig:
+    dup     v27.2d, v27.d[0]
+    dup     v28.2d, x6
+    sub     x9, x3, #128
+    add     x11, x1, x9, lsl #3
+    sub     x12, x2, x1
+    mov     x9, x1
+Lbig_block:
+    add     x10, x9, x12
+    mov     x14, x9
+    mov     x15, x10
+    mov     x7, #32
+    movi    v29.2d, #0
+    movi    v30.2d, #0
+Lbig_init:                          // base = (a[p - 1] < key) ? n - p : 0
+    ldp     q0, q1, [x14], #32
+    fmax    v29.2d, v29.2d, v0.2d
+    fmax    v30.2d, v30.2d, v1.2d
+    fcmgt   v2.2d, v0.2d, v27.2d
+    fcmgt   v3.2d, v1.2d, v27.2d
+    and     v2.16b, v2.16b, v28.16b
+    and     v3.16b, v3.16b, v28.16b
+    stp     q2, q3, [x15], #32
+    subs    x7, x7, #1
+    b.ne    Lbig_init
+    fmax    v29.2d, v29.2d, v30.2d
+    fmaxp   d29, v29.2d
+    fcmp    d29, d29
+    cset    x8, vs                  // some needle in the block is NaN
+    mov     x13, #1
+    sub     x6, x4, #1
+    lsl     x13, x13, x6            // h = p/2
+    add     x16, x4, #1             // k levels and the last probe
+Lbig_pass:
+    add     x17, x0, x13, lsl #3
+    sub     x17, x17, #8            // &a[h - 1]
+    add     x5, x0, x13, lsl #2
+    sub     x5, x5, #8              // &a[h/2 - 1], the next pass's probes
+    mov     x14, x9
+    mov     x15, x10
+    mov     x7, #64
+Lbig_probe:
+    ldp     x1, x2, [x15]
+    ldp     d0, d1, [x14], #16
+    ldr     d24, [x17, x1, lsl #3]
+    ldr     d25, [x17, x2, lsl #3]
+    fcmgt   d24, d0, d24
+    fcmgt   d25, d1, d25
+    fmov    x6, d24
+    and     x6, x6, x13
+    add     x1, x1, x6
+    fmov    x6, d25
+    and     x6, x6, x13
+    add     x2, x2, x6
+    stp     x1, x2, [x15], #16
+    subs    x7, x7, #1
+    b.ne    Lbig_probe
+    lsr     x6, x13, #1
+    cmp     x6, #0
+    csinc   x13, x6, xzr, ne        // h = max(h / 2, 1): the last probe is h = 1 again
+    subs    x16, x16, #1
+    b.ne    Lbig_pass
+    cbnz    x8, Lbig_nanfix
+Lbig_next:
+    add     x9, x9, #1024
+    cmp     x9, x11
+    b.ls    Lbig_block
+    add     x6, x11, #1024       // end of the needles
+    cmp     x9, x6
+    b.eq    Ldone
+    mov     x9, x11                 // leftovers: redo the last 128 needles
+    b       Lbig_block
+
+    // A NaN needle compared false everywhere. Its answer is the index of the
+    // first NaN in a (or n). Rare path.
+Lbig_nanfix:
+    mov     x14, x9
+    mov     x15, x10
+    mov     x7, #128
+Lbig_nf_loop:
+    ldr     d0, [x14], #8
+    fcmp    d0, d0
+    b.vc    Lbig_nf_skip
+    mov     x1, #0
+    mov     x2, x3
+Lbig_nf_search:
+    cmp     x1, x2
+    b.hs    Lbig_nf_store
+    sub     x6, x2, x1
+    add     x6, x1, x6, lsr #1
+    ldr     d1, [x0, x6, lsl #3]
+    fcmp    d1, d1
+    csel    x2, x6, x2, vs          // a[mid] is NaN: hi = mid
+    csinc   x1, x1, x6, vs          // otherwise lo = mid + 1
+    b       Lbig_nf_search
+Lbig_nf_store:
+    str     x1, [x15]
+Lbig_nf_skip:
+    add     x15, x15, #8
+    subs    x7, x7, #1
+    b.ne    Lbig_nf_loop
+    b       Lbig_next
+
 
 Lnan_group:
     fmov    x0, d26
