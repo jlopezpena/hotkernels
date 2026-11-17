@@ -1,6 +1,11 @@
 """Clamp to a range: `np.clip(x, LO, HI)` for float64 data.
 
-The judge passes the same bounds in every call.
+The kernel is defined for `lo <= hi` with neither bound NaN. Outside that
+NumPy returns `hi` for every non-NaN element (reversed bounds) or NaN (a NaN
+bound) and `naive.c` does not, so whatever calls the kernel must send such
+calls to NumPy.
+
+The judge passes the same bounds in every call, so it verifies one pair only.
 """
 import numpy as np
 

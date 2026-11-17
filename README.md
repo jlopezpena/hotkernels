@@ -9,7 +9,7 @@ Kernels are written by coding agents iterating against a judge. The judge checks
 - **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is.
 - **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32` and `compress_scratch_f32`, used to test the judge itself.
 - **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. Recorded results are in `survey/results/`.
-- **Kernels** (`kernels/`): none yet.
+- **Kernels** (`kernels/`): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an ARM64 version. They are checked and timed by the judge but not yet installable. Results are in [docs/kernel-findings.md](docs/kernel-findings.md).
 
 Supported platform: macOS on Apple Silicon (ARM64).
 
@@ -36,6 +36,7 @@ uv run survey report survey/results/apple-m1-pro.json   # regenerate a report
 - [docs/core-design.md](docs/core-design.md): what the project is building and why
 - [docs/judge-design.md](docs/judge-design.md): how kernels are checked and timed
 - [docs/survey-design.md](docs/survey-design.md): where NumPy is slow, and which kernels to build in what order
+- [docs/kernel-findings.md](docs/kernel-findings.md): what each kernel achieves, how, and where assembly could not win
 - [AGENTS.md](AGENTS.md): rules for coding agents working in this repository
 - [kernels/README.md](kernels/README.md): how to add a kernel
 
