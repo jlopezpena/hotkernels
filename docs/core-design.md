@@ -136,6 +136,8 @@ Take the shortlisted kernels to `install()`, in the order given in [survey-desig
     **Known gap: indexing syntax and array methods.** `a[mask]`, `x[mask] = v` and `x.astype(...)` are not module functions and are not ufuncs, so none of the three mechanisms obviously reaches them without the user opting in. Their function forms are reachable: `np.compress`, `np.extract`, `np.putmask`, `np.copyto`. This matters because mask selection is the largest gap the survey found that the compiler does not close (see [survey-design.md](survey-design.md)). Until a way to reach the syntax is found, the mask kernels and the `astype` C kernels only speed up code that uses the function forms. Finding out whether the syntax can be reached is part of the first task of this phase.
 
     The second mechanism is recalled from NumPy's C API and from how Intel's `mkl_umath` works. It has not been checked against NumPy 2.x. Verifying it is the first task of this phase.
+
+    **Checked since:** all three work on NumPy 2.5.5, and indexing syntax and methods can be reached by changing `ndarray`'s own type. The mechanisms, what each reaches and what each costs are in [delivery-design.md](delivery-design.md).
   - Implement `install()`, `uninstall()`, a context manager, and `report()`.
   - Implement the fallback path and measure its cost. A call that falls back must cost almost nothing extra.
 - Produce each kernel with `/goal` runs against the judge, logging every attempt in `attempts.md`.
@@ -146,7 +148,7 @@ Take the shortlisted kernels to `install()`, in the order given in [survey-desig
 - An unmodified script runs faster after adding the one line, with output that meets each kernel's correctness mode, and `report()` shows the kernels being hit.
 - The overhead of a patched call that falls back is measured and negligible.
 
-**Status:** the kernels have had a first pass, recorded in [kernel-findings.md](kernel-findings.md): 21 of the 22 have assembly that beats naive C and one ships as C. The binding and `install()` are not started.
+**Status:** the kernels have had a first pass, recorded in [kernel-findings.md](kernel-findings.md): 21 of the 22 have assembly that beats naive C and one ships as C. The binding and `install()` are proposed in [delivery-design.md](delivery-design.md) and not started.
 
 ## Non-goals
 
@@ -176,5 +178,5 @@ Mentioned so they are not forgotten. None of these is planned here.
 | Agent loop as its own phase? | No; it is the judge, the contract and `AGENTS.md` |
 | Ship plain C kernels? | Yes, when C beats NumPy and assembly does not beat the C |
 | How many kernels in phase 3? | All shortlisted candidates are tried, not a chosen three |
-| Float `cumsum` that reorders additions? | Acceptable, in tolerance mode. `report()` marks it as inexact |
+| Float `cumsum` that reorders additions? | Acceptable, in tolerance mode. `report()` marks it as inexact. Since narrowed in [delivery-design.md](delivery-design.md): installed only with `install(inexact=True)` |
 | Indexing syntax and methods (`a[mask]`, `x.astype`) | Recorded as a known gap in the delivery path; to be investigated at the start of phase 3 |
