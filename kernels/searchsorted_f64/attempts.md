@@ -273,3 +273,99 @@ replace the indicative and single-pass figures above wherever they are quoted.
 |---|---|---|---|---|
 | 64 needles | 9.06x [8.89 – 9.27] | 10.2x [9.73 – 10.5] | 5.20x [5.13 – 5.30] | 2.34x [2.28 – 2.38] |
 | 1,000 needles | 9.08x [8.98 – 9.14] | 8.83x [8.42 – 9.15] | 9.31x [9.17 – 9.74] | 6.40x [5.94 – 6.78] |
+
+## A run on fewer needles than a group ([issue 39](https://github.com/sofeikov/hotkernels/issues/39))
+
+Locked, on `main` at 2d48c69, Apple M1 Pro, with the self-hosted CI runner and
+the desktop on the same machine (one-minute load average 2 to 4).
+
+### What `compare` times
+
+`compare` times the scalar sets `timed_scalar_sets` names: the default (64
+needles) and `many` (1,000), across the eleven sizes from 16 to 16,777,216.
+Neither reaches the path this run is about. With 64 needles every size from
+16 takes a group path (sixteen below 64 elements, `Lv64` from 64, and `Lv64`
+again from 1,048,576 through `Lfew`); with 1,000 the leftovers are covered by
+redoing a full group. `Lscalar` runs only for a NaN needle, which the timed
+data never holds. The sets with 1, 15, 17 and 63 needles are checked but not
+timed. So `compare` cannot see a change to the few-needle path, and no attempt
+here can satisfy the one rule: a correct change reports exactly 1.000x. That is
+a gap in the spec, which is locked;
+[issue 65](https://github.com/sofeikov/hotkernels/issues/65) asks for a timed set.
+
+The local timings below come from a C harness outside the judge: the kernel
+at `HEAD` and the attempt, each assembled under its own symbol, called in
+turn on the same data (uniform `a` sorted, uniform needles, a fresh set of
+needles for every call from a pool of 16,384 so the branch predictor cannot
+learn them), median of 31 samples of 2,000 calls. They are indicative only.
+
+## 12. Eight needles at once, a short group padded with its last needle
+
+- **Idea:** replace the one-at-a-time branchy search of `Lsmall` with the
+  branchless lower bound of attempt 2 on eight needles at once: bases in
+  x5-x12, keys in d0-d7, `fcmp` + `csel` per probe, the step size in a
+  register and one loop over the steps. From eight needles, groups of eight
+  with the leftovers covered by redoing the last eight; below eight, the
+  missing lanes load the last needle again (`csel` on the index) and only the
+  real results are stored, so no buffer is needed. A group holding a NaN, and
+  an empty array, send the whole call to `Lscalar`. It serves every call that
+  took `Lsmall`: fewer than 64 needles from 64 elements, fewer than 16 from 16,
+  and every call below 16 elements.
+- **check:** pass, 145,599 cases
+- **compare:** no significant difference, 1.000x [1.000 – 1.000]: no timed call
+  takes the path (see above)
+- **Kept:** no
+- **Notes:** locally, against `HEAD`, nanoseconds per call:
+
+  | n | 1 needle | 4 | 8 | 15 | 32 | 63 |
+  |---|---|---|---|---|---|---|
+  | 64 | 26 / 23, 1.11x | 106 / 24, 4.5x | 209 / 24, 8.9x | 387 / 47, 8.3x | 822 / 93, 8.8x | 1,613 / 189, 8.6x |
+  | 4,096 | 63 / 45, 1.41x | 254 / 45, 5.6x | 489 / 45, 10.9x | 908 / 91, 10.0x | 1,911 / 176, 10.8x | 3,755 / 352, 10.7x |
+  | 65,536 | 105 / 95, 1.11x | 431 / 106, 4.1x | 853 / 114, 7.5x | 1,590 / 217, 7.3x | 3,376 / 440, 7.7x | 6,647 / 871, 7.6x |
+  | 1,048,576 | 167 / 177, 0.94x | 670 / 193, 3.5x | 1,305 / 209, 6.3x | 2,413 / 398, 6.1x | 5,124 / 800, 6.4x | 10,100 / 1,579, 6.4x |
+  | 4,194,304 | 354 / 501, 0.71x | 1,433 / 671, 2.1x | 2,841 / 747, 3.8x | 5,490 / 1,482, 3.7x | 11,705 / 2,960, 4.0x | 22,386 / 5,798, 3.9x |
+  | 16,777,216 | 580 / 1,059, 0.55x | 2,317 / 1,250, 1.9x | 4,614 / 1,315, 3.5x | 8,637 / 2,505, 3.4x | 18,982 / 4,945, 3.8x | 36,090 / 9,644, 3.7x |
+
+  Padding costs nothing: one to eight needles take the same time. The one
+  loss is a single needle against an array far larger than the cache, where
+  the branchy search wins: the processor runs ahead down the predicted half
+  and overlaps the cache misses, while the branchless search waits for each
+  probe. Attempt 14 deals with it. An earlier harness that cycled through 64
+  needle sets made the branchy search look about 3x faster on one needle
+  than it is: the predictor learned the cycle. Fresh needles per call fixed it.
+
+## 13. Prefetch both possible next probes (rejected on local timing)
+
+- **Idea:** in attempt 12's step loop, prefetch `a[base + h/2 - 1]` and
+  `a[base + h + h/2 - 1]` for every needle before its compare resolves, so
+  the next probe is in the cache whichever way the compare goes. Two `prfm`
+  per probe; the group pointer is parked in d20 to free a register.
+- **check:** not run through the judge (local harness: same results as attempt 12)
+- **compare:** not run through the judge; locally against attempt 12, 0.78x
+  to 0.86x up to 16,384 elements, 0.81x to 0.98x from 65,536 to 1,048,576,
+  and only one needle gains at the largest sizes (1.21x at 4,194,304, 1.25x
+  at 16,777,216; 0.95x to 1.10x for four or more)
+- **Kept:** no
+- **Notes:** in the cache the prefetches are pure cost; with eight searches in
+  flight they add little the eight lanes do not already overlap. The single
+  needle is better served by the branchy search (attempt 14).
+
+## 14. One needle against a large array goes to the branchy search
+
+- **Idea:** attempt 12, but a call with exactly one needle and an array of
+  1,048,576 or more goes to `Lscalar` (three instructions on entry to the
+  path). Locally, two needles at 16,777,216 are already even (1,161 / 1,169 ns)
+  and three are 1.42x, so only one needle is sent back.
+- **check:** pass, 145,599 cases
+- **compare:** no significant difference, 1.000x [1.000 – 1.000]: no timed call
+  takes the path
+- **Kept:** no. The kernel is unchanged on this run's branch. Attempts 12 and
+  14 together are on the branch `claude/searchsorted_f64-few-needles-attempt`
+  so they can be judged once the spec times few needles.
+- **Notes:** locally, against `HEAD`: one needle 0.98x to 1.44x (1.00x and
+  0.99x at 4,194,304 and 16,777,216, the same code); four needles 1.9x to
+  5.8x; eight to 63 needles 3.5x to 11.8x, the most from 1,024 to 16,384
+  elements. At 16 elements with 4 to 15 needles, 3.9x to 7.9x.
+
+The same change applies to `searchsorted_right_f64` with `mi` turned to `ls`
+in each `csel` (`a[i] <= key`), and its spec has the same two timed sets.
