@@ -61,7 +61,8 @@
 //
 // Registers: x0 x, x1 out, x2 elements after this chunk, x3 chunk counter,
 // x7 start of out, x9 elements in this chunk, x11 bits of x[0],
-// v16 last output vector, v17 last input vector, v18-v21 sums of squares.
+// v16 last output vector, v17 last input vector, v18-v21 sums of squares,
+// v0-v7 the block being done, v22-v29 the second block of a loop iteration.
 .set CHUNK, 1024
 // Below this many elements the plain chain is used (see Lsmall).
 .set SMALL, 32
@@ -88,6 +89,8 @@ Lchunk:
     subs    x3, x9, #16
     b.lo    Lrest
 Lmain:
+    // Both blocks' loads, steps and block sums come first (the second block in
+    // v22-v29); the additions that wait for the carry follow.
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
     ext     v4.16b, v17.16b, v0.16b, #8     // [x[i-1], x[i]]
@@ -101,6 +104,19 @@ Lmain:
     fadd    v5.2d, v5.2d, v4.2d     // st0 + st1
     fadd    v7.2d, v7.2d, v6.2d     // st2 + st3
     fadd    v7.2d, v7.2d, v5.2d     // block total
+    ldp     q22, q23, [x0, #64]
+    ldp     q24, q17, [x0, #96]
+    ext     v26.16b, v3.16b, v22.16b, #8
+    ldur    q27, [x0, #72]
+    ldur    q28, [x0, #88]
+    ldur    q29, [x0, #104]
+    fadd    v26.2d, v26.2d, v22.2d
+    fadd    v27.2d, v27.2d, v23.2d
+    fadd    v28.2d, v28.2d, v24.2d
+    fadd    v29.2d, v29.2d, v17.2d
+    fadd    v27.2d, v27.2d, v26.2d
+    fadd    v29.2d, v29.2d, v28.2d
+    fadd    v29.2d, v29.2d, v27.2d
     fadd    v4.2d, v4.2d, v16.2d    // out0
     fadd    v5.2d, v5.2d, v16.2d    // out1
     fadd    v16.2d, v16.2d, v7.2d   // out3, the next carry
@@ -111,28 +127,15 @@ Lmain:
     fmla    v19.2d, v5.2d, v5.2d
     fmla    v20.2d, v6.2d, v6.2d
     fmla    v21.2d, v16.2d, v16.2d
-    ldp     q0, q1, [x0, #64]
-    ldp     q2, q17, [x0, #96]
-    ext     v4.16b, v3.16b, v0.16b, #8
-    ldur    q5, [x0, #72]
-    ldur    q6, [x0, #88]
-    ldur    q7, [x0, #104]
-    fadd    v4.2d, v4.2d, v0.2d
-    fadd    v5.2d, v5.2d, v1.2d
-    fadd    v6.2d, v6.2d, v2.2d
-    fadd    v7.2d, v7.2d, v17.2d
-    fadd    v5.2d, v5.2d, v4.2d
-    fadd    v7.2d, v7.2d, v6.2d
-    fadd    v7.2d, v7.2d, v5.2d
-    fadd    v4.2d, v4.2d, v16.2d
-    fadd    v5.2d, v5.2d, v16.2d
-    fadd    v16.2d, v16.2d, v7.2d
-    fadd    v6.2d, v6.2d, v5.2d
-    stp     q4, q5, [x1, #64]
-    stp     q6, q16, [x1, #96]
-    fmla    v18.2d, v4.2d, v4.2d
-    fmla    v19.2d, v5.2d, v5.2d
-    fmla    v20.2d, v6.2d, v6.2d
+    fadd    v26.2d, v26.2d, v16.2d
+    fadd    v27.2d, v27.2d, v16.2d
+    fadd    v16.2d, v16.2d, v29.2d
+    fadd    v28.2d, v28.2d, v27.2d
+    stp     q26, q27, [x1, #64]
+    stp     q28, q16, [x1, #96]
+    fmla    v18.2d, v26.2d, v26.2d
+    fmla    v19.2d, v27.2d, v27.2d
+    fmla    v20.2d, v28.2d, v28.2d
     fmla    v21.2d, v16.2d, v16.2d
     add     x0, x0, #128
     add     x1, x1, #128

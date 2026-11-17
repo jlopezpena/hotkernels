@@ -246,3 +246,21 @@ which the table rounds to 1.00x.
 - **Notes:** 163.9 ns against 164.1 ns at 1,024, 41.7 against 41.8 at 256,
   657.7 against 658.4 at 4,096; no difference at 16 and from 65,536 up. In
   the standalone timer it could not be told apart from the previous version.
+
+## 8. Both blocks' carry-independent work before the additions that wait for the carry
+
+- **Idea:** the loop is limited by the four vector pipes, and which operations
+  are ready when matters a little. Give the second block of an iteration its
+  own registers (v22 to v29) and order the iteration as: loads, steps and
+  block sums of both blocks, then outputs, stores and squares of the first
+  block, then of the second. Same operations, same results.
+- **check:** pass (18,136 cases)
+- **compare:** significantly faster, 1.004x [1.004 – 1.005]
+- **Kept:** yes
+- **Notes:** 1.01x at 64, 16,384, 262,144 and 16,777,216; 1.00x with
+  intervals above 1.0 at 256, 1,024, 4,096 and 1,048,576; not significant at
+  16, 65,536 and 4,194,304. In the standalone timer 4.11 against 4.13 cycles
+  per 8 elements at 1,024. Other orders tried there, none better: second
+  block's loads before the first block's outputs (4.14), first block's
+  squares after the second block's steps (4.14), loop aligned to 64 bytes
+  (4.13, and 3% slower at 64 elements).
