@@ -8,9 +8,9 @@ It covers when a release happens, how its notes are written, how the version is 
 
 - **Merging to `main` does not publish.** `main` is always releasable; a release is a deliberate step taken every few weeks, or at once for a fix to a wrong result.
 - **Each pull request leaves a note.** A pull request that changes what a user of the package gets adds one short file to `release-notes/upcoming/`. CI fails such a pull request without one. The notes pile up between releases.
-- **A release is a pull request.** It gathers the notes into one document, adds a summary written by hand that spans every change since the last release, re-measures the headline numbers on native hardware, and bumps the version. Reviewing it is reviewing the release.
-- **Merging that pull request publishes.** A workflow sees a version on `main` with no tag, builds the wheels, tests them, waits for the maintainer's approval, uploads to PyPI, and creates the tag and the GitHub release with the notes as its text.
-- **No passwords or tokens are stored.** PyPI accepts the upload from that one workflow through trusted publishing.
+- **A release starts with a release pull request.** It is an ordinary pull request that does three things: bumps the version, gathers the notes into one document with a summary written by hand that spans every change since the last release, and updates the headline numbers re-measured on native hardware. Merging it publishes nothing.
+- **Pushing a tag publishes.** After the release pull request is merged, the maintainer runs `uv run release tag`, which tags the merged commit `v<version>` with the version it reads from the repository, so the two cannot disagree. The tag starts a workflow that checks the tag against the version, builds the wheels, tests them, waits for the maintainer's approval, uploads to PyPI, and creates the GitHub release with the notes as its text.
+- **Uploads come only from GitHub Actions, never from a laptop.** PyPI accepts an upload from that one workflow through trusted publishing; no password or token exists anywhere to upload with.
 
 ## Why not publish on every merge
 
@@ -22,7 +22,7 @@ The proposal sits between the two. Changes accumulate on `main`, each with its n
 
 ## The note each pull request leaves
 
-A note is a Markdown file of one to five sentences, written for someone who uses `hotkernels`, not for someone who works on it:
+A note is a Markdown file of one to three sentences, written for someone who uses `hotkernels`, not for someone who works on it:
 
 ```
 release-notes/upcoming/31.kernel.md
@@ -44,6 +44,8 @@ The file name is the pull request number and a type. The types become the sectio
 
 **Which pull requests need one.** Those that change `hotkernels/`, or a kernel the package installs (`kernels/<name>/arm64/kernel.s` or `naive.c`). A CI job checks this. A pull request in those paths that a user would not notice, such as a comment or a refactor, gets the `no release note` label and the job passes. Pull requests that touch only the judge, the survey, the documentation site or `docs/` need nothing.
 
+**Who writes it.** Whoever opens the pull request, which is usually an agent. [AGENTS.md](../AGENTS.md) tells agents when a note is needed, how to name it and how to write it. The note is short; the long text is written once per release, in the highlights.
+
 **One note per pull request, not per commit.** A kernel run keeps many commits; its pull request leaves one `speed` note saying what the run achieved.
 
 **Numbers in a note are allowed but provisional.** A note may quote the judge's figure at the time. The release pull request re-measures, and the release notes quote the re-measured figures.
@@ -51,6 +53,8 @@ The file name is the pull request number and a type. The types become the sectio
 This is how NumPy writes its own release notes (`doc/release/upcoming_changes/`), with the same tool, [towncrier](https://towncrier.readthedocs.io/). Towncrier renders the notes through a Jinja template, which is the repository's rule for generated text, and its `check` command is the CI job.
 
 ## The release pull request
+
+Nothing in GitHub treats it differently from any other pull request. What makes it the release pull request is its content: the version bump, `release-notes/<version>.md`, and an empty `release-notes/upcoming/`. CI runs on it as usual. Merging it does not publish anything; it puts on `main` the commit that the tag will name.
 
 Anyone can open it; the maintainer decides to merge it. One command prepares it:
 
@@ -92,6 +96,18 @@ Measured on an Apple M1 Pro, NumPy 2.5.5, Python 3.13.
 
 Fixes to wrong results come first within Fixes, and are named in the highlights. A user who stays on the previous version needs to know what they are exposed to.
 
+### Publishing it
+
+Once the release pull request is merged, on an up-to-date `main`:
+
+```
+uv run release tag
+```
+
+It reads the version from `meson.build`, refuses if the working tree differs from `origin/main`, if `v<version>` exists already, or if `release-notes/<version>.md` is missing, and otherwise creates the annotated tag `v<version>` on that commit and pushes it. Typing `git tag` by hand does the same, and the workflow checks the result either way; the command only saves typing the version twice.
+
+**How the tag and the version stay in step.** The version is written in one file, `meson.build`, and changed only by the release pull request. The tag is made from that file, never typed. The workflow's first job reads the file at the tagged commit and stops the release if the tag says anything else. So a tag that disagrees with the package's version is never published; it is deleted and pushed again.
+
 ### When to release
 
 There is no fixed calendar. A release is cut when `release-notes/upcoming/` holds something a user would want, which is expected every few weeks while kernels are being added. Two exceptions:
@@ -111,7 +127,9 @@ Semantic versioning, read for this package:
 
 **One place holds the version.** Today it is written twice, in `hotkernels/pyproject.toml` and in `hotkernels/meson.build`. `meson-python` can take it from `meson.build` when `pyproject.toml` declares it dynamic, so that becomes the one place. The package gains `hotkernels.__version__`, and `report()` prints it, so a bug report says which release it is about.
 
-**Pre-releases** use the same path: a release pull request for `0.3.0rc1` publishes a pre-release, which `pip` installs only when asked. Worth it for a release that changes default behaviour; otherwise optional.
+**The first release is `0.1.0`**, the version the package carries today. Only a `0.0.1` placeholder is on PyPI, and the first notes describe the package as it stands rather than a change from an earlier version.
+
+**Pre-releases** use the same path: a release pull request for `0.3.0rc1`, tagged `v0.3.0rc1`, publishes a pre-release, which `pip` installs only when asked. Worth it for a release that changes default behaviour; otherwise optional.
 
 The root package, `hotkernels-judge`, is not published and keeps no version of its own beyond what `uv` needs.
 
@@ -119,21 +137,21 @@ The root package, `hotkernels-judge`, is not published and keeps no version of i
 
 A new workflow, `.github/workflows/release.yml`.
 
-**Trigger.** Every push to `main`. The first job reads the version from `meson.build` and checks whether the tag `v<version>` exists. If it does, which is every push except a release pull request's merge, the workflow stops there in a few seconds. It can also be started by hand, to retry a release that failed part-way, or to upload to TestPyPI as a rehearsal.
+**Trigger.** A pushed tag that matches `v*`. It can also be started by hand on an existing tag, to retry a release that failed part-way, or on any commit to upload to TestPyPI as a rehearsal.
 
 **Jobs, in order:**
 
 | Job | Runs on | What it does |
 |---|---|---|
-| `version` | Ubuntu | Reads the version; stops the workflow if it is already tagged. Fails if `release-notes/<version>.md` is missing or `upcoming/` is not empty |
+| `version` | Ubuntu | Checks the tag against the version in `meson.build` at the tagged commit, that the commit is on `main`, that `release-notes/<version>.md` exists and that `upcoming/` is empty. Any mismatch stops the release before anything is built |
 | `build` | macOS 15, Apple Silicon | Builds the source distribution and one wheel per supported Python with [cibuildwheel](https://cibuildwheel.pypa.io/). What the wheel contains and the compiler flags it uses are [issue 19](https://github.com/sofeikov/hotkernels/issues/19) |
 | `test` | macOS 15, Apple Silicon | Installs each wheel into a clean environment, outside the checkout, and runs `delivery check` against it. This is the test that the wheel works without the repository next to it |
 | `publish` | Ubuntu, environment `pypi` | Waits for the maintainer's approval, then uploads with [trusted publishing](https://docs.pypi.org/trusted-publishers/) |
-| `release` | Ubuntu | Creates the tag `v<version>` on the merged commit and a GitHub release with `release-notes/<version>.md` as its text and the wheels attached |
+| `release` | Ubuntu | Creates a GitHub release for the tag with `release-notes/<version>.md` as its text and the wheels attached |
 
-**The order protects what cannot be undone.** PyPI never accepts the same version twice, even after a file is deleted. Nothing is uploaded until every wheel is built and tested, and the tag is created only after the upload succeeds, so a failed run leaves the version untagged and the workflow can be run again.
+**The order protects what cannot be undone.** PyPI never accepts the same version twice, even after a file is deleted. Nothing is uploaded until every wheel is built and tested. If a run fails before the upload, the tag is deleted, the problem fixed on `main` (with the release notes amended if needed), and the tag pushed again on the new commit. If it fails after the upload, only the `release` job is rerun.
 
-**The approval** is the last point to stop a release. Merging the release pull request has already said "release this"; the approval says "these built files". It costs one click, and can be dropped once the pipeline has run a few times without surprises.
+**The approval** is the last point to stop a release. Pushing the tag has already said "release this commit"; the approval says "these built files". It costs one click, and is kept for the first few releases.
 
 **Timings are not taken in CI.** The runners are too noisy, as `ci.yml` already notes. The numbers in the notes come from step 5 of the release pull request.
 
@@ -145,7 +163,8 @@ Done once by the maintainer:
 |---|---|
 | PyPI | The name `hotkernels` is held already, by a placeholder `0.0.1` whose repository link still uses the old name `kernel-arena`; the first release replaces that metadata. Add a trusted publisher to the project: repository `sofeikov/hotkernels`, workflow `release.yml`, environment `pypi` |
 | TestPyPI | The same, for rehearsals |
-| GitHub, environments | Create `pypi` with the maintainer as required reviewer, limited to `main` |
+| GitHub, environments | Create `pypi` with the maintainer as required reviewer, limited to tags matching `v*` |
+| GitHub, tag ruleset | Only the maintainer may create, move or delete tags matching `v*`, so no one else can start a release |
 | GitHub, labels | Create `no release note` |
 | GitHub, branch protection | Require `ci` and the release-note check on `main` |
 
@@ -154,12 +173,12 @@ Done once by the maintainer:
 | Step | What | Depends on |
 |---|---|---|
 | 1 | The version in one place, `__version__`, `report()` prints it | Nothing |
-| 2 | towncrier, `release-notes/`, the template, `uv run release prepare`, the CI check for notes, the label | Nothing. From here on pull requests leave notes |
+| 2 | towncrier, `release-notes/`, the template, `uv run release prepare` and `uv run release tag`, the CI check for notes, the label | Nothing. The instructions in AGENTS.md land with this design, so pull requests leave notes from now on; this step adds the check that enforces them |
 | 3 | `release.yml` up to `release`, publishing to TestPyPI only | Step 1; a wheel that builds, even if it is not yet the final one |
 | 4 | Answers to issue 19: a source distribution that builds without the checkout, the flags for C kernels, `python -m hotkernels` | Its own decisions |
-| 5 | The first release, `0.1.0` or `0.2.0`, to PyPI | Steps 1 to 4, and [issue 18](https://github.com/sofeikov/hotkernels/issues/18) if the release is to claim a NumPy range |
+| 5 | The first release, `0.1.0`, to PyPI | Steps 1 to 4, and [issue 18](https://github.com/sofeikov/hotkernels/issues/18) if the release is to claim a NumPy range |
 
-Steps 1 and 2 can land now; they are useful before anything is published, because notes start piling up from the next pull request.
+Steps 1 and 2 can land now; they are useful before anything is published, because notes pile up from the next pull request.
 
 ## Out of scope
 
@@ -168,15 +187,13 @@ Steps 1 and 2 can land now; they are useful before anything is published, becaus
 - conda-forge. Worth it after PyPI works.
 - Publishing the release notes on the documentation site. A small change to `docsite/` once there are notes to show.
 
-## Decisions still open
+## Decisions made in review
 
-Each has a recommendation, which the implementation follows until it is decided otherwise.
-
-| # | Question | Recommendation |
-|---|---|---|
-| 1 | **Note per pull request, or write the notes at release time** from the list of merged pull requests? | A note per pull request. It is written while the change is fresh, by the agent or person who made it, and costs a minute. Writing from the list at release time means reconstructing what each change meant to a user |
-| 2 | **towncrier, or a few lines of our own?** | towncrier. NumPy uses it for the same job, it renders with Jinja, and its `check` command is the CI job. Our own would be a short `typer` command; worth it only if towncrier's file naming gets in the way |
-| 3 | **What starts the release: merging the release pull request, or pushing a tag?** | Merging. It is one act after a review, and the tag is created by CI on a commit that passed CI. A pushed tag can point at any commit, and the notes would need a second place to live |
-| 4 | **The approval before upload** | Keep it for the first few releases |
-| 5 | **First version on PyPI**: `0.1.0`, what the package says today, or `0.2.0`? | `0.1.0`. Only the `0.0.1` placeholder is published, and the first release notes describe the package as it stands rather than a change from an earlier one |
-| 6 | **Release-note check on pull requests made by agents during a kernel run** | The same rule. A kernel run's pull request leaves one `speed` note; it is the agent's summary of the run, which it writes anyway |
+| Question | Decision |
+|---|---|
+| A note per pull request, or write the notes at release time from the list of merged pull requests? | A short note per pull request, written by whoever opens it, usually an agent. The long text is the release's highlights |
+| towncrier, or a few lines of our own? | towncrier |
+| What starts the release: merging the release pull request, or pushing a tag? | Pushing a tag. The tag is made from the version in the repository by `uv run release tag`, and the workflow refuses a tag that disagrees with it |
+| An approval before the upload? | Yes, for the first few releases |
+| First version on PyPI | `0.1.0` |
+| Do pull requests from agents, including kernel runs, follow the same rule? | Yes, with explicit instructions in [AGENTS.md](../AGENTS.md) |

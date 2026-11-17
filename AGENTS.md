@@ -1,6 +1,6 @@
 # Working in this repository
 
-hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project, [docs/judge-design.md](docs/judge-design.md) for the judge and [docs/delivery-design.md](docs/delivery-design.md) for how the kernels reach NumPy.
+hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project, [docs/judge-design.md](docs/judge-design.md) for the judge [docs/delivery-design.md](docs/delivery-design.md) for how the kernels reach NumPy and [docs/release-design.md](docs/release-design.md) for how releases are made.
 
 This file is for coding agents. The first half applies to any work here; the second half applies when you are writing or tuning a kernel.
 
@@ -11,6 +11,7 @@ This file is for coding agents. The first half applies to any work here; the sec
 - `uv run judge selftest` must pass before any change to `judge/` is proposed.
 - `uv run delivery check` must pass before any change to `hotkernels/` or to a kernel that is installed is proposed. It runs every hooked NumPy call with and without hotkernels and compares them.
 - Timings are only meaningful on native hardware. Never report numbers taken under emulation.
+- A pull request that changes what a user of the package gets leaves a release note. See [Release notes](#release-notes).
 - READMEs describe the present state only: what exists and how to use it. No phases, status, roadmap or development history. Plans belong in `docs/`, and history belongs in git. When a change makes a README inaccurate, update it in the same change.
 
 ## Python code standards
@@ -26,6 +27,42 @@ These apply to all Python in this repository.
 - **No magic constants.** Numbers and strings with meaning get a named module-level constant, with a comment explaining the value where it is not obvious.
 - **Comment the non-obvious.** Where code depends on something outside itself, such as a calling convention, a file format or a memory layout, explain it at the point of use.
 - **Small functions over closures that mutate outer state.** Return values; do not use `nonlocal` counters.
+
+## Release notes
+
+A release gathers short notes left by the pull requests since the last one. You write the note for your pull request.
+
+**When a note is needed.** Your pull request changes `hotkernels/`, or a kernel the package installs (its `kernels/<name>/arm64/kernel.s` or `naive.c`), and a user of the package would notice: a call served by a new kernel, a faster kernel, a fixed result or crash, a supported Python or NumPy version gained or lost, different `report()` output. Changes that touch only `judge/`, `survey/`, `delivery/`, `docsite/`, `docs/` or a README need no note.
+
+**When it is not.** A change in those paths that no user would notice, such as a comment, a rename or a refactor with identical behaviour, gets the `no release note` label instead. Say in the pull request description why.
+
+**Where it goes.** One file per pull request, `release-notes/upcoming/<PR number>.<type>.md`. The number is only known once the pull request exists, so open the pull request first and add the note in a second commit. The type is one of:
+
+| Type | For |
+|---|---|
+| `kernel` | A NumPy call or element type that a kernel now serves |
+| `speed` | A kernel or the binding got faster |
+| `fix` | A wrong result, a crash, or a call that went to the wrong place |
+| `compat` | A Python or NumPy version gained or lost, a new platform, a change to what `install()` installs by default |
+| `change` | Anything else a user would notice |
+
+If a pull request does two of these, pick the one a user cares about most. One note per pull request, never one per commit.
+
+**How to write it.**
+
+- One to three sentences, plain Markdown, no heading. It becomes one bullet in the release notes.
+- Write for someone who calls NumPy, not for someone who works on this repository. Name the NumPy call and element type (`np.cumsum` on `int32`), not the kernel's file name or the hook that serves it.
+- Say what changed for them, not how. "`np.clip(x, lo, hi, out=x)` gave wrong results on some data and now goes to NumPy", not "added an aliasing check in hook_loop.c".
+- A speed figure is allowed if it comes from `uv run judge run` or `uv run delivery time` on native hardware. Give the size it was measured at. It will be re-measured at release.
+- Do not mention the pull request number in the text; the release notes add it.
+
+Example, `release-notes/upcoming/31.kernel.md`:
+
+```markdown
+`np.cumsum` on `int32` is served by a kernel: about 11x faster than NumPy at a million elements.
+```
+
+**Releases are not yours to make.** Do not run `uv run release prepare` or `uv run release tag`, change the package version, or push tags, unless you are asked to.
 
 ## Writing or tuning a kernel
 
@@ -44,6 +81,8 @@ During a kernel run you may change exactly two files:
 
 - `kernels/<name>/<arch>/kernel.s`
 - `kernels/<name>/attempts.md`
+
+When the run is over and its pull request is open, and the kernel is one the package installs, add the run's one release note: a `speed` note summarising it, as described in [Release notes](#release-notes). That is the only other file a run creates.
 
 Everything else is locked: `spec.py`, `naive.c`, and all of `judge/`. The judge compares those against the `main` branch and fails the run if they differ. Do not pass `--unlocked`; it exists for people creating a kernel or changing the judge, and it marks the results as untrusted.
 
