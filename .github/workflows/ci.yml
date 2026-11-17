@@ -15,3 +15,12 @@ jobs:
       - run: uv run judge selftest --no-speed
       # Every hooked NumPy call, with and without hotkernels installed.
       - run: uv run delivery check
+
+  # The judge on its second platform. No kernel is installed there yet, so
+  # there is no delivery check to run.
+  judge-linux:
+    runs-on: ubuntu-latest # x86-64, with clang and GNU binutils installed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run judge selftest --no-speed

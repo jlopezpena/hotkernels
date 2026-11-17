@@ -382,6 +382,8 @@ A fourth, `tally_u8`, covers [scalar sets](#scalar-sets). It counts elements by 
 | Clears as many output elements as the default scalar value gives, when the case gives fewer | Memory safety, in a non-default scalar set |
 | Overwrites a register it must preserve | Calling convention |
 | Uses a register the platform reserves (`x18` on ARM64) | Lint |
+| Uses an instruction outside the level (x86-64) | Lint |
+| Returns without clearing the upper halves of the vector registers (x86-64) | Calling convention |
 | Correct but slower than naive C | Speed report: shown as significantly slower |
 
 The second half of the exit criterion is repeatability: ten consecutive `judge bench` runs of the correct fixture on an idle machine agree to within 3% at every size.
@@ -402,23 +404,26 @@ Phase 1 also delivers the two documents that turn the judge into an agent loop. 
 
 ## Per architecture
 
-The stages above state rules. This section says how each platform enforces them. The ARM64 column describes what is built. The x86-64 column is the proposal in [x86-64-design.md](x86-64-design.md#the-judge) and is not built.
+The stages above state rules. This section says how each platform enforces them. Both columns describe what is built. Why x86-64 is done this way is in [x86-64-design.md](x86-64-design.md#the-judge).
 
 | | ARM64 on macOS | x86-64 on Linux |
 |---|---|---|
 | Kernel source | `kernels/<name>/arm64/kernel.s` | `kernels/<name>/x86_64/kernel.s`, GNU assembler in Intel syntax |
+| Assembled by | The C compiler | GNU `as`, because it can be told which instructions exist |
 | Naive C | `clang -O3 -mcpu=native` | `clang -O3 -march=native` |
 | Lint: calls | `bl`, `blr` and their authenticated forms | `call` |
 | Lint: system calls | `svc`, `hvc`, `smc` | `syscall`, `sysenter`, `int` |
 | Lint: reserved register | `x18` | None |
-| Instruction-set level | Not needed: every Apple Silicon Mac runs what the M1 runs | A static check that a kernel uses nothing beyond x86-64-v3. The development machine runs newer instructions, so a crash cannot be relied on to catch one |
-| Must be preserved | `x19` to `x28`, `x29`, the stack pointer, the low 64 bits of `v8` to `v15` | `rbx`, `rbp`, `r12` to `r15`, the stack pointer. Also: the direction flag clear, the rounding mode and exception masks unchanged, the upper halves of the vector registers cleared before returning |
+| Instruction-set level | Not needed: every Apple Silicon Mac runs what the M1 runs | The kernel is assembled a second time with x86-64-v3 stated, and anything the assembler then refuses fails as lint. The development machine runs newer instructions, so a crash cannot be relied on to catch one |
+| Must be preserved | `x19` to `x28`, `x29`, the stack pointer, the low 64 bits of `v8` to `v15` | `rbx`, `rbp`, `r12` to `r15`, the stack pointer. Also: the direction flag clear, the rounding mode and exception masks unchanged, the upper halves of the vector registers cleared before returning, which the wrapper asks the processor about |
 | Read-only constants | `__TEXT,__const` or `__TEXT,__literal16` | `.rodata` |
-| Performance cores | The highest scheduling priority class | The timing thread pinned to one performance core |
-| Sign of a throttled machine | Low Power Mode | The frequency governor, turbo, and the load average |
+| Performance cores | The highest scheduling priority class | The timing thread pinned to one performance core. The core is claimed through a lock file, so judges running at once take different cores |
+| Object format | Mach-O: symbols start with `_`, libraries end in `.dylib` | ELF: plain symbol names, `.so`, and every kernel must declare that it needs no executable stack |
+| Sign of a throttled machine | Low Power Mode | Turbo switched off, a power-saving governor or energy preference, a load average of 2 or more, or a core shared with another judge |
+| Integer arguments | Eight in registers | Six in registers, a seventh and eighth on the stack |
 | Leftover elements | A scalar loop, or a final vector that overlaps the previous one | The same, and possibly a masked load: [open issue 3](x86-64-design.md#open-issues) |
 
-Everything else is the same on both: the cases, the guarded buffers, the comparison with NumPy, the statistics, the locked files, and the selftest's broken variants. The one exception is the variant that uses a reserved register, which has no x86-64 counterpart.
+Everything else is the same on both: the cases, the guarded buffers, the comparison with NumPy, the statistics, the locked files, and the selftest's broken variants. The variant that uses a reserved register has no x86-64 counterpart. x86-64 has two of its own: one uses an instruction outside the level, and one returns without clearing the upper halves of the vector registers.
 
 ## Out of scope
 
