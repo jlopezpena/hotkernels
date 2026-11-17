@@ -93,7 +93,7 @@ KERNEL = Kernel(
 ```
 
 - `oracle` is a Python function over the inputs. Its result is the correct answer.
-- `mode` is `"exact"` or a tolerance in units in the last place, as defined in the core design.
+- `mode` is `"exact"` or a tolerance in units in the last place, as defined in the core design, optionally with the scale the unit is taken at.
 - A spec can also supply its own input generators when the standard ones are not enough.
 
 From the signature the judge generates the C glue it needs to call the kernel. Kernel authors never write harness code.
@@ -110,6 +110,7 @@ The first real kernels needed more than the two fixtures do. Each addition below
 | `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs | `searchsorted` and `interp` (sorted data) |
 | `InOut("x", "f64")` | A buffer the kernel modifies in place. It starts as an input and is compared in full with the oracle's result | masked assignment |
 | `Kernel(numpy=fn)` | What is timed as NumPy when that is not the oracle. An in-place oracle has to copy its input; the statement a user writes does not | masked assignment |
+| `mode={"tolerance_ulp": 4, "scale": fn}` | A tolerance measured at a magnitude the spec computes from the inputs, instead of at the size of the result. See [Comparison](#comparison) | float `cumsum` |
 | `Kernel(check_max_n=65537)` | Caps the sizes used for correctness, for an oracle too slow to run on millions of elements per case. Timing still uses the full sweep | `interp` |
 | No `arm64/kernel.s` | The kernel is its naive C. `check` verifies the C against NumPy and `run` reports C against NumPy | every kernel before its assembly exists, and kernels shipped as C |
 
@@ -221,6 +222,7 @@ Assembly can corrupt its caller in ways that tests pass by luck. The judge calls
 
 - **Exact mode:** the output bytes must equal the oracle's bytes.
 - **Tolerance mode:** each value must be within the declared number of units in the last place. NaN and infinity must appear in exactly the same positions.
+- **Tolerance with a scale:** by default the unit in the last place is taken at the size of the value itself. That is wrong for a running sum: terms that cancel leave a small result carrying the rounding error of the large terms, and a reordered float `cumsum` then differs from NumPy's by millions of units of the result while being exactly as accurate. A spec can therefore supply a scale function with its tolerance, `mode={"tolerance_ulp": 4, "scale": fn}`, which returns per output element the magnitude the unit is taken at. For `cumsum` that is `(i + 1) * (|x[0]| + ... + |x[i]|)`, the standard bound on the error of adding in any order. The price is a weaker check where the bound is wide: for float32 beyond some tens of thousands of elements it no longer notices a single skipped element. Small sizes, where every length and alignment is tried, are not affected.
 - The return value is compared the same way as output buffers.
 
 ### Crashes
