@@ -67,9 +67,17 @@ agents were timing other kernels on the same machine, so timings are noisier tha
 - **Kept:** no
 - **Notes:** two narrowing operations cost as much as the two moves they save.
 
+## 9. Adopt the zone path of attempt 7
+
+- **Idea:** attempt 7 was left out because the judge could test one bin count and range only, and the path rests on an entry check of exactly those. The spec now lists thirteen further bin counts and ranges (one and two bins, exact and inexact widths, 4,096 bins, ranges of width 2e-3, 2e300 and 2e-310, a range that excludes zero), so the kernel of attempt 7 is restored unchanged.
+- **check:** pass, 53,652 cases across the fourteen scalar sets. Also a differential test outside the judge against `np.histogram` itself (not `naive.c`): 430,000 rounds, 126 million elements, random bin counts and ranges from six families (ordinary, far from zero and narrow, extreme scales, exact binary widths, integer edges, denormal-sized), with values on and up to three ulps either side of NumPy's edges, around the 2^-12 threshold, at lo and hi and one ulp outside, NaN, infinities and the largest magnitudes: no mismatch. A histogram without the edge corrections differs from NumPy in 2,086 of 3,000 rounds of the same inputs, so the test sees what it is looking for.
+- **compare:** significantly faster, 1.298x [1.295 – 1.301] (1.14x at 16, 1.23x at 64, 1.31–1.36x from 256 up)
+- **Kept:** yes
+- **Notes:** the judge's own data seldom lands within rounding distance of a bin edge, so the fourteen sets mostly exercise the entry check, the table sizes and the out-of-range handling. The evidence that the 2^-12 margin is enough is the proof in the `kernel.s` header and the two differential tests.
+
 ## Where this stands
 
-The literal kernel needs 14 vector operations per two elements (three for t, two for the truncation as integer and as double, five for the two edges, two compares, two to apply them) plus two moves to general registers, and measures about 5.5 cycles per vector against a port limit near 4.5. I found no way to do the same individually rounded operations with fewer vector operations; the ideas that cut them (edge table, attempt 6) pay for it in moves. The remaining gain I know of is attempt 7, which changes what is computed per element.
+The literal kernel needs 14 vector operations per two elements (three for t, two for the truncation as integer and as double, five for the two edges, two compares, two to apply them) plus two moves to general registers, and measures about 5.5 cycles per vector against a port limit near 4.5. I found no way to do the same individually rounded operations with fewer vector operations; the ideas that cut them (edge table, attempt 6) pay for it in moves. Attempt 7, adopted as attempt 9, gets past that by changing what is computed per element: four vector operations per two elements on the path nearly every element takes.
 
 ## Not tried
 

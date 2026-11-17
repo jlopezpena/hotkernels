@@ -12,8 +12,12 @@
 // Every floating-point operation is rounded on its own. In particular an edge
 // is a separate multiply and add, never fmadd.
 //
-// The vector path computes, two elements per vector, with exactly those
-// operations:
+// There are two vector paths. Both hand any lane they are not sure about to
+// the scalar routine Lone, which is naive.c verbatim; the order of increments
+// does not matter, so Lone can run for one lane in the middle of a block.
+//
+// ---- Compute path ----------------------------------------------------------
+// Computes, two elements per vector, with exactly naive's operations:
 //     t  = ((v - lo) / width) * nbins
 //     b  = trunc(t) as a signed integer,  f = trunc(t) as a double
 //     e0 = f * step + lo                  = edge(b)
@@ -36,15 +40,43 @@
 //     exactly when v >= e1. Either way naive's bin is q - 1.
 //   The last bin (q - 1 == nbins - 1) is never accepted, because there naive
 //   uses hi as the edge and refuses to increment; Lone handles it.
-// The order of increments does not matter, so the scalar routine can run for
-// one lane in the middle of a block.
+//
+// ---- Zone path -------------------------------------------------------------
+// NOT a literal transcription of naive.c: it skips the two edge corrections
+// for elements that are provably too far from a bin edge for either to fire,
+// and sends every other element to Lone.
+//
+// It computes t exactly as naive does (fsub, fdiv, fmul), converts it to
+// 32.32 fixed point z = trunc(t * 2^32) (exact scaling; saturating; NaN -> 0)
+// and accepts a lane into bin b = z >> 32 when
+//     DELTA <= fraction(z) < 1 - DELTA     and     b <= nbins - 2  (unsigned),
+// with DELTA = 2^-12. So about one element in 2,048, plus everything in the
+// last bin or out of range, takes the scalar route.
+//
+// Why an accepted lane is right. Write u = 2^-53, N = nbins, w = width,
+// M = max(|lo|, |hi|), and tau = (v - lo) * N / w as a real number.
+//   - NaN gives z = 0 (fraction 0); v < lo gives z <= 0 (fraction 0, or a
+//     negative z whose b is huge as an unsigned number); v > hi gives
+//     v - lo >= w after rounding, so t >= N and b >= N (or z saturates and
+//     b = 2^31 - 1 >= N - 1). None is accepted, so an accepted v is in range.
+//   - For v in range, t is tau after three rounded operations, so
+//     |t - tau| <= 4 u N. Acceptance means b + DELTA <= t < b + 1 - DELTA.
+//   - edge(k) = fl(fl(k * step) + lo) with step = fl(w / N) (a normal number,
+//     checked). Expanding the three rounding errors, v >= edge(k) is certain
+//     when tau >= k + D and v < edge(k) is certain when tau < k - D, where
+//     D = 2.01 u N + 1.01 u M N / w.
+//   - So if DELTA >= 4 u N + D, an accepted lane has edge(b) <= v < edge(b+1):
+//     naive's first estimate is b, neither correction fires, the bin is b.
+//   The entry check N < 2^31 and M * N <= w * 2^39 gives 4 u N + D < 2^-12.
+// The preconditions are checked once per call; if they fail the compute path
+// is used.
 //
 // Register use
 //   x4        scratch for zeroing
 //   x5        counter being incremented
 //   x6-x9     q for the four lanes of a block
 //   x10       q - 1
-//   x13, x14  scratch in Lone
+//   x13, x14  scratch in Lone and in the zone path's checks
 //   x15       return address for Lone
 //   x16       nbins - 1
 //   x17       counts - 8, so that counts[q - 1] is [x17, q, lsl #3]
@@ -52,6 +84,10 @@
 //   d21 hi
 //   d22, d23  v and scratch in Lone
 //   v0-v7     block temporaries
+//   d24, d25  scratch in the zone path's entry check
+
+// Zone path: DELTA = 2^-12 as a 32-bit fraction is 2^20 = ZONE_DELTA << 12.
+.set ZONE_DELTA, 0x100
 
 // One vector of two elements at byte offset \off: leaves q in v\b.
 // \v, \f, \g, \b are vector register numbers.
@@ -90,6 +126,33 @@ Lslow_\id:
     ldr     d22, [x0, #\off]
     adr     x15, Lback_\id
     b       Lone
+.endm
+
+// Zone path: count the lane whose fixed-point t is in x\n.
+.macro ZCOUNT n, id
+    add     w14, w\n, #ZONE_DELTA, lsl #12              // fraction + DELTA (wraps)
+    cmp     w14, #(2 * ZONE_DELTA), lsl #12             // lower: within DELTA of an integer
+    b.lo    Lslow_\id
+    lsr     x13, x\n, #32                               // b
+    cmp     x13, x16
+    b.hs    Lslow_\id
+    ldr     x5, [x1, x13, lsl #3]
+    add     x5, x5, #1
+    str     x5, [x1, x13, lsl #3]
+Lback_\id:
+.endm
+
+// Zone path: one vector of two elements at byte offset \off, counted.
+.macro ZONE_VEC off, id0, id1
+    ldr     q0, [x0, #\off]
+    fsub    v0.2d, v0.2d, v16.2d
+    fdiv    v0.2d, v0.2d, v17.2d
+    fmul    v0.2d, v0.2d, v18.2d                // t
+    fcvtzs  v0.2d, v0.2d, #32                   // trunc(t * 2^32)
+    fmov    x6, d0
+    mov     x7, v0.d[1]
+    ZCOUNT  6, \id0
+    ZCOUNT  7, \id1
 .endm
 
 .text
@@ -137,6 +200,36 @@ Lzeroed:
     fmov    d20, #1.0
     dup     v20.2d, v20.d[0]
 
+    // Zone path entry check: nbins < 2^31, step normal (non-zero exponent),
+    // and max(|lo|, |hi|) * nbins <= width * 2^39.
+    lsr     x9, x3, #31
+    cbnz    x9, Lcompute
+    fmov    x9, d19
+    lsr     x9, x9, #52
+    cbz     x9, Lcompute
+    fabs    d24, d16
+    fabs    d25, d21
+    fmaxnm  d24, d24, d25
+    fmul    d24, d24, d18
+    mov     x9, #0x4260000000000000 // 2^39
+    fmov    d25, x9
+    fmul    d25, d17, d25
+    fcmp    d24, d25
+    b.hi    Lcompute                // also taken if the compare is unordered
+
+    subs    x2, x2, #4
+    b.lo    Lzone_done
+Lzone_block:
+    ZONE_VEC 0, e, f
+    ZONE_VEC 16, g, h
+    add     x0, x0, #32
+    subs    x2, x2, #4
+    b.hs    Lzone_block
+Lzone_done:
+    add     x2, x2, #4              // 0..3 elements left
+    b       Ltail
+
+Lcompute:
     subs    x2, x2, #4
     b.lo    Lblocks_done
 Lblock:
@@ -173,6 +266,10 @@ Ldone:
     SLOW    b, 8
     SLOW    c, 16
     SLOW    d, 24
+    SLOW    e, 0
+    SLOW    f, 8
+    SLOW    g, 16
+    SLOW    h, 24
 
     // naive.c for the single element v in d22. Returns to x15.
 Lone:
