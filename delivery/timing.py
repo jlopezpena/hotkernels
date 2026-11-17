@@ -223,6 +223,26 @@ def _assign(value: float, x: np.ndarray, mask: np.ndarray) -> None:
     x[mask] = value
 
 
+def _compress(x: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Return `np.compress(mask, x)`, which takes the mask first."""
+    return np.compress(mask, x)
+
+
+def _extract(x: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Return `np.extract(mask, x)`, which takes the mask first."""
+    return np.extract(mask, x)
+
+
+def _putmask(value: float, x: np.ndarray, mask: np.ndarray) -> None:
+    """Run `np.putmask(x, mask, value)`. Running it twice changes nothing more."""
+    np.putmask(x, mask, value)
+
+
+def _copyto(value: float, x: np.ndarray, mask: np.ndarray) -> None:
+    """Run `np.copyto(x, value, where=mask)`. Running it twice changes nothing more."""
+    np.copyto(x, value, where=mask)
+
+
 def _set_element(x: np.ndarray) -> None:
     """Run `x[3] = 1.0`."""
     x[3] = 1.0
@@ -242,9 +262,14 @@ TAKEN: tuple[Timed, ...] = (
     Timed("compress", "x[mask]", "float64, half selected", partial(_masked, np.float64, HALF), lambda x, m: x[m], "compress_f64"),
     Timed("compress", "x[mask]", "float64, few selected", partial(_masked, np.float64, FEW), lambda x, m: x[m], "compress_f64"),
     Timed("maskfill", "x[mask] = 0.0", "float64, half selected", partial(_masked, np.float64, HALF), partial(_assign, 0.0), "maskfill_f64"),
+    Timed("compress", "np.compress(mask, x)", "float64, half selected", partial(_masked, np.float64, HALF), _compress, "compress_f64"),
+    Timed("compress", "np.extract(mask, x)", "float64, half selected", partial(_masked, np.float64, HALF), _extract, "compress_f64"),
     Timed("maskfill", "x[mask] = 0.0", "float64, few selected", partial(_masked, np.float64, FEW), partial(_assign, 0.0), "maskfill_f64"),
+    Timed("maskfill", "np.putmask(x, mask, 0.0)", "float64, half selected", partial(_masked, np.float64, HALF), partial(_putmask, 0.0), "maskfill_f64"),
+    Timed("maskfill", "np.copyto(x, 0.0, where=mask)", "float64, half selected", partial(_masked, np.float64, HALF), partial(_copyto, 0.0), "maskfill_f64"),
     Timed("nonzero", "np.nonzero(mask)", "bool, half selected", partial(_mask, HALF), np.nonzero, "nonzero_bool"),
     Timed("nonzero", "np.nonzero(mask)", "bool, few selected", partial(_mask, FEW), np.nonzero, "nonzero_bool"),
+    Timed("nonzero", "np.where(mask)", "bool, half selected", partial(_mask, HALF), np.where, "nonzero_bool"),
     Timed("cumsum", "np.cumsum(x)", "int64", partial(_ints, np.int64), np.cumsum, "cumsum_i64"),
     Timed("cumsum", "np.cumsum(x)", "float32", partial(_floats, np.float32), np.cumsum, "cumsum_f32", inexact=True),
     Timed("cumsum", "np.cumsum(x)", "float64", partial(_floats, np.float64), np.cumsum, "cumsum_f64", inexact=True),
@@ -286,6 +311,8 @@ LEFT: tuple[Timed, ...] = (
     Timed("compress", "x[mask]", "int64, half selected", partial(_masked, np.int64, HALF), lambda x, m: x[m], None),
     Timed("maskfill", "x[3] = 1.0", "float64", partial(_floats, np.float64), _set_element, None),
     Timed("maskfill", "x[mask] = 0.0", "float32, half selected", partial(_masked, np.float32, HALF), partial(_assign, 0.0), None),
+    Timed("maskfill", "np.copyto(x, 0.0)", "float64", partial(_floats, np.float64), lambda x: np.copyto(x, 0.0), None),
+    Timed("nonzero", "np.where(mask, 1.0, 0.0)", "bool, half selected", partial(_mask, HALF), lambda m: np.where(m, 1.0, 0.0), None),
 )
 
 

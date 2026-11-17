@@ -69,6 +69,26 @@ const STATEMENTS = [
     given: ["the index is a plain boolean ndarray", "mask is one-dimensional, contiguous and as long as x", "the value is a Python float or int",
       "x is writable and does not share memory with mask", "every mask byte is 0 or 1 (the mask is read once to check)"],
   },
+  { // hook_function.c try_compress, sharing hook_index.c hk_try_compress; without an axis NumPy flattens x.
+    code: "np.compress(mask, x)", array: "x", via: "function",
+    types: [{ label: "float32", kernel: "compress_f32" }, { label: "float64", kernel: "compress_f64" }, OTHER],
+    typeText: "elements are float32 or float64",
+    given: ["no axis and no out: the kernel's scratch output never goes into the caller's buffer", "mask is a plain one-dimensional boolean ndarray, contiguous, with as many elements as x",
+      "every mask byte is 0 or 1 (the mask is read once to check)"],
+  },
+  { // hook_function.c try_putmask, sharing hook_index.c hk_try_maskfill; NumPy needs only the sizes to match.
+    code: "np.putmask(x, mask, 0.0)", array: "x", via: "function",
+    types: [{ label: "float64", kernel: "maskfill_f64" }, OTHER],
+    typeText: "elements are float64",
+    given: ["mask is a plain contiguous boolean ndarray with as many elements as x", "the value is a Python float or int",
+      "x is writable and does not share memory with mask", "every mask byte is 0 or 1 (the mask is read once to check)"],
+  },
+  { // hook_function.c call_where; np.where calls NumPy's C nonzero directly, not the method.
+    code: "np.where(mask)", array: "mask", via: "function", oneD: true,
+    types: [{ label: "bool", kernel: "nonzero_bool" }, OTHER],
+    typeText: "elements are bool",
+    given: ["mask is the only argument", "every mask byte is 0 or 1 (the mask is read once to check)"],
+  },
   { // hook_method.c method_nonzero; np.nonzero calls the method.
     code: "np.nonzero(mask)", array: "mask", via: "method", oneD: true,
     types: [{ label: "bool", kernel: "nonzero_bool" }, OTHER],
