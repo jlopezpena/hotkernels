@@ -51,15 +51,25 @@
 // again. The price of the square test is that running sums above about 1e152
 // in size, though finite, take the slow path.
 //
+// Short arrays. Fewer than SMALL elements are added strictly left to right
+// (Lsmall), which is the reference order, so nothing needs checking. That
+// chain costs 3 cycles of latency per element, but it is 46 operations for 16
+// elements against 62 for two blocks plus the check, and when calls do not
+// depend on each other the processor overlaps them, so the count is what
+// matters. Measured, the chain wins up to 28 elements and loses from 32.
+//
 // Registers: x0 x, x1 out, x2 elements after this chunk, x3 chunk counter,
 // x7 start of out, x9 elements in this chunk, x11 bits of x[0],
 // v16 last output vector, v17 last input vector, v18-v21 sums of squares.
 .set CHUNK, 1024
+// Below this many elements the plain chain is used (see Lsmall).
+.set SMALL, 32
 .text
 .globl _cumsum_f64
 .p2align 2
 _cumsum_f64:
-    cbz     x2, Lret
+    cmp     x2, #SMALL
+    b.lo    Lsmall
     ldr     x11, [x0]               // out[0] is stored from this at the end, as a copy
     mov     x7, x1
     movi    v16.2d, #0
@@ -230,3 +240,91 @@ Lrestart:                           // start again at element 0 with the referen
     mov     x10, #0x8000000000000000
     fmov    d0, x10                 // -0.0 + x[0] is x[0]
     b       Lplain
+
+// Fewer than SMALL elements: one fadd chain in the reference order, elements
+// loaded and stored in pairs. Exact, so no check.
+Lsmall:
+    cmp     x2, #8
+    b.lo    Lshort
+    ldp     d1, d2, [x0]
+    ldp     d3, d4, [x0, #16]
+    ldp     d5, d6, [x0, #32]
+    ldp     d7, d16, [x0, #48]
+    fadd    d2, d1, d2              // x[0] + x[1]; x[0] itself is stored as loaded
+    fadd    d3, d2, d3
+    fadd    d4, d3, d4
+    fadd    d5, d4, d5
+    fadd    d6, d5, d6
+    fadd    d7, d6, d7
+    fadd    d0, d7, d16
+    stp     d1, d2, [x1]
+    stp     d3, d4, [x1, #16]
+    stp     d5, d6, [x1, #32]
+    stp     d7, d0, [x1, #48]
+    add     x0, x0, #64
+    add     x1, x1, #64
+    subs    x2, x2, #16             // 8 done; at least 8 more?
+    b.lo    Lsmall_rest
+Lsmall_block:
+    ldp     d1, d2, [x0]
+    ldp     d3, d4, [x0, #16]
+    ldp     d5, d6, [x0, #32]
+    ldp     d7, d16, [x0, #48]
+    fadd    d1, d0, d1              // sum + x[i], same operand order as the C
+    fadd    d2, d1, d2
+    fadd    d3, d2, d3
+    fadd    d4, d3, d4
+    fadd    d5, d4, d5
+    fadd    d6, d5, d6
+    fadd    d7, d6, d7
+    fadd    d0, d7, d16
+    stp     d1, d2, [x1]
+    stp     d3, d4, [x1, #16]
+    stp     d5, d6, [x1, #32]
+    stp     d7, d0, [x1, #48]
+    add     x0, x0, #64
+    add     x1, x1, #64
+    subs    x2, x2, #8
+    b.hs    Lsmall_block
+Lsmall_rest:
+    tst     x2, #7                  // 0 to 7 elements left; the running sum is in d0
+    b.eq    Lsmall_done
+    tbz     x2, #2, Lsmall_no4
+    ldp     d1, d2, [x0]
+    ldp     d3, d4, [x0, #16]
+    fadd    d1, d0, d1
+    fadd    d2, d1, d2
+    fadd    d3, d2, d3
+    fadd    d0, d3, d4
+    stp     d1, d2, [x1]
+    stp     d3, d0, [x1, #16]
+    add     x0, x0, #32
+    add     x1, x1, #32
+Lsmall_no4:
+    tbz     x2, #1, Lsmall_no2
+    ldp     d1, d2, [x0]
+    fadd    d1, d0, d1
+    fadd    d0, d1, d2
+    stp     d1, d0, [x1]
+    add     x0, x0, #16
+    add     x1, x1, #16
+Lsmall_no2:
+    tbz     x2, #0, Lsmall_done
+    ldr     d1, [x0]
+    fadd    d0, d0, d1
+    str     d0, [x1]
+Lsmall_done:
+    ret
+Lshort:                             // fewer than 8 elements
+    cbz     x2, Lsmall_done
+    ldr     d0, [x0], #8            // running sum = x[0], copied
+    str     d0, [x1], #8
+    subs    x2, x2, #1
+    b.eq    Lsmall_done
+Lshort_loop:
+    ldr     d1, [x0], #8
+    fadd    d0, d0, d1
+    str     d0, [x1], #8
+    subs    x2, x2, #1
+    b.ne    Lshort_loop
+    ret

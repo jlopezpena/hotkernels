@@ -213,3 +213,23 @@ which the table rounds to 1.00x.
     iteration. Not used.
   - carry advanced once per 16 elements (one extra add per iteration): 4.28
     with the check, 3.68 without. No gain.
+
+## 6. Fewer than 32 elements: the exact chain of attempt 4
+
+- **Idea:** attempt 5 lost at n=16 (3.8 ns against 2.8 ns): two blocks plus
+  the setup and the final check are about 99 operations, the paired exact
+  chain is 46, and the judge times independent calls, which the processor
+  overlaps, so the 3-cycle latency per element of the chain does not show.
+  Send arrays below 32 elements to the paired chain of attempts 2 and 4 (a
+  first block of 8, then blocks of 8, then 4, 2, 1). It adds in the reference
+  order, so it needs no check and its results are bit-identical to NumPy's.
+- **check:** pass (18,136 cases)
+- **compare:** significantly faster, 1.022x [1.018 – 1.026]
+- **Kept:** yes
+- **Notes:** 1.32x at 16 (2.9 ns against 3.8 ns); 1.00x at every other size
+  (65,536 was 0.96x [0.92 – 1.01], not significant, a noisy sample). The
+  threshold comes from the standalone timer, ns per element, chain then
+  blocks: 0.176 / 0.238 at 16, 0.186 / 0.207 at 24, 0.204 / 0.211 at 28,
+  0.211 / 0.195 at 32, 0.242 / 0.188 at 40. This is a throughput choice: a
+  caller whose next step waits for the result sees the chain's latency (up
+  to 93 cycles for 31 elements) where the blocks would take about 25.
