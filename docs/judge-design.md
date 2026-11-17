@@ -168,7 +168,27 @@ Where it is used:
 | `searchsorted_f64`, `searchsorted_right_f64` | `v` (needles) | `a` (the sorted array) |
 | `interp_f64` | `x` (queries) | `xp` (the sample points) |
 
-What it costs, estimated for a search kernel with its twelve scalar sets: about 3,700 cases more than its 141,872, of which some 330 are above 65,536 elements. The large ones are most of the time; each needs a sorted array of up to four million `ties`, once per size. The building will measure it.
+What it costs, measured on the Apple M1 Pro with other jobs running beside it (load average 7 to 15), in alternating runs of the judge on `main` and with this change:
+
+| Kernel | Cases | `judge check` | Peak memory |
+|---|---|---|---|
+| `searchsorted_f64`, `searchsorted_right_f64` | 141,872 to 145,599 (324 of the new ones above 65,536 elements) | 18.2 s to 14.5 s | 618 MB to 890 MB (`searchsorted_f64`) |
+| `interp_f64` | 155,063 to 157,062 | 15.4 s to 13.1 s | |
+
+The check got faster although it runs more cases: keeping the sorted arrays of every class of a size, rather than the last one, saves sorting them again for each scalar set, and that was most of the time before. The same arrays are the extra memory.
+
+What the mutation run showed, with the comparison of one part of a kernel put back to the other side's (the tables are in the kernels' `attempts.md`):
+
+| Kernel | Part | Before | After |
+|---|---|---|---|
+| `searchsorted_right_f64` | First step of the long-array path (`Lbig_init`) | Passes | Fails: `n=1048577 scalars=k128 a=ties v=from_a` |
+| `searchsorted_right_f64` | Later steps of it (`Lbig_probe`) | Passes | Fails: the same case |
+| `searchsorted_f64` | `Lbig_init` | Passes | Fails: `n=2097151 scalars=k128 a=ties v=from_a` |
+| `searchsorted_f64` | `Lbig_probe` | Passes | Fails: `n=1048577 scalars=k128 a=ties v=from_a` |
+| `interp_f64` | Later steps of the 64-query search, and the sixteen-query count | Pass every fixed case; caught by a fresh case in nine runs of ten | Fail on a fixed case: `x=from_xp xp=ties` at 64 and 16 points |
+| `interp_f64` | First step of the 64-query search | Passes | Passes, and cannot fail: see below |
+
+`interp_f64`'s first step is not a gap. When it takes the lower window for a query equal to `a[p - 1]`, the search ends at `p`, inside the run of equal sample points; the interpolation then divides by a zero width, the result is NaN, and the kernel recomputes that query by the reference's own steps. Every outcome is right, so no input can tell the mutation apart.
 
 Why this and not the issue's other option, the pairings of plain classes extended to one large size per path boundary: the pairings run in the default scalar set, and the long-array path is not reached there; extending them to every set multiplies eleven classes of each argument at sizes where an array takes tens of milliseconds to build. And no pairing of plain classes gives a needle equal to an element of random data.
 

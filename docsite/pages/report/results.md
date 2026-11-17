@@ -108,7 +108,6 @@ The judge is the reason any of this can be trusted, so its blind spots are the m
 | **Paths behind a size cap** | `interp`'s large-array path: NumPy's `interp` is too slow to act as an oracle beyond 65,537 elements, so that path was compared with the reference outside the judge, without guard pages |
 | **A tolerance that widens with size** | For float32 `cumsum` beyond some tens of thousands of elements, the bound is wide enough that a single skipped element would pass |
 | **Inputs outside what a spec can express** | Mask bytes other than 0 or 1; an output that is the input; a concurrent writer. All found when the kernels met real calls, and all screened by the binding |
-| **Needles that equal an element, in a long array** | The two sides of a search differ only there, and no generated input above 5,000 elements has one. A search that compared the wrong way on its path for arrays of 1,048,576 elements or more would pass the judge. The test from Python, which draws needles from the array, covers it |
 | **Prefetch addresses** | Two kernels issue prefetch hints up to 256 KB past the end of very large arrays. A prefetch never faults and reads nothing, so this is safe, and invisible |
 
 The pattern is consistent: the judge verifies what its generated inputs exercise. Every defect that got past it was in a region the generator did not reach, and each one that was found led to a new value class, a new scalar set or a new check in the binding.

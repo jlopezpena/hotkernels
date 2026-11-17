@@ -16,9 +16,10 @@ import numpy as np
 from . import bench as B
 from . import placement as P
 from .build import ARCH, ARM64, X86_64
+from .cases import TIE_DISTINCT_VALUES, build_inputs, fixed_cases, repeated_class, sizes
 from .check import KERNEL, LINT, NAIVE, CheckResult, build_all, check
 from .render import render
-from .spec import Out
+from .spec import Out, drawn_class, load_spec
 from .worker import CALLING_CONVENTION, MEMORY_SAFETY, WRONG_RESULT
 
 log = logging.getLogger(__name__)
@@ -86,6 +87,10 @@ STABILITY_RUNS = 10
 # ... and passes when no size varies by more than this between runs.
 STABILITY_LIMIT = 0.03
 STABILITY_KERNEL = "argmax_f32"
+
+
+# The fixture with an argument drawn from another, whose cases are inspected.
+DRAWN_KERNEL = "rank_u8"
 
 
 @dataclass
@@ -202,6 +207,54 @@ def _placement_outcomes() -> Iterator[Outcome]:
         yield Outcome(f"timing buffers ({placement})", not found, found[0] if found else description)
 
 
+def _missing_drawn_cases(name: str) -> list[str]:
+    """Find the sizes and scalar sets at which a fixture lacks the drawn cases it is promised.
+
+    At every size the fixture is checked at, in every scalar set, there must
+    be a case in which each argument with `draws_from` takes its drawn class
+    while the source takes its class of repeated values; the drawn array must
+    hold only elements of the source as the kernel receives it, and the
+    source must repeat values wherever it has more elements than that class
+    has distinct values.
+
+    Args:
+        name: A fixture kernel with at least one argument that draws from another.
+
+    Returns:
+        One description per size, scalar set and argument that falls short.
+        Empty when nothing does.
+    """
+    k = load_spec(FIXTURES / name)
+    cases = list(fixed_cases(k))
+    found = []
+    for a in (a for a in k.ins if a.draws_from):
+        source = next(s for s in k.ins if s.name == a.draws_from)
+        repeated = repeated_class(source.dtype)
+        wanted = {(a.name, drawn_class(a)), (source.name, repeated)}
+        for n in sizes(k.min_n, k.check_max_n):
+            for scalars in k.scalar_set_names:
+                match = [c for c in cases if c.n == n and c.scalars == scalars
+                         and wanted <= {(arg, cls) for arg, cls, _p in c.picks}]
+                where = f"{a.name} at n={n:,}, scalars={scalars}"
+                if not match:
+                    found.append(f"{where}: no case drawn from {source.name}={repeated}")
+                    continue
+                inputs = build_inputs(k, match[0])
+                drawn, values = inputs[a.name], inputs[source.name]
+                if values.size and not np.isin(drawn, values).all():
+                    found.append(f"{where}: values that are not elements of {source.name}")
+                if values.size > TIE_DISTINCT_VALUES and np.unique(values).size == values.size:
+                    found.append(f"{where}: {source.name} has no repeated value")
+    return found
+
+
+def _drawn_outcomes() -> Iterator[Outcome]:
+    """Check that values drawn from another argument are generated where promised."""
+    found = _missing_drawn_cases(DRAWN_KERNEL)
+    yield Outcome(f"{DRAWN_KERNEL} (drawn values)", not found,
+                  found[0] if found else "drawn from repeated values at every size and scalar set")
+
+
 def _expected() -> dict[str, dict[str, str]]:
     """Return every broken variant this architecture has.
 
@@ -219,6 +272,7 @@ def _outcomes(speed: bool) -> Iterator[Outcome]:
         yield _correct_outcome(name)
         for variant, expected in variants.items():
             yield _broken_outcome(name, variant, expected)
+    yield from _drawn_outcomes()
     yield from _placement_outcomes()
     yield from _slow_outcomes(speed)
 

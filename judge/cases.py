@@ -391,6 +391,18 @@ def arg_classes(arg: In | InOut) -> tuple[list[str], list[str]]:
     return plain + own, positional
 
 
+def repeated_class(dtype_name: str) -> str:
+    """Return the value class of a spec type whose elements repeat one another.
+
+    Args:
+        dtype_name: A spec type name such as `f64`.
+
+    Returns:
+        The name of the class, from REPEATED_CLASS.
+    """
+    return REPEATED_CLASS[_kind(np_dtype(dtype_name))]
+
+
 def _crc(text: str) -> int:
     """Hash a string to an integer that is stable across runs, for seeding."""
     return zlib.crc32(text.encode())
@@ -721,7 +733,7 @@ def _drawn_cases(k: Kernel, n: int, seed: int, scalars: str, thin: bool) -> Iter
         if not a.draws_from:
             continue
         source = by_name[a.draws_from]
-        sources = [] if paired else [REPEATED_CLASS[_kind(np_dtype(source.dtype))]]
+        sources = [] if paired else [repeated_class(source.dtype)]
         if n > LARGE_MIN_N:
             sources.append(RANDOM)
         for i, cls in enumerate(dict.fromkeys(sources)):
