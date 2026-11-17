@@ -184,6 +184,7 @@ The tag starts the release workflow, which builds and tests the wheels and waits
 - [docs/kernel-findings.md](docs/kernel-findings.md): what each kernel achieves, how, and where assembly could not win
 - [docs/delivery-design.md](docs/delivery-design.md): how the kernels reach unmodified NumPy code: the binding, `install()` and `report()`, and how they are tested
 - [docs/release-design.md](docs/release-design.md): how a release is made and published, and who can publish
+- [docs/distribution-design.md](docs/distribution-design.md): what a release contains: wheels, the source distribution, other platforms, `python -m hotkernels`
 - [AGENTS.md](AGENTS.md): rules for coding agents working in this repository
 - [kernels/README.md](kernels/README.md): how to add a kernel
 
