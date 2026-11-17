@@ -32,6 +32,14 @@
 - **Kept:** no
 - **Notes:** n = 64 gained (5.6 ns to 4.8 ns, 1.16x) but n = 16 lost (1.9 ns to 2.0 ns, 0.92x) to the extra test of the bounds at entry. It would also have helped only one shape of bounds. Not tried for the same range: `fmax`/`fmin` plus a vector test for NaN in the results instead of the FPSR reads. That is three operations per vector for any bounds, but any NaN in a short array, quiet ones included, would then cost a second pass, about 1.7 times the plain compare and select.
 
+## 5. The `lo = +0.0` path of `clip_f64`
+
+- **Idea:** the path worked out on `clip_f64` (its attempts 4 and 5), with four floats per vector: `fmin(fmax(x, lo), hi)` plus one `smin.4s` per vector that finds a -0.0 (bit pattern 0x80000000, the smallest signed 32-bit value) in a chunk; a chunk that held one is done again by compare and select; a credit rule gives up early when -0.0 is not rare. The first chunk is 4 blocks (64 elements), later ones 8 to 64 blocks, and the path is not tried below 512 elements.
+- **check:** pass
+- **compare:** significantly faster, 1.026x [1.023 – 1.029] over the six timed tables (three kinds of data, two pairs of bounds). Bounds (0, 1) on random data: 1.18x [1.17 – 1.19], with 1.19x at 1,024, 1.32x at 4,096, 1.34x at 16,384. Bounds (0, 1) on data with negative zeros: 0.99x [0.99 – 1.00], with 0.95x to 0.97x at 1,024, which is the price of the first chunk. Bounds (-0.5, 0.5): unchanged.
+- **Kept:** yes
+- **Notes:** speed relative to `naive.c` for bounds (0, 1), measured outside the judge with the machine in use: without -0.0, 1.05x at 512, 1.14x at 1,024, 1.28x at 4,096 and 16,384; with -0.0 at 1% or 19%, 0.86x to 0.89x at 512, 0.95x at 1,024, 0.98x to 1.01x from 4,096. Verified outside the judge with the differential test described under `clip_f64` attempt 5, built for float32: 1.1 billion elements over 500,000 calls, no difference.
+
 ## Result
 
 `uv run judge run clip_f32 --unlocked`, `kernel.s` as of commit 3101e7f, Apple M1 Pro, other work running on the machine at the time:
@@ -54,7 +62,7 @@
 Assembly is kept. Where it stands and what the numbers do not show:
 
 - From 4,096 elements up the fast loop runs at the speed of the system `memmove` for the same number of bytes (locally 0.16 cycles per element in the first-level cache, 0.20 in the second, 0.26 to 0.28 beyond), so there is nothing left for the clipping itself to give. Below 192 elements it is compare and select, as clang's loop is; the gain there (1.17x at 16, 1.04x at 64) is entry code only.
-- The speedup is for bounds that qualify for the fast path: `lo <= hi`, `lo` not +0.0, `hi` not -0.0. The judge's bounds (-0.5, 0.5) do. Bounds such as (0, 1) do not, because `fmax(-0.0, +0.0)` is +0.0 where C and NumPy keep -0.0; they take the compare-and-select path and run at the speed of `naive.c` (measured locally: 1.00x from 256 elements up).
+- The speedup is for bounds that qualify for the fast path: `lo <= hi`, `lo` not +0.0, `hi` not -0.0. The judge's bounds (-0.5, 0.5) do. Bounds such as (0, 1) do not, because `fmax(-0.0, +0.0)` is +0.0 where C and NumPy keep -0.0. Until attempt 5 they took the compare-and-select path at the speed of `naive.c`; since then `lo = +0.0` has its own path, which is about 1.3x in cache on data without -0.0 and runs at the speed of `naive.c` on data with it.
 - It assumes FPSR.IOC is clear on entry, as it is in the judge. If the caller's thread has it set, which any earlier invalid operation does (0/0, or a vector comparison with a NaN such as `naive.c` or this kernel's own short path make on NaN data), then 192 to 1,535 elements take the compare-and-select path (speed of `naive.c`) and from 1,536 the fast path costs 33 ns more per call (locally 1.28x over `naive.c` at 2,048, 1.45x at 4,096, 1.6x at 16,384).
 - An array containing a signalling NaN is processed twice (locally 1.6 to 1.8 times the time of `naive.c`). Quiet NaNs cost nothing extra.
 - `x` and `out` must not overlap.

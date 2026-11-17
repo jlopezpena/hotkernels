@@ -4,7 +4,7 @@
 // x0 = x, x1 = out, x2 = n, d0 = lo, d1 = hi.
 //
 // The same design as clip_f32, with two doubles per vector. There are two
-// paths, and both give the bits the C expression gives.
+// paths, a third for lo = +0.0, and all give the bits the C expression gives.
 //
 // The exact path is compare and select, as written in C: two fcmgt and two
 // bit per vector. Both compares are false for a NaN element, so it is copied
@@ -35,6 +35,34 @@
 //      for a signalling NaN and for nothing else, so the flag is read after
 //      the loop; if it is set, the whole array is done again on the exact
 //      path, from the input, which the fast path has not touched.
+//
+// The zero path is the fast path for lo = +0.0, the one lower bound that
+// point 2 rules out and the one np.clip(x, 0, 1) has. With lo = +0.0 and hi
+// not -0.0, fmin(fmax(x, lo), hi) is wrong for exactly one element value:
+// x = -0.0, which C keeps and fmax turns into +0.0. So the path runs the same
+// two operations and spends a third per vector on watching for -0.0:
+// the high half of its bit pattern is 0x80000000, the smallest signed 32-bit value, so a signed
+// minimum over the high halves of a chunk finds it (a negative denormal below
+// 2^-1042 has the same high half and is treated as a -0.0; nothing else does).
+//
+// It works in chunks. After a chunk the minimum is tested. A chunk without a
+// -0.0 is finished. A chunk with one is done again from the input by compare
+// and select, which costs far more than its length suggests (about 75 ns,
+// most of it branch misprediction), so the path keeps a credit, in blocks:
+//   - a clean chunk earns its length;
+//   - a chunk with a -0.0 costs three times its length plus ZSTRIKE_FIXED;
+//   - when the credit would go below zero the rest of the array, from the
+//     start of that chunk, is done by compare and select instead.
+// The first chunk is ZPROBE_BLOCKS long and later ones a quarter of the clean
+// run so far, between ZMIN_BLOCKS and ZMAX_BLOCKS. Data in which -0.0 is not
+// rare therefore loses one short chunk and then runs as the exact path does;
+// a single -0.0 far into a large array costs one chunk and the path goes on.
+//
+// The second pass uses fcmgt, which raises IOC for a quiet NaN as well. FPSR
+// is read before it (a flag already set means a signalling NaN went through:
+// start over) and after it (a flag set now means the chunk held a NaN and
+// the flag can no longer single out a signalling one: the rest is done by
+// compare and select).
 //
 // For 4 to work the flag has to be clear before the loop, so FPSR is read at
 // entry as well. If the caller left the flag set, it is cleared first and set

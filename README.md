@@ -38,7 +38,7 @@ How many times faster each kernel is than NumPy, and than the same loop written 
 | `x.astype(np.float32)` | uint8 | 2.68x | ships as the C |
 | `np.isin(x, test)` | int64 | 1.83x – 75.6x | 1.00x – 5.34x |
 
-Apple M1 Pro, NumPy 2.5.5, Apple clang 21, arrays of 1,048,576 elements, where the fixed cost of a call no longer matters. A range covers the two cases the kernel is timed in: 5% and 50% of the elements selected for the mask kernels, test values close together or far apart for `isin`, and bounds of (0, 1) or (-0.5, 0.5) for `clip`. Results at every size from 16 to 16,777,216 elements, with confidence intervals, are in [docs/kernel-findings.md](docs/kernel-findings.md).
+Apple M1 Pro, NumPy 2.5.5, Apple clang 21, arrays of 1,048,576 elements, where the fixed cost of a call no longer matters. A range covers the two cases the kernel is timed in: 5% and 50% of the elements selected for the mask kernels, test values close together or far apart for `isin`, and, for `clip`, bounds of (-0.5, 0.5) at the high end and bounds of (0, 1) on data that holds negative zeros at the low end. Results at every size from 16 to 16,777,216 elements, with confidence intervals, are in [docs/kernel-findings.md](docs/kernel-findings.md).
 
 What stands behind the numbers:
 
@@ -49,7 +49,7 @@ What stands behind the numbers:
 What the numbers do not say:
 
 - **The kernels are not callable from Python yet.** They are timed as native functions; the NumPy figure is NumPy called the usual way.
-- **Two results depend on the arguments.** `np.isin` is fast when the test values lie within a 16-bit window and ties the C otherwise. `np.clip` takes its fast path unless the lower bound is `+0.0` or the upper bound is `-0.0`, so `np.clip(x, 0, 1)` runs at the speed of the C. Both cases are timed, and are the low ends of those rows.
+- **Two results depend on the arguments.** `np.isin` is fast when the test values lie within a 16-bit window and ties the C otherwise. `np.clip` with a lower bound of zero, as in `np.clip(x, 0, 1)`, is about 1.3x over the C in cache when the data holds no negative zeros and runs at the speed of the C when it does; with an upper bound of `-0.0` it always runs at the speed of the C. Those cases are timed, and are the low ends of those rows.
 - **Scalar arguments are verified for the values each spec lists.** `np.clip` is checked with twelve pairs of bounds and `np.histogram` with fourteen bin counts and ranges, not with every possible one.
 - **One machine.** Every figure is from a single Apple M1 Pro.
 
