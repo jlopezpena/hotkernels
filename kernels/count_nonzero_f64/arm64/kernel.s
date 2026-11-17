@@ -33,6 +33,15 @@
 .set HUGE_MIN_N, 2097152
 // How far ahead of the loads the prefetches reach, in bytes.
 .set PREFETCH_AHEAD, 262144
+// From this many elements, and below HUGE_MIN_N, the main loop is the hybrid
+// one (see Lhybrid). Below it, the leftover elements a step of 18 leaves
+// behind cost more than the hybrid loop saves.
+.set HYBRID_MIN_N, 128
+// Elements per step of the hybrid loop: one group of sixteen in vector
+// registers and two in general registers.
+.set HYBRID_STEP, 18
+// The low 63 bits of a double: everything but the sign.
+.set MAGNITUDE_BITS, 0x7fffffffffffffff
 
 // v0-v7 = eight vectors (sixteen elements; absent ones must be zero),
 // v31 = the 63-bit mask.
@@ -151,6 +160,9 @@ Lladder0:
 Lbig:
     movi    v16.2d, #0              // minus the count, 16-bit lanes
     movi    v17.2d, #0
+    cmp     x1, #HYBRID_MIN_N
+    b.hs    Lge128
+Lvector:
     lsr     x4, x1, #5              // steps left
 Lblock:
     mov     x5, #BLOCK_STEPS
@@ -199,3 +211,45 @@ Lhugestep:
     subs    x5, x5, #1
     b.ne    Lhugestep
     b       Lblockdone
+
+    // ---- 128 elements or more.
+Lge128:
+    cmp     x1, #HUGE_MIN_N
+    b.hs    Lvector
+
+    // Hybrid loop, for arrays that fit in the caches. The vector loop is
+    // limited by the four vector ports (sixteen instructions per group, four
+    // cycles) while the core can start eight instructions per cycle, and a
+    // group with its loads and loop control uses only 26 of those 32. The
+    // rest is spent on two more elements per step, loaded into general
+    // registers and tested there, which use no vector port: 18 elements in
+    // the time of 16.
+Lhybrid:
+    mov     x7, #HYBRID_STEP
+    udiv    x4, x1, x7              // steps left
+    msub    x2, x4, x7, x1          // elements left after the last step, 0..17
+    mov     x8, #0                  // count of the elements tested in general registers
+Lhblock:
+    mov     x5, #BLOCK_STEPS
+    cmp     x4, x5
+    csel    x5, x4, x5, lo          // steps in this block
+    sub     x4, x4, x5
+Lhstep:
+    ldp     x9, x10, [x0, #128]
+    LOAD16_STREAM x0, 0
+    add     x0, x0, #(8 * HYBRID_STEP)
+    COUNT16 16
+    tst     x9, #MAGNITUDE_BITS
+    cinc    x8, x8, ne
+    tst     x10, #MAGNITUDE_BITS
+    cinc    x8, x8, ne
+    subs    x5, x5, #1
+    b.ne    Lhstep
+    REDUCE  x6                      // v17 is zero here
+    cbnz    x4, Lhflush
+    add     x6, x6, x8
+    mov     x1, x2                  // Ltail reads the count from the low bits of x1
+    b       Ltail
+Lhflush:
+    movi    v16.2d, #0
+    b       Lhblock
