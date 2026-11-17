@@ -1,5 +1,14 @@
 # cumsum_f32 attempts
 
+**The spec changed after attempt 3.** Attempts 1 to 3, the screening notes
+after them and the section "Result and why the long-array time cannot
+improve" were written when the spec was exact (output bit-identical to adding
+left to right). From attempt 4 on the spec is in tolerance mode: `out[i]` may
+differ from NumPy by 4 units in the last place of
+`(i + 1) * (|x[0]| + ... + |x[i]|)`, so the additions may be regrouped, while
+NaN and infinity must still appear exactly where NumPy has them. Read the
+earlier entries with that in mind.
+
 All timings on an Apple M1 Pro, with `--unlocked` (the spec was not on `main`
 yet) and with other agents timing other kernels on the same machine.
 
@@ -102,3 +111,38 @@ as the judge does; naive C is 5.0 / 30 / 205 and attempt 2 is 2.9 / 19.4 /
 - What is left is the short-array gain of attempt 2, which comes from the
   core overlapping independent calls. A caller that feeds each result into
   the next call would not see it.
+
+## 4. Regrouped NEON blocks with a sum-of-squares check (tolerance spec)
+
+- **Idea:** four elements per vector, four separate running sums (one per
+  lane). Consecutive output vectors differ by W, the sum of the four elements
+  ending at each lane. W takes two additions: p = input vector plus an
+  overlapping load one element back, then W = p + (p two elements back), the
+  second operand an `ext` across the previous p and this one. A block of four
+  vectors sums its four W from the inputs only and adds the last output
+  vector to each, so the carried chain is one `fadd` per 16 elements. 32
+  elements per iteration, then one block of 16, then single vectors, then up
+  to three scalar elements.
+  Non-finite handling as in `cumsum_f64` attempt 5: chunks of 1,024 elements,
+  every output vector squared and accumulated with `fmla` into four
+  accumulators, a chunk accepted only if that sum is finite, otherwise redone
+  one element at a time (a NaN or infinite input switches to the plain loop
+  for the rest; a finite sum above 2^64 restarts the array with the plain
+  loop). The proof in the `kernel.s` header differs from the float64 one in
+  one respect: float32 rounding is coarse enough that over a very long array
+  the left-to-right sum could drift to overflow on its own, so the argument
+  bounds that drift (a factor e^(n / 2^24)) and holds below 2^29 elements;
+  arrays of 2^29 elements or more use the plain loop throughout.
+- **check:** pass (18,136 cases)
+- **compare:** significantly faster than attempt 3, 5.33x [5.32 – 5.33]
+- **Kept:** yes
+- **Notes:** against attempt 3 by size: 0.83x at 16 (3.4 ns against 2.8 ns),
+  2.14x at 64, 5.08x at 256, 7.19x at 1,024, 7.66x at 4,096, 7.83x at
+  16,384, 7.85x at 65,536, 7.87x at 262,144, 7.83x at 1,048,576, 7.17x at
+  4,194,304, 7.27x at 16,777,216. The loop takes about 6.1 cycles per 16
+  elements (0.119 ns per element) from 1,024 to 262,144 elements in the
+  standalone timer: 24 vector operations per block on four vector pipes. The
+  loss at 16 is the fixed cost of a call; see attempt 5.
+  The measurements that fixed the design (four accumulators, the order of
+  the additions in a block, `ext` for the first shifted vector, chunk size)
+  were made on doubles and are in `cumsum_f64/attempts.md`, attempt 5.
