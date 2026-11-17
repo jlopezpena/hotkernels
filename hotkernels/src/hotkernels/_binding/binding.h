@@ -77,9 +77,8 @@ extern bool hk_inexact;
 
 // -------------------------------------------------------------- the checks
 
-// The largest integer magnitude a double represents exactly, 2^53. A Python
-// int inside it converts to the double NumPy would also produce.
-#define HK_EXACT_INT_LIMIT 9007199254740992.0
+// The largest magnitude up to which a double represents every integer, 2^53.
+#define HK_EXACT_INT_LIMIT 9007199254740992LL
 
 // Element count from which a hook releases the interpreter lock around a
 // kernel. Below it, taking the lock back costs more than other threads gain.
@@ -123,25 +122,38 @@ static inline bool hk_mask_is_clean(const uint8_t *mask, size_t n) {
     return seen <= 1;
 }
 
-// Convert a Python float, or a Python int a double holds exactly, to a
+// Convert a Python float or a Python int to a double, as NumPy does when such
+// a value is stored into a float64 array: an int is rounded to the nearest
 // double. Returns false, with no exception set, for anything else, including
-// bool and NumPy scalars that are not float subclasses.
+// bool, NumPy scalars, and an int too large for a double.
 static inline bool hk_as_double(PyObject *obj, double *out) {
     if (PyFloat_CheckExact(obj)) {
         *out = PyFloat_AS_DOUBLE(obj);
         return true;
     }
     if (PyLong_CheckExact(obj)) {
-        double v = PyLong_AsDouble(obj);
+        const double v = PyLong_AsDouble(obj);
         if (v == -1.0 && PyErr_Occurred()) {
             PyErr_Clear();
             return false;
         }
-        if (v < -HK_EXACT_INT_LIMIT || v > HK_EXACT_INT_LIMIT) return false;
         *out = v;
         return true;
     }
     return false;
+}
+
+// As hk_as_double, but an int is accepted only when a double holds it
+// exactly, so that arithmetic on the double and on the int cannot differ.
+static inline bool hk_as_exact_double(PyObject *obj, double *out) {
+    if (PyLong_CheckExact(obj)) {
+        int overflow = 0;
+        const long long v = PyLong_AsLongLongAndOverflow(obj, &overflow);
+        if (overflow != 0 || v < -HK_EXACT_INT_LIMIT || v > HK_EXACT_INT_LIMIT) return false;
+        *out = (double)v;
+        return true;
+    }
+    return hk_as_double(obj, out);
 }
 
 // Release the interpreter lock for the block that follows when `n` elements

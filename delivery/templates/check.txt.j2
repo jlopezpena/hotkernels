@@ -1,0 +1,21 @@
+{# The result of `delivery check`: one line per operation, then the failures. #}
+{{ "operation" | ljust(24) }}{{ "cases" | rjust(9) }}{{ "kernel took" | rjust(13) }}{{ "failed" | rjust(9) }}
+{% for summary in summaries %}
+{{ summary.operation | ljust(24) }}{{ summary.cases | thousands | rjust(9) }}{{ summary.taken | thousands | rjust(13) }}{{ summary.failures | length | thousands | rjust(9) }}
+{% endfor %}
+{{ "total" | ljust(24) }}{{ total_cases | thousands | rjust(9) }}{{ total_taken | thousands | rjust(13) }}{{ total_failures | thousands | rjust(9) }}
+{% for summary in summaries %}
+{% for failure in summary.failures[:shown] %}
+
+FAIL {{ summary.operation }}: {{ failure.problem }}
+  case:     {{ failure.label }}
+  NumPy:    {{ failure.expected }}
+  with it:  {{ failure.got }}
+{% endfor %}
+{% if summary.failures | length > shown %}
+
+  ... and {{ (summary.failures | length) - shown }} more in {{ summary.operation }}
+{% endif %}
+{% endfor %}
+
+RESULT: {{ "pass" if total_failures == 0 else "FAIL" }}

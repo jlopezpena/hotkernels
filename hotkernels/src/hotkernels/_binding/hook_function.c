@@ -233,7 +233,8 @@ static bool prepare_linspace(void) {
 // array's minimum and maximum when no range was given. `lo` and `hi` receive
 // them as doubles. Returns false, with no exception set, when the range is
 // one NumPy treats specially: not a tuple of two plain numbers, not finite,
-// empty, or reversed. NumPy then widens it or raises, and the call is its own.
+// empty, reversed, or wider than a double can hold. NumPy then widens it,
+// warns or raises, and the call is its own.
 static bool histogram_range(PyObject *array, PyObject *range, PyObject **first, PyObject **last,
                             double *lo, double *hi) {
     *first = *last = NULL;
@@ -247,11 +248,14 @@ static bool histogram_range(PyObject *array, PyObject *range, PyObject **first, 
         if (PyErr_Occurred()) goto fail;
     } else {
         if (!PyTuple_CheckExact(range) || PyTuple_GET_SIZE(range) != 2) return false;
-        if (!hk_as_double(PyTuple_GET_ITEM(range, 0), lo) || !hk_as_double(PyTuple_GET_ITEM(range, 1), hi)) return false;
+        if (!hk_as_exact_double(PyTuple_GET_ITEM(range, 0), lo) || !hk_as_exact_double(PyTuple_GET_ITEM(range, 1), hi)) return false;
         *first = Py_NewRef(PyTuple_GET_ITEM(range, 0));
         *last = Py_NewRef(PyTuple_GET_ITEM(range, 1));
     }
-    if (isfinite(*lo) && isfinite(*hi) && *lo < *hi) return true;
+    // A width that overflows makes NumPy's own arithmetic warn. Such a call
+    // is left to NumPy before anything here has computed with the range, so
+    // that each warning is issued once.
+    if (isfinite(*lo) && isfinite(*hi) && *lo < *hi && isfinite(*hi - *lo)) return true;
 fail:
     PyErr_Clear();
     Py_CLEAR(*first);
