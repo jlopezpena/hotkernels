@@ -72,3 +72,19 @@ Below 256 elements the path is not taken and the kernel runs as before. When thi
 | overall | | | 1.36x [1.36 – 1.37] |
 
 Assembly is kept. The same limits apply as for `clip_f32` (see the end of its log), with the thresholds halved: the speedup in this table is for bounds with `lo <= hi`, `lo` not +0.0 and `hi` not -0.0; since attempts 4 and 5, `lo = +0.0` has its own path (about 1.3x in cache on data without -0.0, the speed of `naive.c` on data with it); other bounds run at the speed of `naive.c`; with FPSR.IOC already set on entry, 96 to 767 elements run at the speed of `naive.c` and larger arrays pay 33 ns more per call (locally 1.29x over `naive.c` at 1,024 and 1.57x at 4,096); an array containing a signalling NaN is processed twice; `x` and `out` must not overlap. The judge verifies the result for its own bounds; everything else was verified with the local harness described under attempt 2.
+
+## Ten-run means, locked
+
+`uv run judge run clip_f64`, locked, ten times, one run at a time, on a machine that was
+not fully quiet (one-minute load average between 2.2 and 9.1 when a run started,
+about 3 for most; a run the judge flagged as noisy was repeated). Check: pass,
+53,489 cases. Mean of the ten, with the lowest and highest run in brackets. These
+replace the indicative and single-pass figures above wherever they are quoted.
+
+| Case | vs naive C, all sizes | at 1,048,576 | vs NumPy, all sizes | at 1,048,576 |
+|---|---|---|---|---|
+| bounds (-0.5, 0.5), random | 1.36x [1.31 – 1.38] | 1.35x [1.15 – 1.42] | 14.5x [14.1 – 14.6] | 5.06x [4.26 – 5.37] |
+| bounds (0, 1), random | 1.22x [1.20 – 1.23] | 1.30x [1.21 – 1.33] | 13.0x [12.8 – 13.1] | 4.88x [4.50 – 5.03] |
+| bounds (0, 1), sparse -0.0 | 1.02x [1.02 – 1.02] | 1.01x [1.00 – 1.01] | 10.8x [10.8 – 10.9] | 3.78x [3.72 – 3.84] |
+| bounds (0, 1), rounded | 1.00x [0.99 – 1.00] | 1.01x [1.00 – 1.02] | 10.6x [10.3 – 10.8] | 3.77x [3.68 – 3.82] |
+| all six tables | 1.20x [1.19 – 1.21] | | 12.8x [12.6 – 12.9] | |

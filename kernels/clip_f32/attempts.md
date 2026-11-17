@@ -67,3 +67,19 @@ Assembly is kept. Where it stands and what the numbers do not show:
 - An array containing a signalling NaN is processed twice (locally 1.6 to 1.8 times the time of `naive.c`). Quiet NaNs cost nothing extra.
 - `x` and `out` must not overlap.
 - Verified by the judge: the result for its bounds at every size, memory safety, calling convention. Verified only by the local harness described under attempt 2: every other pair of bounds, signalling NaNs, non-default FPCR, FPSR flags preserved, and the compare-and-select path beyond a few hundred elements.
+
+## Ten-run means, locked
+
+`uv run judge run clip_f32`, locked, ten times, one run at a time, on a machine that was
+not fully quiet (one-minute load average between 2.2 and 9.1 when a run started,
+about 3 for most; a run the judge flagged as noisy was repeated). Check: pass,
+53,489 cases. Mean of the ten, with the lowest and highest run in brackets. These
+replace the indicative and single-pass figures above wherever they are quoted.
+
+| Case | vs naive C, all sizes | at 1,048,576 | vs NumPy, all sizes | at 1,048,576 |
+|---|---|---|---|---|
+| bounds (-0.5, 0.5), random | 1.38x [1.33 – 1.41] | 1.44x [1.11 – 1.52] | 28.2x [27.2 – 28.9] | 11.0x [8.47 – 11.7] |
+| bounds (0, 1), random | 1.23x [1.21 – 1.24] | 1.31x [1.23 – 1.33] | 25.0x [24.1 – 25.3] | 10.0x [9.44 – 10.2] |
+| bounds (0, 1), sparse -0.0 | 1.01x [1.00 – 1.02] | 1.00x [1.00 – 1.01] | 20.7x [20.4 – 20.8] | 7.62x [7.56 – 7.73] |
+| bounds (0, 1), rounded | 1.01x [1.01 – 1.01] | 1.00x [0.99 – 1.01] | 20.6x [20.5 – 20.7] | 7.67x [7.59 – 7.72] |
+| all six tables | 1.22x [1.21 – 1.23] | | 24.9x [24.7 – 25.1] | |

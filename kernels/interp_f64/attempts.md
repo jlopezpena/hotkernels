@@ -163,3 +163,16 @@ Not tried, and why:
   infinite and repeated values mixed in: identical in all six runs. That
   check has no guard pages, so it says nothing about out-of-bounds reads at
   those sizes.
+
+## Ten-run means, locked
+
+`uv run judge run interp_f64`, locked, ten times, one run at a time, on a machine that was
+not fully quiet (one-minute load average between 2.2 and 9.1 when a run started,
+about 3 for most; a run the judge flagged as noisy was repeated). Check: pass,
+155,063 cases. Mean of the ten, with the lowest and highest run in brackets. These
+replace the indicative and single-pass figures above wherever they are quoted.
+
+| Case | vs naive C, all sizes | at 1,048,576 | vs NumPy, all sizes | at 1,048,576 |
+|---|---|---|---|---|
+| 64 queries | 5.17x [5.04 – 5.26] | 7.85x [7.57 – 8.10] | 16.2x [16.0 – 16.3] | 15.7x [15.6 – 15.8] |
+| 1,000 queries | 5.00x [4.93 – 5.03] | 6.40x [6.23 – 6.61] | 15.3x [15.0 – 16.0] | 16.8x [16.3 – 17.8] |

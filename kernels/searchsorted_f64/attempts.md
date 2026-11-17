@@ -237,3 +237,16 @@ That log also records a gap in what the judge checks, which holds for this
 kernel too: no generated input above 5,000 elements has a needle equal to an
 element, so a wrong comparison on the path for arrays of 1,048,576 elements or
 more passes `judge check`. `uv run delivery check` has the cases that catch it.
+
+## Ten-run means, locked
+
+`uv run judge run searchsorted_f64`, locked, ten times, one run at a time, on a machine that was
+not fully quiet (one-minute load average between 2.2 and 9.1 when a run started,
+about 3 for most; a run the judge flagged as noisy was repeated). Check: pass,
+141,872 cases. Mean of the ten, with the lowest and highest run in brackets. These
+replace the indicative and single-pass figures above wherever they are quoted.
+
+| Case | vs naive C, all sizes | at 1,048,576 | vs NumPy, all sizes | at 1,048,576 |
+|---|---|---|---|---|
+| 64 needles | 9.06x [8.89 – 9.27] | 10.2x [9.73 – 10.5] | 5.20x [5.13 – 5.30] | 2.34x [2.28 – 2.38] |
+| 1,000 needles | 9.08x [8.98 – 9.14] | 8.83x [8.42 – 9.15] | 9.31x [9.17 – 9.74] | 6.40x [5.94 – 6.78] |

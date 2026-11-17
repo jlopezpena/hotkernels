@@ -165,11 +165,13 @@ Three pieces of that deserve a word.
 
 | Bounds and data | vs C at 4,096 | vs C, all sizes | vs NumPy at 1M |
 |---|---|---|---|
-| float32, (−0.5, 0.5) | 1.58x | 1.33x [1.32 – 1.35] | 8.67x |
-| float32, (0, 1), no negative zeros | 1.32x | 1.21x [1.20 – 1.22] | 9.78x |
-| float32, (0, 1), a few negative zeros | 0.99x, not significant | 1.02x [1.01 – 1.03] | 7.58x |
-| float64, (−0.5, 0.5) | 1.61x | 1.23x [1.21 – 1.25] | 3.65x |
-| float64, (0, 1), no negative zeros | 1.33x | 1.15x [1.14 – 1.16] | 4.25x |
+| float32, (−0.5, 0.5) | 1.55x | 1.38x [1.33 – 1.41] | 11.0x |
+| float32, (0, 1), no negative zeros | 1.32x | 1.23x [1.21 – 1.24] | 10.0x |
+| float32, (0, 1), a few negative zeros | 0.99x | 1.01x [1.00 – 1.02] | 7.62x |
+| float64, (−0.5, 0.5) | 1.60x | 1.36x [1.31 – 1.38] | 5.06x |
+| float64, (0, 1), no negative zeros | 1.34x | 1.22x [1.20 – 1.23] | 4.88x |
+
+Each figure is the mean of ten runs on a machine that was not fully quiet, with the lowest and highest of the ten in brackets.
 
 The gain over the compiler is modest and conditional, and the table says so. The gain over NumPy is large in every row, and most of it would be there with the plain C.
 
