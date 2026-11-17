@@ -13,32 +13,56 @@ def oracle(x, test):
     return np.isin(x, test)
 
 
-def _padded_like_the_binding(test):
-    """Repeat the first test value over the tail of the set, as the binding pads a short one.
+def _padded(kept, order=None):
+    """Make a value class of test values padded the way the binding pads a short set.
 
     `np.isin(x, [1, 2, 3])` reaches the kernel as `[1, 2, 3, 1, 1, 1, 1, 1]`:
     the binding fills the set to TEST_VALUES by repeating its first value
     (`isin_test_values` in `hotkernels/src/hotkernels/_binding/hook_function.c`).
-    Most calls from Python are therefore made with repeated test values, so
-    the check cases are given that shape too.
-
-    A `prepare` function sees only the array, so the number of values kept is
-    taken from the array itself: the first value's remainder modulo
-    TEST_VALUES, plus one. Sets that start with different values are cut at
-    different lengths, from a single value repeated eight times to all eight
-    kept. The value classes decide where the first value lies in the set:
-    smallest in `asc`, largest in `desc`, anywhere in `random`.
+    Most calls from Python are therefore made with repeated test values.
 
     Args:
-        test: The TEST_VALUES test values as generated.
+        kept: How many of the random test values are kept, from 1 to
+            TEST_VALUES - 1. The rest are replaced by the first.
+        order: Where the first value lies among the others, which matters
+            because the kernel chooses its path from `test[0]` and the spread
+            of the set: FIRST_SMALLEST, FIRST_LARGEST, or None to leave the
+            values in the order they were drawn.
 
     Returns:
-        A copy in which every value after the kept ones equals `test[0]`.
+        A function from the random test values to the padded set.
     """
-    kept = int(test[0] % TEST_VALUES) + 1
-    padded = test.copy()
-    padded[kept:] = test[0]
-    return padded
+    def build(test):
+        """Order the values as asked, then repeat the first over the tail."""
+        padded = np.sort(test) if order else test.copy()
+        if order == FIRST_LARGEST:
+            padded = padded[::-1].copy()
+        padded[kept:] = padded[0]
+        return padded
+    return build
+
+
+def _pairs(test):
+    """Half the test values, each one twice: repeats that are not the first value."""
+    return np.repeat(test[: TEST_VALUES // 2], 2)
+
+
+# Orders `_padded` can put the values in before padding.
+FIRST_SMALLEST = "first_smallest"
+FIRST_LARGEST = "first_largest"
+
+# Value classes of the test values, next to the general integer ones. The
+# general ones already give eight equal values (`equal`) and a few values
+# repeated at random (`small`); these give the shapes the binding sends.
+TEST_CLASSES = {
+    "padded_1": _padded(1),
+    "padded_2": _padded(2),
+    "padded_5": _padded(5),
+    "padded_7": _padded(7),
+    "padded_3_first_smallest": _padded(3, FIRST_SMALLEST),
+    "padded_3_first_largest": _padded(3, FIRST_LARGEST),
+    "pairs": _pairs,
+}
 
 
 def _mostly_misses(rng, n):
@@ -64,7 +88,7 @@ def _wide_values(rng, n):
 KERNEL = Kernel(
     name="isin_i64",
     returns="void",
-    args=[In("x", "i64"), In("test", "i64", len=TEST_VALUES, prepare=_padded_like_the_binding), Out("out", "bool"), Size("n")],
+    args=[In("x", "i64"), In("test", "i64", len=TEST_VALUES, classes=TEST_CLASSES), Out("out", "bool"), Size("n")],
     oracle=oracle,
     distributions={"mostly_misses": _mostly_misses, "wide_values": _wide_values},
 )

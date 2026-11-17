@@ -88,6 +88,15 @@ class In:
     # for example. Takes the array and returns one of the same length. Timing
     # inputs pass through it too, unless a distribution supplies them.
     prepare: Callable | None = None
+    # Value classes of this argument alone, tried next to the ones every
+    # argument of its type gets: name -> function. For inputs a caller sends
+    # that the general classes do not produce, such as a set of test values
+    # padded with repeats. Each function takes the argument's default random
+    # array and returns an array of the same length and type, which it must
+    # not build by modifying the one it was given. A name appears in case
+    # descriptions (`test=padded_3`), so it must not be the name of a
+    # general value class.
+    classes: dict[str, Callable] | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +144,7 @@ class InOut:
     used = USED_CAPACITY
     scratch = False
     prepare = None
+    classes = None
 
 
 @dataclass(frozen=True)
