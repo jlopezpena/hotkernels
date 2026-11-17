@@ -12,10 +12,22 @@
 #            loads, or a byte loop)
 #   16..31   one whole 16-byte vector plus the masked last 16 bytes
 #   32..127  64, 32 and a masked last vector, as the bits of n say
-#   128..    four accumulators, 128 bytes per step, then the path above
+#   128..    the bytes up to the next 32-byte boundary as one masked vector,
+#            then four accumulators, 128 bytes per step, every load aligned,
+#            then the path above
+#
+# The loads are aligned because a buffer from NumPy usually starts 16 bytes
+# into a 64-byte cache line. Every second 32-byte load then straddles two
+# lines, which costs nothing while the data is in the first-level cache and a
+# third of the speed once it is not.
 
 .section .rodata
 .p2align 6
+# Loaded at offset 32 - h (h = 0..31): h bytes of ones, then 32 - h zero
+# bytes. Applied to the first 32 bytes of the array it keeps the h bytes in
+# front of the first 32-byte boundary.
+.Lhead:
+    .fill 32, 1, 0xff
 # Loaded at offset r (1..31): 32 - r zero bytes, then r bytes of ones. Applied
 # to the last 32 bytes of the array it keeps only the final r bytes, the ones
 # no earlier vector covered. Loaded at offset 16 + r it is the same for the
@@ -36,7 +48,22 @@ sum_u8:
     cmp     rsi, 128
     jb      .Lunder128
 
-    # ---- 128 bytes per step into four accumulators.
+    # ---- The h = 0..31 bytes in front of the next 32-byte boundary: the
+    #      first 32 bytes of the array, masked to its first h.
+    mov     edx, edi
+    neg     edx
+    and     edx, 31                     # h
+    lea     rcx, [rip + .Lmask]
+    sub     rcx, rdx
+    vmovdqu ymm2, [rdi]
+    vpand   ymm2, ymm2, [rcx]           # .Lhead + 32 - h
+    vpsadbw ymm1, ymm2, ymm0
+    add     rdi, rdx
+    sub     rsi, rdx
+    cmp     rsi, 128
+    jb      .Lunder128
+
+    # ---- 128 bytes per step into four accumulators, loads aligned.
     vpxor   xmm2, xmm2, xmm2
     vpxor   xmm3, xmm3, xmm3
     vpxor   xmm4, xmm4, xmm4

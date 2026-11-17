@@ -137,3 +137,11 @@ far below what the caches deliver.
 - **Kept:** yes
 - **Notes:** 5.2x at 16 (5.9 ns to 1.1 ns), 1.3x to 1.6x from 256 to 1,048,576, no significant difference at 4,194,304 and 16,777,216, and 0.90x at 64 (1.7 ns to 1.9 ns): that size takes a jump over the 128-byte loop. At 4,096 and 16,384 the loop runs at 168 bytes per ns, which is one `vpsadbw` per clock cycle: on this core the instruction runs on one port only, so 32 bytes per cycle is the limit of this scheme. From 65,536 to 1,048,576 it runs at 104 bytes per ns and above that at 75. Also checked privately, because the judge has no all-0xFF value class: every n up to 70,000 at three alignments, and six sizes up to 40 MB, on all-0xFF data give n * 255; random bytes agree with NumPy for every n up to 70,000.
 
+## x86-64 3. Align the loads of the 128-byte loop to 32 bytes
+
+- **Idea:** a candidate from the design ("alignment of data"). A buffer from NumPy usually starts 16 bytes into a 64-byte cache line, so every second 32-byte load straddles two lines. A private micro-benchmark of the attempt 2 loop on a buffer placed like that against an aligned one: 164 against 168 bytes per ns at 4,096, but 105 against 155 at 65,536, 262,144 and 1,048,576, and 65 against 72 at 16,777,216. So from 128 bytes: take the bytes in front of the next 32-byte boundary as one masked vector (the first 32 bytes of the array, masked from a constant table, no branch), then run the loop on aligned addresses.
+- **check:** pass
+- **compare:** significantly faster, 1.130x [1.128 – 1.138]
+- **Kept:** yes
+- **Notes:** 1.52x at 65,536, 262,144 and 1,048,576 (104 to 159 bytes per ns), 1.17x at 4,194,304 and 16,777,216, unchanged at 4,096 and 16,384, where the loop is held by one `vpsadbw` per cycle and a straddling load costs nothing. It costs 0.77x at 256 (2.1 ns to 2.7 ns) and 0.97x at 1,024: the head is about eight instructions, and it turns a clean multiple of 128 into a ragged remainder that takes the 64-, 32- and leftover blocks, each out of line. 16 and 64 moved (1.20x and 0.89x) although their code did not change, only its address.
+
