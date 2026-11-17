@@ -10,10 +10,7 @@ Kernels are written by coding agents iterating against a judge. The judge checks
 
 How many times faster each kernel is than NumPy, and than the same loop written in plain C and compiled with `clang -O3`:
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/speedup-vs-numpy-dark.svg">
-  <img src="docs/images/speedup-vs-numpy-light.svg" alt="Bar chart of each kernel's speedup over NumPy at 1,048,576 elements, from 29.0x for np.cumsum on float32 down to 1.83x for np.isin with test values far apart. Lighter bars show the more favourable of two timed cases. The table below has every value.">
-</picture>
+<img src="docs/images/speedup-vs-numpy.svg" alt="Bar chart of each kernel's speedup over NumPy at 1,048,576 elements, from 29.0x for np.cumsum on float32 down to 1.83x for np.isin with test values far apart. Lighter bars show the more favourable of two timed cases. The table below has every value.">
 
 | NumPy call | Elements | vs NumPy | vs `clang -O3` |
 |---|---|---|---|
