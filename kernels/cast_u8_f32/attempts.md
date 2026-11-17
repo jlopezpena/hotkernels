@@ -31,3 +31,17 @@
 - **compare:** significantly faster in three runs out of three: 1.031x [1.002 – 1.035], 1.018x [1.001 – 1.026], 1.017x [1.009 – 1.040]
 - **Kept:** yes
 - **Notes:** the whole gain is at 16,777,216 (1.16 to 1.18x in each run), where the input no longer fits the second-level cache, plus about 1% from 256 to 4,096. Local timing with the two variants interleaved shows what `ldnp` does here: no difference from 4,096 to 4,194,304 elements (the same loop with `ldp` is equally fast there), 0.216 instead of 0.255 cycles per element at 16.7M and 0.211 instead of 0.260 at 67M. Unlike `clip`, the sizes in the second-level cache do not move, because the output is four times the size of the input and the stores are the limit there.
+
+## 5. Post-indexed stores, lowest pair last
+
+- **Idea:** save the separate `add` on the output pointer by writing the upper vectors first and the lowest pair last with a post-indexed `stp`, which is the store order clang uses in its own loop.
+- **check:** pass
+- **compare:** significantly slower, 0.834x [0.831 – 0.837]
+- **Kept:** no
+- **Notes:** 64 to 1,024 gained 1 to 3%, but every size from 65,536 up dropped to 0.62 to 0.71x. Once the output no longer fits the first-level cache, the stores have to reach each cache line in ascending address order. Checked locally with the output placed at each offset within a cache line, 65,536 to 1,048,576 elements, quiet machine: stores in ascending order run at 0.14 to 0.17 cycles per element at every offset; this attempt's order runs at 0.23 to 0.27 at offsets 0, 32 and 48; and clang's order for `naive.c` (upper pair, then lower pair) is as fast as ascending when the output is 64-byte aligned but runs at 0.24 to 0.25 at offsets 16, 32 and 48. The judge's buffers at these sizes are page-aligned, so it measures `naive.c` in its best case and this difference does not show in its numbers.
+
+## Where it stands
+
+- In the first-level cache the loop is limited by its stores: 64 bytes of freshly computed data every 2.5 cycles. A loop with the four `tbl` and no `ucvtf`, one with `ushll` widening (ten vector operations instead of eight) and one that stores a loaded vector four times with no vector operations at all run at that same speed, and so does the system `memmove`. Clang's loop is already there.
+- From 65,536 to 4,194,304 elements the stores are still the limit: `ldp` and `ldnp` time the same, `stnp` changes nothing, and `dc zva` on the output is far slower (see `clip_f32` attempt 3).
+- What assembly gains over `naive.c` under the judge is therefore at the ends: n = 16 (no overlap test, two constant loads instead of four, no vector-width dispatch), n = 64 slightly, and 16.7M where `ldnp` helps.
