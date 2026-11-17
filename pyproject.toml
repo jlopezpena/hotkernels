@@ -8,7 +8,10 @@ requires-python = ">=3.11"
 dependencies = [
     "hotkernels",
     "jinja2>=3.1.6",
+    "markdown-it-py>=3.0",
+    "mdit-py-plugins>=0.4",
     "numpy>=2.0",
+    "pygments>=2.17",
     "typer>=0.29.1",
 ]
 
@@ -16,6 +19,7 @@ dependencies = [
 judge = "judge.cli:app"
 survey = "survey.cli:app"
 delivery = "delivery.cli:app"
+docsite = "docsite.cli:app"
 
 [dependency-groups]
 # What `uv run delivery numpy-tests` needs to run NumPy's own test suite.
@@ -29,7 +33,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["judge", "survey", "delivery"]
+packages = ["judge", "survey", "delivery", "docsite"]
 
 [tool.uv.workspace]
 members = ["hotkernels"]

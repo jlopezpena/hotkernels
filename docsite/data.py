@@ -1,0 +1,289 @@
+"""Numbers and logs the site shows, read from the repository at build time.
+
+Nothing here is typed in by hand. Every figure on the site that comes from a
+measurement is parsed out of the file that records it: the kernels' attempts
+logs, the results tables in the README and in docs/kernel-findings.md, and the
+recorded Python timings. A file whose layout has changed fails the build
+instead of producing a page with holes in it.
+"""
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Callable
+
+ROOT = Path(__file__).resolve().parent.parent
+KERNELS = ROOT / "kernels"
+README = ROOT / "README.md"
+FINDINGS = ROOT / "docs" / "kernel-findings.md"
+PYTHON_TIMINGS = ROOT / "delivery" / "results" / "apple-m1-pro.json"
+
+# "## 7. Unroll the main loop": the heading that opens one attempt in an attempts log.
+_ATTEMPT_HEADING = re.compile(r"^## (\d+)\. (.+)$")
+# "- **Idea:** text": one field of an attempt.
+_FIELD = re.compile(r"^- \*\*([^:*]+):\*\* ?(.*)$")
+# "1.21x [1.19 – 1.23]": a speedup with its 95% interval, as the judge prints it.
+_RATIO = re.compile(r"(\d+(?:\.\d+)?)x \[(\d+(?:\.\d+)?) – (\d+(?:\.\d+)?)\]")
+# "23.4x": a speedup on its own.
+_SPEEDUP = re.compile(r"(\d+(?:\.\d+)?)x")
+
+# A heading appended to a log while parsing, so its last attempt is closed like the others.
+_END_OF_LOG = "## end"
+# Fields every attempt carries, by the name the site uses for them.
+_ATTEMPT_FIELDS = {"Idea": "idea", "check": "check", "compare": "compare", "Kept": "kept", "Notes": "notes"}
+
+# What `judge compare` said about an attempt.
+FASTER, SLOWER, SAME, NOT_COMPARED = "faster", "slower", "same", "none"
+# Phrases that mark a compare line as "no significant difference". They are
+# tested first, because "not significantly faster" contains "significantly faster".
+_SAME_PHRASES = ("no significant", "not significant")
+# How a compare line starts when the attempt was never timed against its
+# predecessor. Any ratio on such a line is against something else, such as naive C.
+_NOT_COMPARED_PREFIXES = ("n/a", "not run", "not applicable")
+# The first attempt of a log has no predecessor to be compared with.
+_FIRST_ATTEMPT = 1
+
+# Header cells that identify the two results tables.
+_FINDINGS_HEADER = "| Kernel | Input | vs naive C |"
+_README_HEADER = "| NumPy call | Elements | vs NumPy |"
+# Marks a difference the judge did not find statistically significant.
+_NOT_SIGNIFICANT = "n.s."
+# Sizes of the four single-size columns of the findings table, in order.
+FINDINGS_SIZES = [16, 4096, 1048576, 16777216]
+
+
+def _verdict(number: int, compare: str) -> str:
+    """Classify what `judge compare` said about an attempt.
+
+    Args:
+        number: The attempt's number in its log.
+        compare: The text of the attempt's compare field.
+
+    Returns:
+        FASTER, SLOWER, SAME, or NOT_COMPARED when the attempt was never timed
+        against its predecessor.
+    """
+    text = compare.lower().lstrip()
+    if number == _FIRST_ATTEMPT or text.startswith(_NOT_COMPARED_PREFIXES):
+        return NOT_COMPARED
+    if any(phrase in text for phrase in _SAME_PHRASES):
+        return SAME
+    if "significantly faster" in text:
+        return FASTER
+    if "significantly slower" in text:
+        return SLOWER
+    return NOT_COMPARED
+
+
+def _attempt(number: int, title: str, fields: dict[str, str], inline: Callable[[str], str]) -> dict:
+    """Build the record of one attempt.
+
+    Args:
+        number: The attempt's number in its log.
+        title: The attempt's heading, as Markdown.
+        fields: The attempt's fields by site name, each as Markdown.
+        inline: Renders a line of Markdown to HTML.
+
+    Returns:
+        The attempt, with its text as HTML and its compare line broken down
+        into a verdict and, where one was printed, a speedup with its interval.
+    """
+    compare = fields.get("compare", "")
+    verdict = _verdict(number, compare)
+    # A ratio is only the attempt's own when compare ran against its predecessor.
+    ratio = _RATIO.search(compare) if verdict != NOT_COMPARED else None
+    return {
+        "n": number,
+        "title": inline(title),
+        "idea": inline(fields.get("idea", "")),
+        "check": inline(fields.get("check", "")),
+        "compare": inline(compare),
+        "notes": inline(fields.get("notes", "")),
+        "kept": fields.get("kept", "").lower().startswith("yes"),
+        "verdict": verdict,
+        "speedup": float(ratio.group(1)) if ratio else None,
+        "lo": float(ratio.group(2)) if ratio else None,
+        "hi": float(ratio.group(3)) if ratio else None,
+    }
+
+
+def _parse_attempts(text: str, inline: Callable[[str], str]) -> list[dict]:
+    """Read every numbered attempt out of one attempts log.
+
+    Args:
+        text: The contents of an attempts.md.
+        inline: Renders a line of Markdown to HTML.
+
+    Returns:
+        The attempts in the order they were made. Sections of the log that are
+        not numbered attempts (final results, notes) are skipped.
+    """
+    attempts: list[dict] = []
+    number, title, fields, last = None, "", {}, None
+    for line in text.splitlines() + [_END_OF_LOG]:
+        heading = _ATTEMPT_HEADING.match(line)
+        if line.startswith("## "):
+            if number is not None:
+                attempts.append(_attempt(number, title, fields, inline))
+            number, title, fields, last = (int(heading.group(1)), heading.group(2), {}, None) if heading else (None, "", {}, None)
+            continue
+        if number is None:
+            continue
+        field = _FIELD.match(line)
+        if field:
+            last = _ATTEMPT_FIELDS.get(field.group(1).strip())
+            if last:
+                fields[last] = field.group(2)
+        elif last and line.strip() and not line.startswith("- "):
+            # A field that wraps onto a second line.
+            fields[last] += " " + line.strip()
+    return attempts
+
+
+def attempts(inline: Callable[[str], str]) -> dict:
+    """Collect the attempts log of every kernel.
+
+    Args:
+        inline: Renders a line of Markdown to HTML.
+
+    Returns:
+        `kernels`, one entry per kernel with its attempts, and the totals over
+        all of them: `total`, `kept`, `reverted`, and how many attempts got
+        each verdict from `judge compare`.
+    """
+    kernels = []
+    for log_path in sorted(KERNELS.glob("*/attempts.md")):
+        tried = _parse_attempts(log_path.read_text(), inline)
+        if not tried:
+            raise ValueError(f"{log_path}: no numbered attempts found")
+        kernels.append({
+            "name": log_path.parent.name,
+            "assembly": any(log_path.parent.glob("*/kernel.s")),
+            "attempts": tried,
+        })
+    everything = [a for k in kernels for a in k["attempts"]]
+    kept = sum(a["kept"] for a in everything)
+    return {
+        "kernels": kernels,
+        "total": len(everything),
+        "kept": kept,
+        "reverted": len(everything) - kept,
+        "verdicts": {v: sum(a["verdict"] == v for a in everything) for v in (FASTER, SLOWER, SAME, NOT_COMPARED)},
+    }
+
+
+def _table(path: Path, header: str) -> list[list[str]]:
+    """Read the rows of one Markdown table.
+
+    Args:
+        path: The Markdown file.
+        header: How the table's header line starts.
+
+    Returns:
+        The cells of every body row, stripped of surrounding spaces.
+    """
+    lines = path.read_text().splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(header)]
+    if not starts:
+        raise ValueError(f"{path}: no table starting with {header!r}")
+    rows = []
+    # Skip the header and the |---|---| line under it.
+    for line in lines[starts[0] + 2:]:
+        if not line.startswith("|"):
+            break
+        rows.append([cell.strip() for cell in line.strip().strip("|").split("|")])
+    return rows
+
+
+def _speedup_cell(cell: str) -> dict | None:
+    """Read one cell of the findings table.
+
+    Args:
+        cell: A cell such as "23.4x [23.39 – 23.41]", "1.00x n.s." or "".
+
+    Returns:
+        The speedup, its interval where the cell has one and whether it is
+        significant; None for an empty cell or one without a number. `text`
+        and `interval` hold the figures as the source prints them, with the
+        precision the judge chose.
+    """
+    value = _SPEEDUP.search(cell)
+    if not value:
+        return None
+    ratio = _RATIO.search(cell)
+    return {
+        "x": float(value.group(1)),
+        "lo": float(ratio.group(2)) if ratio else None,
+        "hi": float(ratio.group(3)) if ratio else None,
+        "text": value.group(0),
+        "interval": f"[{ratio.group(2)} – {ratio.group(3)}]" if ratio else None,
+        "significant": _NOT_SIGNIFICANT not in cell,
+    }
+
+
+def findings() -> list[dict]:
+    """The judge's results per kernel and input, from docs/kernel-findings.md.
+
+    Returns:
+        One entry per row of the summary table: the kernel, the input it was
+        timed on, its speedup over naive C overall and at four sizes, and over
+        NumPy overall and at 1,048,576 elements.
+    """
+    rows = []
+    for cells in _table(FINDINGS, _FINDINGS_HEADER):
+        kernel, kind, overall_c, *at_sizes, overall_numpy, numpy_1m = cells
+        rows.append({
+            "kernel": kernel.strip("`"),
+            "input": kind,
+            "vs_c": _speedup_cell(overall_c),
+            "vs_c_at": [_speedup_cell(c) for c in at_sizes],
+            "vs_numpy": _speedup_cell(overall_numpy),
+            "vs_numpy_1m": _speedup_cell(numpy_1m),
+            "c_kernel": "C kernel" in overall_c,
+        })
+    return rows
+
+
+def _range_cell(cell: str) -> dict | None:
+    """Read one cell of the README's results table.
+
+    Args:
+        cell: A cell holding one speedup ("29.0x"), two ("8.82x, 8.86x" or
+            "17.3x – 41.7x"), or words.
+
+    Returns:
+        The lowest and highest speedup in the cell, or None if it has none.
+    """
+    values = [float(v) for v in _SPEEDUP.findall(cell)]
+    return {"lo": min(values), "hi": max(values)} if values else None
+
+
+def headline() -> list[dict]:
+    """The headline results per NumPy call, from the README.
+
+    Returns:
+        One entry per row of the README's results table: the call, its element
+        type, and its speedup over NumPy and over `clang -O3` at 1,048,576
+        elements, each as a range.
+    """
+    rows = []
+    for call, elements, vs_numpy, vs_c in _table(README, _README_HEADER):
+        rows.append({
+            "call": call.replace("`", ""),
+            "elements": elements,
+            "vs_numpy": _range_cell(vs_numpy),
+            "vs_c": _range_cell(vs_c),
+            "vs_c_text": vs_c.replace("`", ""),
+        })
+    return rows
+
+
+def python_timings() -> dict:
+    """The recorded timings of Python statements, with and without hotkernels.
+
+    Returns:
+        The contents of the delivery tool's recorded result: `meta` describes
+        the machine and `rows` holds one statement at one size each.
+    """
+    return json.loads(PYTHON_TIMINGS.read_text())

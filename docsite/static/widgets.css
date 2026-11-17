@@ -1,0 +1,102 @@
+/* Shared pieces of the interactive figures. A widget mounts inside
+   <figure class="widget"><div data-widget="name"></div><figcaption>…</figcaption></figure>
+   and builds its interface from these classes. Anything specific to one widget
+   is in that widget's own module, exported as `css`. */
+
+figure.widget { font-family: var(--sans); }
+/* Scoped to the widget's own element: Pygments marks whitespace in code with a class of the same name. */
+[data-widget].w {
+  background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 1.1rem 1.2rem 1.2rem; font-size: .9rem; line-height: 1.45; color: var(--ink);
+}
+.w-loading, .w-error { color: var(--muted); font-size: .86rem; padding: 2rem 0; text-align: center; }
+.w-error { color: var(--bad); }
+
+/* a row of controls above or below the stage */
+.w-controls { display: flex; flex-wrap: wrap; gap: .7rem 1.2rem; align-items: center; margin-bottom: 1rem; }
+.w-controls.bottom { margin: 1rem 0 0; }
+.w-label { font-size: .74rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-right: .1rem; }
+.w-spacer { flex: 1; }
+
+/* buttons */
+.w-btn {
+  font: inherit; font-size: .84rem; font-weight: 600; padding: .38rem .8rem; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--rule-strong); background: var(--bg-raised); color: var(--ink);
+}
+.w-btn:hover { border-color: var(--hot); }
+.w-btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.w-btn.primary:hover { background: var(--hot); border-color: var(--hot); color: #fff; }
+.w-btn:disabled { opacity: .45; cursor: default; border-color: var(--rule); }
+
+/* segmented control: one of a few options */
+.w-seg { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: 8px; overflow: hidden; }
+.w-seg button { font: inherit; font-size: .82rem; font-weight: 600; padding: .36rem .75rem; border: 0; border-right: 1px solid var(--rule-strong); background: transparent; color: var(--muted); cursor: pointer; }
+.w-seg button:last-child { border-right: 0; }
+.w-seg button:hover { color: var(--ink); }
+.w-seg button.on { background: var(--ink); color: var(--bg); }
+
+/* slider with its value */
+.w-range { display: inline-flex; align-items: center; gap: .6rem; }
+.w-range input[type="range"] { width: 9rem; accent-color: var(--hot); }
+.w-range output { font-family: var(--mono); font-size: .84rem; min-width: 2.6rem; font-variant-numeric: tabular-nums; }
+
+/* select */
+.w-select { font: inherit; font-size: .86rem; padding: .36rem .6rem; border-radius: 8px; border: 1px solid var(--rule-strong); background: var(--bg-raised); color: var(--ink); max-width: 100%; }
+
+/* where the drawing goes */
+.w-stage { position: relative; overflow-x: auto; }
+.w-stage svg { display: block; max-width: 100%; height: auto; }
+.w svg text { font-family: var(--sans); fill: var(--ink); }
+.w svg .axis text, .w svg text.muted { fill: var(--muted); }
+.w svg .axis line, .w svg .axis path, .w svg .grid line { stroke: var(--rule); }
+
+/* a row of numbers under the stage */
+.w-readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; margin-top: 1rem; }
+.w-stat { background: var(--bg-raised); padding: .7rem .9rem; }
+.w-stat-v { display: block; font-size: 1.35rem; font-weight: 720; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.w-stat-l { display: block; font-size: .76rem; color: var(--muted); margin-top: .15rem; }
+.w-stat.hot .w-stat-v { color: var(--hot); }
+.w-stat.np .w-stat-v { color: var(--np); }
+.w-stat.good .w-stat-v { color: var(--good); }
+.w-stat.bad .w-stat-v { color: var(--bad); }
+
+/* Notes and verdicts are often paragraphs; `.prose p` would otherwise set their margins. */
+.w p { margin: 0; }
+.w p.w-note, .w p.w-verdict { margin: .9rem 0 0; }
+.w-note { font-size: .84rem; color: var(--muted); margin: .9rem 0 0; line-height: 1.5; }
+.w-note b, .w-note strong { color: var(--ink); }
+.w-verdict { font-size: .95rem; font-weight: 650; margin: .9rem 0 0; padding: .55rem .8rem; border-radius: 8px; background: var(--panel); }
+.w-verdict.good { background: var(--good-soft); color: var(--good); }
+.w-verdict.bad { background: var(--bad-soft); color: var(--bad); }
+.w-verdict.hot { background: var(--hot-soft); color: var(--hot); }
+
+/* a row of array elements */
+.cells { display: flex; flex-wrap: wrap; gap: 3px; }
+.cells.nowrap { flex-wrap: nowrap; }
+.cell {
+  width: 2.1rem; height: 2.1rem; flex: none; display: grid; place-items: center;
+  border: 1px solid var(--rule-strong); border-radius: 5px; background: var(--bg-raised);
+  font-family: var(--mono); font-size: .72rem; font-variant-numeric: tabular-nums; color: var(--ink);
+  transition: background .18s, border-color .18s, color .18s, transform .18s, opacity .18s;
+}
+.cell.small { width: 1.35rem; height: 1.35rem; font-size: .6rem; border-radius: 4px; }
+.cell.hot { background: var(--hot-soft); border-color: var(--hot); color: var(--hot); }
+.cell.np { background: var(--np-soft); border-color: var(--np); color: var(--np); }
+.cell.good { background: var(--good-soft); border-color: var(--good); color: var(--good); }
+.cell.bad { background: var(--bad-soft); border-color: var(--bad); color: var(--bad); }
+.cell.dim { opacity: .35; }
+.cell.ghost { border-style: dashed; color: var(--muted); background: transparent; }
+.cell.done { background: var(--panel); color: var(--muted); }
+button.cell { cursor: pointer; padding: 0; }
+button.cell:hover { border-color: var(--hot); }
+
+/* legend */
+.w-legend { display: flex; flex-wrap: wrap; gap: .4rem 1.1rem; font-size: .8rem; color: var(--muted); margin-top: .8rem; }
+.w-legend i { display: inline-block; width: .8rem; height: .8rem; border-radius: 3px; margin-right: .4rem; vertical-align: -1px; background: var(--muted); }
+.w-legend i.hot { background: var(--hot); } .w-legend i.np { background: var(--np); } .w-legend i.cc { background: var(--cc); }
+.w-legend i.good { background: var(--good); } .w-legend i.bad { background: var(--bad); }
+
+@media (max-width: 40rem) {
+  [data-widget].w { padding: .9rem; }
+  .w-range input[type="range"] { width: 7rem; }
+}

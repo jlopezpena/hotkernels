@@ -1,0 +1,234 @@
+<p class="lede">At the end of the last chapter there were 22 native functions, each proven correct on a flat buffer and none reachable from Python. The remaining problem sounds like plumbing and is closer to half the project: make <code>x[mask]</code> in somebody's existing notebook run a kernel, without that person changing a character, and without breaking anything on the day their array is strided, or a subclass, or of a type no kernel handles.</p>
+
+## What "no friction" rules out
+
+The promise is two lines:
+
+```python
+import hotkernels
+hotkernels.install()
+```
+
+That rules out the easy designs. A wrapper type (`hk.array(x)`) or a decorator would reach anything, but only in code the user has rewritten. Offering faster functions under new names (`hk.argmax`) is the same thing. The kernels have to be reached by the NumPy calls people already write, in their own code and inside pandas or scikit-learn.
+
+The obvious way to do that is to replace names: assign a new function to `np.argmax`. It is also the wrong way, and it is worth seeing why, because the alternative shapes everything else.
+
+| | Replace the name `np.argmax` | Change one pointer inside the existing function object |
+|---|---|---|
+| `np.argmax(x)` | Reached | Reached |
+| `from numpy import argmax`, done before `install()` | Not reached | Reached |
+| NumPy calling its own function, as `np.nanargmax` does | Not reached | Reached |
+| `np.argmax` is still the same object, pickles, keeps its signature | No | Yes |
+| A library that uses `np.argmax` as a dictionary key | Breaks if imported afterwards | Works |
+
+Replacing a name only affects code that looks the name up afterwards. Changing the object affects every reference to it that exists. So the binding never replaces anything. It keeps NumPy's objects and changes a function pointer inside them, and `uninstall()` puts the pointer back.
+
+## Five places to stand
+
+No single hook reaches everything. `np.clip` is a function backed by a "ufunc", NumPy's machinery for elementwise operations. `x.argmax()` is a method. And `x[mask]` is neither: it is syntax, which Python turns into a call through a pointer stored in the array's type. An early version of the design recorded indexing as a known gap that might never be reachable.
+
+It turned out that everything can be reached, with five kinds of hook at five depths.
+
+```mermaid Where the five hooks sit. A deeper hook is reached by more ways of writing the same operation and needs fewer checks, because NumPy has already done its own. A shallower hook can skip NumPy's fixed costs.
+flowchart TD
+  code["Your code"]
+  code --> f["np.argmax(x), np.sum(x), np.histogram(...)"]
+  code --> m["x.astype(...), x.cumsum(), mask.nonzero()"]
+  code --> i["x[mask], x[mask] = v"]
+  code --> c["np.clip(x, lo, hi), x.clip(lo, hi)"]
+
+  f --> hf["<b>Function hook</b><br/>the call pointer inside<br/>the NumPy function object"]
+  m --> hm["<b>Method hook</b><br/>the C function pointer in<br/>ndarray's method table"]
+  i --> hi["<b>Indexing hook</b><br/>the two pointers behind a[i] and a[i] = v<br/>in ndarray's type"]
+  c --> wrap["NumPy's wrapper and<br/>ufunc machinery"]
+  wrap --> hl["<b>Inner-loop hook</b><br/>the ufunc's loop for one element type"]
+  hf -.->|"where no kernel applies"| inner["NumPy's own C code"]
+  hm -.-> inner
+  inner --> hs["<b>Type-slot hook</b><br/>the argmax / argmin routine<br/>an element type carries"]
+
+  class hf,hm,hi,hl,hs hot
+```
+
+| Hook | What is changed | Does NumPy offer this for the purpose? |
+|---|---|---|
+| **Inner loop** | A ufunc's loop for one element type | Yes: a public C API exists for exactly this |
+| **Type slot** | The `argmax` and `argmin` entries each element type holds | The accessor is public; writing through it is not a documented use |
+| **Function** | The call pointer inside a NumPy function object | No |
+| **Method** | The C function pointer in `ndarray`'s method table | No |
+| **Indexing** | The two pointers behind `a[i]` and `a[i] = v` in `ndarray`'s type | No |
+
+The honest reading of the last column: one hook is sanctioned, one is a grey area, and three reach into NumPy's objects in ways NumPy never invited. With the two sanctioned-or-nearly hooks alone, 3 of the 15 operations could be served. The project decided to use all five, and built the defences described below to make that safe.
+
+The rule for choosing is: **use the deepest hook that exists for an operation**, because it is reached by the most spellings and arrives after NumPy has already validated everything; **add the function hook on top where the fixed cost of the call is worth removing**.
+
+Try it. The figure below encodes the binding's actual rules.
+
+<figure class="widget">
+<div data-widget="router"></div>
+<figcaption>Pick a NumPy statement and describe the array. The figure shows which hook the call reaches, the checks it has to pass, and whether a kernel or NumPy's own code runs. Try a strided array, another element type, or 16 elements instead of a million.</figcaption>
+</figure>
+
+## The rule that keeps it safe
+
+A hook has one job: decide, very quickly, whether this exact call is one a kernel handles. The binding follows a rule that makes the decision easy to reason about:
+
+> The binding never converts an argument and never raises an error of its own. A call either meets a kernel's conditions exactly as it stands, or goes to NumPy with the caller's own arguments.
+
+So there is no "close enough". An array of float32 where the kernel wants float64 is not converted; it goes to NumPy. An unusual keyword is not interpreted; it goes to NumPy. Every error message and warning a user ever sees is NumPy's own, because every call that could produce one was passed along untouched. The conditions, shared by the function, method and indexing hooks:
+
+- The array's type is exactly `ndarray`, not a subclass.
+- Its element type is exactly the kernel's, in native byte order.
+- It is contiguous. Alignment is not required.
+- It has at least the kernel's minimum length.
+- Every argument the kernel does not implement is absent or at its default.
+- Scalars are inside the domain the kernel was verified on: for `clip`, `lo <= hi`.
+- An output the caller supplies is writable and does not overlap an input.
+
+The two deep hooks need almost none of this. By the time NumPy calls an inner loop or a type slot, it has settled the element type and described the memory layout in the arguments. A strided call simply shows up with a step that is not the element size, and is handed back.
+
+## What a detour costs
+
+The indexing hook sits on *every* index operation on *every* array in the process: `x[3]`, `x[1:5]`, all of them. If it cost 20 ns, hotkernels would make most NumPy programs slower. So this is the number the whole delivery design is judged by:
+
+| Call that reaches a hook and is left to NumPy | Plain NumPy | With hotkernels | Difference |
+|---|---|---|---|
+| `x[3]` | 60.3 ns | 61.1 ns | +0.8 ns |
+| `x[1:5]` | 88.8 ns | 89.4 ns | +0.6 ns |
+| `x.astype(np.float64)`, uint8, 16 elements | 198 ns | 201 ns | +3 ns |
+| `np.clip(x[::2], -0.5, 0.5)`, 16 elements | 1.24 µs | 1.26 µs | within noise |
+| `np.sum(x)`, float64, 16 elements | 815 ns | 820 ns | within noise |
+
+**About a nanosecond.** Getting there took the same kind of measured iteration as the kernels, and three findings from it are instructive:
+
+- **Keep the rare work out of line.** The compiler had folded the code for *taking* a kernel into the hook, so every index operation saved twelve registers and reserved a scratch buffer before its first test: 2 to 4 ns on every `x[3]`. Forcing that code into a separate function leaves the indexing hook at nine instructions: is the index a boolean array? No: jump to NumPy.
+- **An atomic counter was too expensive.** `report()` counts calls. A properly atomic increment cost more than the rest of a fallback put together. The counters are updated with a plain load and store; two threads counting at the same instant can lose a count, which is acceptable for statistics.
+- **Test the cheap, decisive thing first.** `np.cumsum` on a float array once spent about 60 ns comparing keyword names before discovering it had no kernel for that element type. Checking the array first fixed it.
+
+## The other fixed cost: NumPy's own
+
+A deep hook delivers the kernel but does nothing about what happens above it. Through the type slot alone, `np.argmax` on 16 elements still costs about 560 ns, nearly all of it NumPy's Python-level wrapper. That is why `argmax` has two hooks: the type slot for everything, and the function hook, which can answer a simple call before the wrapper runs.
+
+| `np.argmax(x)`, 16 float32 elements | Time |
+|---|---|
+| Plain NumPy | 526 ns |
+| With hotkernels | 36.7 ns |
+
+A 14x speedup on 16 elements has almost nothing to do with assembly: the loop is 2 ns either way. It is the wrapper being skipped. The same effect makes `np.sum` on 16 bytes 33x faster. `np.clip`, whose kernel sits beneath the wrapper, gains nothing at 16 elements (1.00x) and 11x at a million.
+
+There is a mirror-image case. The type slot must take the interpreter lock (see below), which costs about 40 ns per call, more than the kernel saves on a short array. So that hook leaves runs under 128 elements to NumPy. Where a hook cannot win, it stands aside: the exit criterion was that no entry point is slower than NumPy at any size measured.
+
+## Scratch output and the cost of allocation
+
+Chapter 5 left a debt. The mask kernels store more than they keep, so they need an output buffer with room for all $n$ elements, of which the tail ends up holding rubbish. NumPy, by contrast, counts the selected elements first and allocates exactly that many.
+
+The binding pays the debt like this:
+
+```mermaid What happens on x[mask] once hotkernels is installed. The kernel never sees memory the caller owns, and the caller never sees the scratch tail.
+sequenceDiagram
+  participant P as Python
+  participant H as Indexing hook
+  participant K as compress_f64
+  participant N as NumPy
+  P->>H: x[mask]
+  H->>H: is the index a boolean ndarray?
+  alt not a mask, or conditions not met
+    H->>N: original function, same arguments
+    N-->>P: result
+  else plain 1-D float64 and a mask of the same length
+    H->>H: scratch buffer of n elements (on the stack up to 2 KB)
+    H->>H: scan the mask once: every byte 0 or 1?
+    H->>K: x, mask, scratch, n
+    K-->>H: count
+    H->>N: new array of exactly count elements
+    H->>H: copy count elements, free the scratch
+    H-->>P: result
+  end
+```
+
+Two other strategies were measured and lost: shrinking the big buffer in place was slower than copying out (555 µs against 301 µs at a million elements, half selected). The cost shows in the results: from Python, `x[mask]` on float64 is 15.8x faster than NumPy where the kernel alone is 22.5x. The buffer, the copy and the mask scan take about a third of the gain.
+
+The mask scan is there for a reason nobody expected. A NumPy boolean array is supposed to hold bytes of 0 or 1, but nothing stops one holding a 2 (through a view of other data, for instance). The kernels multiply the mask bytes as numbers; a 2 would make them count past the buffer's capacity and write outside it. The judge never generates such a mask, so the kernels pass. The binding reads the mask once first, and any byte above 1 sends the call to NumPy.
+
+## The contract gaps
+
+That mask check is one of several places where binding the kernels to real calls exposed an input on which a kernel is wrong or unsafe and its spec did not say so. The binding is the last place such inputs can be stopped.
+
+| Input | What the kernel would do | What the binding does |
+|---|---|---|
+| A mask byte other than 0 or 1 | Write outside the buffer | Scans the mask; sends the call to NumPy |
+| `np.clip(x, 0, 1, out=x)`: output is the input | Wrong on some data | Sends the call to NumPy |
+| Another thread writes the array during `argmax` | Reads it twice; may read past the end | Holds the interpreter lock while the kernel runs |
+| A histogram range whose bin edges are not strictly increasing | Returns counts where NumPy raises an error | Builds the edges first, as NumPy does; sends the call to NumPy if they are not increasing |
+| `clip` bounds that are arrays, reversed, or NaN | Matches only NumPy's scalar, ordered case | Takes the kernel for ordered scalar bounds only |
+| Floating-point status flags left set by a kernel | NumPy would turn them into spurious warnings | Clears them after `clip`; for float `cumsum`, discards the kernel's output if any flag was raised and lets NumPy compute and warn |
+
+Each row is tracked as an issue against the kernel. The lesson generalises: a function verified in isolation is verified *on the inputs its tests can express*. Integrating it is a second round of verification, against what real callers can actually pass.
+
+## Threads
+
+NumPy releases Python's interpreter lock around long loops so that other threads can run. The binding follows NumPy's lead with three exceptions, each forced by a kernel property described earlier:
+
+- **Inner loop (`clip`)**: the kernel runs wherever NumPy's loop ran, lock held or released as NumPy decided.
+- **Function, method and indexing hooks**: release the lock above 8,192 elements, as a kernel is a pure function touching no Python object.
+- **Type slot (`argmax`)**: *takes* the lock, because the kernels read the array twice and are not safe against a concurrent writer.
+- **Masked assignment**: keeps the lock, because the kernel [rewrites unselected elements]([[ root ]]report/selection/#masked-assignment-write-what-you-did-not-change) with their own bits. That blocks other Python threads for about 180 µs per million elements.
+
+Free-threaded Python, which has no such lock, is not supported: `install()` does nothing there and says why.
+
+## Installing is a test
+
+Three of the five hooks depend on the internal layout of NumPy's objects. A future NumPy release could route a call differently, and a hook would silently stop firing, or worse, fire for something else. So installation does not trust itself.
+
+```mermaid How install() applies one hook. A hook that cannot demonstrate that it works is removed again, and NumPy is left as it was for that operation.
+sequenceDiagram
+  participant U as install()
+  participant B as Binding
+  participant N as NumPy
+  U->>B: apply hook, remember the pointer it replaced
+  U->>N: one small public call with a known answer
+  N->>B: (the call reaches the hook, if the hook works)
+  B-->>U: result
+  alt the kernel's counter moved and the answer is right
+    U->>U: keep the hook
+  else counter did not move, or wrong answer
+    U->>B: put the original pointer back
+    U->>U: record why, for report()
+  end
+```
+
+Each hook goes in one at a time and proves itself with a real call through NumPy's public interface. If the kernel's counter did not move, or the answer is wrong, the hook is removed and `report()` says so. The failure mode of an incompatible NumPy is therefore "that operation is not accelerated", never "that operation is wrong".
+
+`uninstall()` restores the pointers in reverse order, and only a pointer that is still the one hotkernels put there. If something else has patched the same place since, it is left alone and reported.
+
+## Testing the binding
+
+The judge proves a kernel right as a native function. It says nothing about the code between NumPy and the kernel, and that code decides, on every call, whether a kernel's conditions hold. A wrong check there is a wrong answer in someone's program. It has its own test.
+
+**A differential test of calls, not of kernels.** Each case is a Python statement. It is run on plain NumPy and again with hotkernels installed, and the two must agree in result type, element type, shape and bytes; in the exception raised; in the warnings issued; and in leaving the inputs unchanged. The cases are a cross product per entry point:
+
+| Dimension | Values |
+|---|---|
+| Element types | The kernel's, and its neighbours |
+| Shapes | 0-d, empty, one element, 1-D, 2-D |
+| Layouts | Contiguous, strided, reversed, misaligned, read-only, Fortran order, other byte order |
+| Array kinds | `ndarray`, a subclass, a masked array, a memory map, a list |
+| Spellings | Positional, keyword, `out=`, `axis=`, method and function forms |
+| Values | The judge's value classes: NaN, infinities, signed zeros, ties |
+
+That is **70,031 calls over the 13 hooked operations**, and all agree.
+
+**Each case also states whether a kernel should have run**, and the counters are checked against it. Without that, a check that quietly stopped matching would pass every comparison, since NumPy's fallback is always right, while delivering nothing.
+
+**NumPy's own test suite**, run once on plain NumPy and once with the kernels installed, gives the same outcome for each of its **47,234 tests**. This is the broadest evidence available for "never break anything", and it cost nothing to write.
+
+The test earned its keep while it was being written. It found two defects in the binding: `np.count_nonzero` returned a Python `int` where NumPy returns `np.intp`, and `np.histogram` issued NumPy's overflow warnings twice for a range wider than a double can hold. Neither was a wrong number. Both were differences a user's code could have observed.
+
+::: note What this test does not cover
+The binding runs without guard pages. A wrong length passed to a correct kernel is caught only if it changes a result. The kernels' memory safety is established by the judge; the binding's is established by review and by the differential test, which is weaker.
+:::
+
+## Where that leaves things
+
+Of the 22 kernels, 18 are installed by `install()`, 2 more with `install(inexact=True)`, and 2 (`searchsorted` and `interp`) are not bound until they accept a second length. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
+
+The last chapter collects every number, and is candid about which of them mean less than they appear to.
