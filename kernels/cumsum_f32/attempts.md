@@ -146,3 +146,23 @@ as the judge does; naive C is 5.0 / 30 / 205 and attempt 2 is 2.9 / 19.4 /
   The measurements that fixed the design (four accumulators, the order of
   the additions in a block, `ext` for the first shifted vector, chunk size)
   were made on doubles and are in `cumsum_f64/attempts.md`, attempt 5.
+
+## 5. Fewer than 20 elements: the exact chain of attempt 3
+
+- **Idea:** as in `cumsum_f64` attempt 6. At n=16 one block plus the setup
+  and the final check is more operations than the paired exact chain, and
+  the judge times independent calls, which the processor overlaps, so the
+  chain's 3-cycle latency per element does not show. Send arrays below 20
+  elements to the paired chain of attempts 2 and 3 (a first block of 8, then
+  blocks of 8, then 4, 2, 1). It adds in the reference order, so it needs no
+  check and its results are bit-identical to NumPy's.
+- **check:** pass (18,136 cases)
+- **compare:** significantly faster, 1.016x [1.014 – 1.017]
+- **Kept:** yes
+- **Notes:** 1.20x at 16 (2.9 ns against 3.4 ns); 0.99x [0.98 – 1.00] at 64
+  (8.9 ns both; two more instructions at entry); not significant at any
+  other size. The threshold comes from the standalone timer, ns per element,
+  chain then blocks: 0.176 / 0.194 at 16, 0.185 / 0.186 at 20, 0.186 / 0.174
+  at 24, 0.212 / 0.162 at 32. A throughput choice: a caller whose next step
+  waits for the result sees the chain's latency (up to 57 cycles for 19
+  elements).
