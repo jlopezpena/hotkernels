@@ -10,8 +10,9 @@
 
 // Below this many elements the hook leaves the call to NumPy's own loop.
 // The kernel has to take the interpreter lock (see below), which costs more
-// than the kernel saves on a short run. Short one-dimensional calls are
-// served by the function hook instead, which already holds the lock.
+// than the kernel saves on a short run. Short calls without an axis,
+// `np.argmax(x)` and `x.argmax()`, are served by the function and method
+// hooks instead, which already hold the lock.
 #define HK_SLOT_MIN_N 128
 
 // One hooked slot.

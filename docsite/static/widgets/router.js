@@ -29,31 +29,40 @@ const HOOKS = {
 const OTHER = { label: "another type", kernel: null };
 
 // One entry per statement.
-//   code     the statement as the reader writes it
-//   array    the array the controls describe
-//   via      the hook the statement meets first; `below: "slot"` says the type slot sits under it
-//   types    element types offered, with the kernel that serves each (null: none)
-//   typeText how the element-type check reads
-//   wrapper  what NumPy's Python wrapper does on this path, when it runs before the hook
-//   oneD     the array must be one-dimensional
-//   given    conditions this statement meets as written, listed so the reader sees them
-//   extra    one more choice that decides a check
+//   code      the statement as the reader writes it
+//   array     the array the controls describe
+//   via       the hook the statement meets first; `below` names the hook that sits under it,
+//             "slot" (the type slot) or "loop" (the clip loop), which a call passed on reaches
+//   fallback  what NumPy does with a call the first hook passes on, on its way to the hook below
+//   types     element types offered, with the kernel that serves each (null: none)
+//   typeText  how the element-type check reads
+//   wrapper   what NumPy's Python wrapper does on this path, when it runs before the hook
+//   oneD      the array must be one-dimensional
+//   given     conditions this statement meets as written, listed so the reader sees them
+//   loopGiven the same, for the clip loop below the first hook
+//   extra     one more choice that decides a check
 const STATEMENTS = [
-  { // hook_function.c call_argext; "Which hook serves which kernel": type slot, plus the function for small arrays.
+  { // hook_function.c call_argext; "Which hook serves which kernel": type slot, plus the function and the method.
     code: "np.argmax(x)", array: "x", via: "function", below: "slot",
     types: [{ label: "float32", kernel: "argmax_f32" }, { label: "float64", kernel: "argmax_f64" }, OTHER],
     typeText: "elements are float32 or float64",
     given: ["only the array is passed: no axis, out or keepdims"],
+    fallback: "The hook passes the call on. NumPy's own np.argmax runs, and ends in the element type's argmax function.",
   },
-  { // hook_slot.c; "What each hook reaches": the type slot reaches x.argmax(), strided input and axis=.
-    code: "x.argmax()", array: "x", via: "slot",
+  { // hook_method.c method_argext; the type slot reaches x.argmax(), strided input and axis=.
+    code: "x.argmax()", array: "x", via: "method", below: "slot",
     types: [{ label: "float32", kernel: "argmax_f32" }, { label: "float64", kernel: "argmax_f64" }, OTHER],
+    typeText: "elements are float32 or float64",
+    given: ["no axis, out or keepdims, or each given as None"],
+    fallback: "The hook passes the call on. NumPy's own method runs, and ends in the element type's argmax function.",
   },
-  { // hook_loop.c HK_CLIP_LOOP; "Inputs outside the kernels' contracts".
-    code: "np.clip(x, lo, hi)", array: "x", via: "loop",
+  { // hook_function.c try_clip and hk_try_clip (and hook_method.c try_clip for x.clip); below them hook_loop.c HK_CLIP_LOOP.
+    code: "np.clip(x, lo, hi)", array: "x", via: "function", below: "loop",
     types: [{ label: "float32", kernel: "clip_f32" }, { label: "float64", kernel: "clip_f64" }, OTHER],
-    wrapper: "np.clip and x.clip both run the clip ufunc. NumPy settles the element type and describes the memory layout before the loop is called.",
-    given: ["both bounds are scalars, not arrays", "the output is not the input (not in place)"],
+    typeText: "elements are float32 or float64",
+    given: ["lo and hi are Python numbers, or NumPy scalars of x's own type, so the result keeps x's element type", "no out, dtype, casting or where"],
+    fallback: "The hook passes the call on. np.clip calls x.clip, which runs the clip ufunc. NumPy settles the element type and describes the memory layout before the loop is called.",
+    loopGiven: ["both bounds are scalars, not arrays", "the output is not the input (not in place)"],
     extra: { label: "Bounds", options: [{ label: "lo <= hi", ok: true }, { label: "lo > hi, or NaN", ok: false }], check: "lo <= hi, which a NaN bound also fails" },
   },
   { // hook_index.c try_compress.
@@ -200,6 +209,16 @@ function route(statement, state) {
     });
     steps.push(big ? kernel() : numpy(true));
   };
+  const loop = () => {
+    const checks = [
+      check("x and the output are contiguous: the step between elements is the element size", contiguous),
+      ...statement.loopGiven.map((label) => check(label, true)),
+      check(statement.extra.check, extra.ok),
+    ];
+    steps.push({ box: "hook", hook: "loop", checks,
+      note: "The loop runs after NumPy's own checking, so the array's class does not matter here." });
+    steps.push(checks.every((c) => c.ok) ? kernel() : numpy(true));
+  };
 
   // The checks the function, method and indexing hooks share ("When a call takes a kernel").
   const shared = () => {
@@ -216,30 +235,6 @@ function route(statement, state) {
     return list;
   };
 
-  if (statement.via === "slot") {
-    steps.push({ box: "wrapper", title: "NumPy's own method", text: "x.argmax() is NumPy's method, unchanged. Every route to argmax ends in the element type's argmax function." });
-    if (type.kernel) slot();
-    else steps.push(numpy(false));
-    return steps;
-  }
-
-  if (statement.via === "loop") {
-    steps.push({ box: "wrapper", title: "NumPy's Python wrapper", text: statement.wrapper });
-    if (!type.kernel) {
-      steps.push(numpy(false));
-      return steps;
-    }
-    const checks = [
-      check("x and the output are contiguous: the step between elements is the element size", contiguous),
-      ...statement.given.map((label) => check(label, true)),
-      check(statement.extra.check, extra.ok),
-    ];
-    steps.push({ box: "hook", hook: "loop", checks,
-      note: "The loop runs after NumPy's own checking, so the array's class does not matter here." });
-    steps.push(checks.every((c) => c.ok) ? kernel() : numpy(true));
-    return steps;
-  }
-
   if (statement.via === "method" && statement.wrapper) {
     steps.push({ box: "wrapper", title: "NumPy's Python wrapper", text: statement.wrapper });
   }
@@ -252,9 +247,11 @@ function route(statement, state) {
   }
   if (taken) {
     steps.push(kernel());
-  } else if (statement.below === "slot" && type.kernel) {
-    steps.push({ box: "wrapper", title: "NumPy's Python wrapper", text: "The hook passes the call on. NumPy's own np.argmax runs, and ends in the element type's argmax function." });
-    slot();
+  } else if (statement.below && type.kernel) {
+    const title = statement.via === "method" ? "NumPy's own method" : "NumPy's Python wrapper";
+    steps.push({ box: "wrapper", title, text: statement.fallback });
+    if (statement.below === "slot") slot();
+    else loop();
   } else {
     steps.push(numpy(true));
   }

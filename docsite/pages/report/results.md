@@ -12,32 +12,33 @@ These are the figures that matter to someone running NumPy code: one Python stat
 
 | Statement | Elements | 16 elements | 1,048,576 elements |
 |---|---|---|---|
-| `np.argmax(x)` | float32 | 14.1x | 8.98x |
-| `np.clip(x, -0.5, 0.5)` | float32 | 1.02x | 10.9x |
-| `np.clip(x, -0.5, 0.5)` | float64 | 1.00x | 4.80x |
-| `x[mask]`, half selected | float32 | 2.50x | 31.0x |
-| `x[mask]`, half selected | float64 | 2.55x | 16.2x |
-| `x[mask] = 0.0`, half selected | float64 | 5.27x | 20.4x |
-| `np.nonzero(mask)`, few selected | bool | 1.25x | 13.7x |
-| `np.cumsum(x)` | int64 | 1.98x | 13.8x |
-| `x.astype(np.float32)` | uint8 | 1.88x | 5.21x |
-| `np.sum(x)` | uint8 | 31.8x | 15.6x |
-| `np.count_nonzero(x)` | float64 | 3.54x | 3.57x |
-| `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.25x | 9.33x |
-| `np.bincount(x)` | uint8 | 2.26x | 6.85x |
-| `np.isin(x, eight_values)` | int64 | 74.0x | 18.9x |
-| `np.searchsorted(a, v)` | float64 | 1.54x | 8.83x |
-| `np.searchsorted(a, v, side='right')` | float64 | 1.43x | 8.28x |
+| `np.argmax(x)` | float32 | 14.2x | 8.89x |
+| `x.argmax()` | float32 | 3.11x | 8.87x |
+| `np.clip(x, -0.5, 0.5)` | float32 | 11.0x | 9.92x |
+| `np.clip(x, -0.5, 0.5)` | float64 | 9.76x | 4.93x |
+| `x[mask]`, half selected | float32 | 2.49x | 31.0x |
+| `x[mask]`, half selected | float64 | 2.54x | 15.9x |
+| `x[mask] = 0.0`, half selected | float64 | 5.24x | 20.3x |
+| `np.nonzero(mask)`, few selected | bool | 1.25x | 13.5x |
+| `np.cumsum(x)` | int64 | 1.95x | 12.7x |
+| `x.astype(np.float32)` | uint8 | 1.89x | 4.11x |
+| `np.sum(x)` | uint8 | 32.5x | 15.7x |
+| `np.count_nonzero(x)` | float64 | 3.59x | 3.74x |
+| `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.16x | 9.43x |
+| `np.bincount(x)` | uint8 | 2.32x | 6.66x |
+| `np.isin(x, eight_values)` | int64 | 71.2x | 18.8x |
+| `np.searchsorted(a, v)` | float64 | 1.51x | 8.57x |
+| `np.searchsorted(a, v, side='right')` | float64 | 1.46x | 9.16x |
 | `np.digitize(x, bins)`, 1,000 bin edges | float64 | 1.10x | 26.7x |
-| `np.interp(x, xp, fp)` | float64 | 5.61x | 25.7x |
+| `np.interp(x, xp, fp)` | float64 | 5.54x | 22.4x |
 
-The search and `np.interp` rows are timed with as many needles as elements, and `np.digitize` with 1,000 bin edges. The run started at a load average of 3.8, on a machine in use.
+The search and `np.interp` rows are timed with as many needles as elements, and `np.digitize` with 1,000 bin edges. The run started at a load average of 2.0, on a machine that also runs other work.
 
-Read the two columns as two different stories. At a million elements the number is the kernel. At 16 elements it is mostly NumPy's own call path being skipped: `np.sum` on 16 bytes is 33x faster because a 1.2 µs wrapper was replaced by a 37 ns call, not because of how the bytes are added.
+Read the two columns as two different stories. At a million elements the number is the kernel. At 16 elements it is mostly NumPy's own call path being skipped: `np.sum` on 16 bytes is 32x faster because a 1.2 µs wrapper was replaced by a 36 ns call, not because of how the bytes are added, and `np.clip` is 11x faster because the kernel is called before NumPy's wrapper and ufunc machinery run.
 
 **A whole program.** `examples/workload.py` in the repository is an ordinary NumPy script, written with no knowledge of hotkernels: it cleans a signal, summarises an 8-bit image and looks up some ids, using eleven of these operations on two million elements. It runs in **45 ms on plain NumPy and 8.4 ms with the one line added**, and every result is identical bit for bit.
 
-**The cost of being there.** A call that reaches a hook and is not served costs 0.3 to 1.5 ns more than on plain NumPy: `x[3]` goes from 60.3 ns to 60.8 ns.
+**The cost of being there.** A call that reaches a hook and is not served costs 0.3 to 1.5 ns more than on plain NumPy: `x[3]` goes from 60.5 ns to 60.8 ns. Hooks that read keyword arguments cost a little more, and on calls that cost more: `np.clip(x, -0.5, None)`, which no kernel serves, goes from 1.03 µs to 1.04 µs.
 
 ## What the kernels do: timings as native functions
 

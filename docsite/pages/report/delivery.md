@@ -32,18 +32,17 @@ It turned out that everything can be reached, with five kinds of hook at five de
 ```mermaid Where the five hooks sit. A deeper hook is reached by more ways of writing the same operation and needs fewer checks, because NumPy has already done its own. A shallower hook can skip NumPy's fixed costs.
 flowchart TD
   code["Your code"]
-  code --> f["np.argmax(x), np.histogram(...), np.where(mask)"]
-  code --> m["x.astype(...), x.cumsum(), mask.nonzero()"]
+  code --> f["np.argmax(x), np.clip(x, lo, hi),<br/>np.histogram(...), np.where(mask)"]
+  code --> m["x.argmax(), x.clip(lo, hi),<br/>x.cumsum(), mask.nonzero()"]
   code --> i["x[mask], x[mask] = v"]
-  code --> c["np.clip(x, lo, hi), x.clip(lo, hi)"]
 
   f --> hf["<b>Function hook</b><br/>the call pointer inside<br/>the NumPy function object"]
   m --> hm["<b>Method hook</b><br/>the C function pointer in<br/>ndarray's method table"]
   i --> hi["<b>Indexing hook</b><br/>the two pointers behind a[i] and a[i] = v<br/>in ndarray's type"]
-  c --> wrap["NumPy's wrapper and<br/>ufunc machinery"]
-  wrap --> hl["<b>Inner-loop hook</b><br/>the ufunc's loop for one element type"]
-  hf -.->|"where no kernel applies"| inner["NumPy's own C code"]
+  hf -.->|"where no kernel applies"| inner["NumPy's own code"]
   hm -.-> inner
+  inner --> wrap["the clip ufunc's<br/>machinery"]
+  wrap --> hl["<b>Inner-loop hook</b><br/>the ufunc's loop for one element type"]
   inner --> hs["<b>Type-slot hook</b><br/>the argmax / argmin routine<br/>an element type carries"]
 
   class hf,hm,hi,hl,hs hot
@@ -59,7 +58,7 @@ flowchart TD
 
 The honest reading of the last column: one hook is sanctioned, one is a grey area, and three reach into NumPy's objects in ways NumPy never invited. With the two sanctioned-or-nearly hooks alone, 3 of the 15 operations could be served. The project decided to use all five, and built the defences described below to make that safe.
 
-The rule for choosing is: **use the deepest hook that exists for an operation**, because it is reached by the most spellings and arrives after NumPy has already validated everything; **add the function hook on top where the fixed cost of the call is worth removing**.
+The rule for choosing is: **use the deepest hook that exists for an operation**, because it is reached by the most spellings and arrives after NumPy has already validated everything; **add the function or method hook on top where the fixed cost of the call is worth removing**.
 
 The syntax and its function forms meet different hooks. `x[mask]` and `x[mask] = v` reach the indexing hook; `np.compress(mask, x)`, `np.extract(mask, x)`, `np.putmask(x, mask, v)` and `np.copyto(x, v, where=mask)` are function objects, and each has a function hook in front of the same kernel. `np.where(mask)` needs one too: it calls NumPy's C code for `nonzero` directly and never reaches the method `np.nonzero` calls. The function forms flatten their arrays, so they take a contiguous `x` of any shape where the syntax takes one dimension.
 
@@ -108,16 +107,18 @@ The indexing hook sits on *every* index operation on *every* array in the proces
 
 ## The other fixed cost: NumPy's own
 
-A deep hook delivers the kernel but does nothing about what happens above it. Through the type slot alone, `np.argmax` on 16 elements still costs about 560 ns, nearly all of it NumPy's Python-level wrapper. That is why `argmax` has two hooks: the type slot for everything, and the function hook, which can answer a simple call before the wrapper runs.
+A deep hook delivers the kernel but does nothing about what happens above it. Through the type slot alone, `np.argmax` on 16 elements still costs about 560 ns, nearly all of it NumPy's Python-level wrapper. That is why `argmax` has three hooks: the type slot for everything, and the function and method hooks, which can answer a simple call before the wrapper runs.
 
 | `np.argmax(x)`, 16 float32 elements | Time |
 |---|---|
-| Plain NumPy | 526 ns |
-| With hotkernels | 36.7 ns |
+| Plain NumPy | 527 ns |
+| With hotkernels | 37.0 ns |
 
-A 14x speedup on 16 elements has almost nothing to do with assembly: the loop is 2 ns either way. It is the wrapper being skipped. The same effect makes `np.sum` on 16 bytes 33x faster. `np.clip`, whose kernel sits beneath the wrapper, gains nothing at 16 elements (1.00x) and 11x at a million.
+A 14x speedup on 16 elements has almost nothing to do with assembly: the loop is 2 ns either way. It is the wrapper being skipped. The same effect makes `np.sum` on 16 bytes 32x faster.
 
-There is a mirror-image case. The type slot must take the interpreter lock (see below), which costs about 40 ns per call, more than the kernel saves on a short array. So that hook leaves runs under 128 elements to NumPy. Where a hook cannot win, it stands aside: the exit criterion was that no entry point is slower than NumPy at any size measured.
+`np.clip` shows both halves. Its kernel was first reached only through the clip ufunc's inner loop, beneath `np.clip`'s Python wrapper, `x.clip`, NumPy's `_methods._clip` and the ufunc machinery: on 16 elements it gained nothing (1.00x), at a million elements 5x to 11x. A function hook on `np.clip` and a method hook on `x.clip` now call the kernel before any of that runs, and 16 elements take 120 ns instead of 1.2 µs. They take only the calls whose result they can reproduce without the machinery: bounds that are plain numbers, or NumPy scalars of the array's own type, so that the result keeps the element type NumPy would give it, and no `out`. Anything else goes on to the ufunc, where the loop hook still serves it.
+
+There is a mirror-image case. The type slot must take the interpreter lock (see below), which costs about 40 ns per call, more than the kernel saves on a short array. So that hook leaves runs under 128 elements to NumPy. A method already holds the lock, so `x.argmax()` on a short contiguous array is served by the method hook instead: 55 ns against NumPy's 172 ns at 16 elements. Where a hook cannot win, it stands aside: the exit criterion was that no entry point is slower than NumPy at any size measured.
 
 ## Scratch output and the cost of allocation
 
@@ -220,7 +221,7 @@ The judge proves a kernel right as a native function. It says nothing about the 
 | Spellings | Positional, keyword, `out=`, `axis=`, method and function forms |
 | Values | The judge's value classes: NaN, infinities, signed zeros, ties |
 
-That is **85,602 calls over the 15 hooked operations**, and all agree.
+That is **96,734 calls over the 15 hooked operations**, and all agree.
 
 **Each case also states whether a kernel should have run**, and the counters are checked against it. Without that, a check that quietly stopped matching would pass every comparison, since NumPy's fallback is always right, while delivering nothing.
 

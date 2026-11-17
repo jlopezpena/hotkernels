@@ -258,7 +258,12 @@ INSTALLATION = "install and uninstall"
 # NumPy objects whose identity must survive install() and uninstall().
 _HOOKED_OBJECTS = ("argmax", "argmin", "count_nonzero", "sum", "histogram", "bincount", "isin", "interp", "clip",
                    "compress", "extract", "putmask", "copyto", "where")
-_HOOKED_METHODS = ("astype", "sum", "nonzero", "cumsum", "searchsorted")
+_HOOKED_METHODS = ("astype", "sum", "nonzero", "cumsum", "searchsorted", "argmax", "argmin", "clip")
+# The hooks behind the clip ufunc's loop, which also take every call the
+# function and method hooks of clip take.
+_CLIP_LOOP_HOOKS = ("loop.clip.f32", "loop.clip.f64")
+# Element count of the arrays the check of clip's direct path clips.
+_DIRECT_CLIP_N = 16
 
 
 def _numpy_objects() -> list[object]:
@@ -277,6 +282,38 @@ def _exercise() -> None:
     mask = x > 500
     x.argmax(), np.clip(x, 0.0, 1.0), np.count_nonzero(x), x.astype(np.uint8).sum(), x[mask]
     x[mask] = 0.0
+
+
+def _clip_direct_path(binding) -> bool:
+    """Say whether `np.clip` and `x.clip` reach the clip kernels without the clip loop.
+
+    The loop hook takes every call the function and method hooks take, so
+    the kernel counters cannot tell which ran. With the loop hooks removed
+    for the moment, only the direct path can move them.
+
+    Args:
+        binding: The extension module, with hotkernels installed.
+
+    Returns:
+        True when each of the four calls, `np.clip` and `x.clip` on float32
+        and on float64, moved its kernel's counter and gave NumPy's answer.
+    """
+    for hook in _CLIP_LOOP_HOOKS:
+        binding.remove(hook)
+    try:
+        served = []
+        for dtype, kernel in ((np.float32, "clip_f32"), (np.float64, "clip_f64")):
+            x = np.linspace(-1.0, 1.0, _DIRECT_CLIP_N, dtype=dtype)
+            expected = np.minimum(np.maximum(x, dtype(-0.5)), dtype(0.5))
+            for clip in (np.clip, np.ndarray.clip):
+                before = binding.counters()[0][kernel]
+                result = clip(x, -0.5, 0.5)
+                right = result.dtype == dtype and np.array_equal(result, expected)
+                served.append(right and binding.counters()[0][kernel] == before + 1)
+        return all(served)
+    finally:
+        for hook in _CLIP_LOOP_HOOKS:
+            binding.apply(hook)
 
 
 def installation_checks() -> Summary:
@@ -302,6 +339,7 @@ def installation_checks() -> Summary:
     checks.append(("a second install() does not reset the counters", _kernel_calls(binding) == calls))
     checks.append(("report() counts the calls", sum(k.calls for k in hotkernels.report().kernels) == calls))
     checks.append(("report() renders when installed", "installed" in str(hotkernels.report())))
+    checks.append(("np.clip and x.clip reach the kernels without the clip loop", _clip_direct_path(binding)))
     np.cumsum(np.ones(1000))
     checks.append(("float cumsum is left to NumPy by install()", binding.counters()[0]["cumsum_f64"] == 0))
     with hotkernels.enabled():

@@ -48,9 +48,6 @@ VALUE_SIZES = (1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 127, 1
 LAYOUT_SIZES = (16, 1000, 20000)
 # A few sizes for sweeps that multiply by many scalar values.
 FEW_SIZES = (1, 16, 100, 1000, 8193)
-# Element count below which the type slot leaves argmax to NumPy. Mirrors
-# HK_SLOT_MIN_N in the binding.
-SLOT_MIN_N = 128
 # Columns of the two-dimensional layouts.
 COLUMNS = 2
 # Bytes other than 1 that a boolean array can hold for True. NumPy accepts
@@ -134,6 +131,10 @@ class Spelling:
     normalises: bool = False
     # Whether a contiguous array of two or more dimensions is taken too.
     any_shape: bool = True
+    # Whether the sweep over every value class at every size runs this
+    # spelling. False for a spelling that reaches the same code as another
+    # one after its arguments are read, which the layouts still cover.
+    sweep_values: bool = True
 
 
 class _Subclass(np.ndarray):
@@ -321,7 +322,7 @@ def unary_cases(operation: str, kernels: dict[str, str], neighbours: tuple[str, 
     for dtype, kernel in kernels.items():
         within = spec(kernel) if tolerance else None
         for spelling in spellings:
-            if spelling.kind != TAKES:
+            if spelling.kind != TAKES or not spelling.sweep_values:
                 continue
             for n, cls, label, maker in value_arrays(dtype):
                 expect = expectation(kernel, spelling, CONTIGUOUS, n)
@@ -406,27 +407,51 @@ def argext_cases(name: str) -> Iterator[Case]:
         name: "argmax" or "argmin".
 
     Yields:
-        The cases. The function hook takes a plain array of any size; the
-        type slot behind every other spelling takes runs from SLOT_MIN_N
-        elements, and NumPy may copy an array into shape before the slot
-        sees it.
+        The cases. The function hook takes `np.argmax(x)` and the method hook
+        `x.argmax()` and its spellings with every argument None, on a plain
+        array of any size; NumPy's wrapper sends `np.argmax(x, axis=None)`
+        to the method. The type slot behind every other spelling takes runs
+        from 128 elements (HK_SLOT_MIN_N in the binding), and NumPy may
+        copy an array into shape before the slot sees it.
     """
     function, nan_function = getattr(np, name), getattr(np, f"nan{name}")
+
+    def method(*args, **kwargs) -> Callable[[object], object]:
+        """Return a call of the method on its one argument, with these arguments.
+
+        Args:
+            *args: Positional arguments of the method call.
+            **kwargs: Keyword arguments of the method call.
+
+        Returns:
+            A function of the array that makes the call.
+        """
+        return lambda x: getattr(x, name)(*args, **kwargs)
+
     spellings = (
         Spelling(f"np.{name}(x)", function, normalises=True),
-        Spelling(f"x.{name}()", lambda x: getattr(x, name)(), min_n=SLOT_MIN_N, normalises=True),
+        Spelling(f"x.{name}()", method(), normalises=True),
+        Spelling(f"x.{name}(None)", method(None), normalises=True, sweep_values=False),
+        Spelling(f"x.{name}(axis=None, out=None)", method(axis=None, out=None), normalises=True, sweep_values=False),
+        Spelling(f"np.{name}(x, axis=None)", lambda x: function(x, axis=None), normalises=True, sweep_values=False),
+        Spelling(f"np.{name}(a=x)", lambda x: function(a=x), normalises=True, sweep_values=False),
         Spelling(f"np.{name}(x, axis=0)", lambda x: function(x, axis=0), MAYBE),
         Spelling(f"np.{name}(x, axis=-1)", lambda x: function(x, axis=-1), MAYBE),
-        Spelling(f"np.{name}(a=x)", lambda x: function(a=x), MAYBE),
+        Spelling(f"x.{name}(0)", method(0), MAYBE),
         Spelling(f"np.{name}(x, keepdims=True)", lambda x: function(x, keepdims=True), MAYBE),
+        Spelling(f"x.{name}(keepdims=True)", method(keepdims=True), MAYBE),
+        Spelling(f"x.{name}(keepdims=False)", method(keepdims=False), MAYBE),
         Spelling(f"np.{name}(x, out=o)", lambda x: function(x, out=np.empty((), np.intp)), MAYBE),
+        Spelling(f"x.{name}(out=o)", lambda x: getattr(x, name)(out=np.empty((), np.intp)), MAYBE),
         Spelling(f"np.nan{name}(x)", nan_function, MAYBE),
+        Spelling(f"x.{name}(bogus=1)", method(bogus=1), NEVER),
+        Spelling(f"x.{name}(None, None, None, None)", method(None, None, None, None), NEVER),
     )
     kernels = {"f32": f"{name}_f32", "f64": f"{name}_f64"}
     # NumPy raises on an empty array, so no kernel takes one.
     yield from unary_cases(name, kernels, ("i64", "i32", "u8"), spellings, empty_takes=False)
     yield from unusual_nan_cases(name, kernels, f"np.{name}(x)", function)
-    yield from unusual_nan_cases(name, kernels, f"x.{name}()", spellings[1].call, SLOT_MIN_N)
+    yield from unusual_nan_cases(name, kernels, f"x.{name}()", spellings[1].call)
 
 
 # Layouts NumPy passes to the clip loop as they are, so that an in-place
@@ -447,18 +472,83 @@ def _clip_in_place(x, lo, hi):
     return np.clip(x, lo, hi, out=x)
 
 
+def _clip_method_in_place(x, lo, hi):
+    """Clip `x` into itself with the method and return it."""
+    return x.clip(lo, hi, out=x)
+
+
 def _clip_into_fresh(x, lo, hi):
     """Clip `x` into a new array passed as `out`."""
     return np.clip(x, lo, hi, out=np.empty_like(x))
 
 
+def _clip_where(x, lo, hi):
+    """Clip `x` into an array of zeros where `x` is positive, and return that array."""
+    return np.clip(x, lo, hi, out=np.zeros_like(x), where=np.greater(x, 0))
+
+
+# Bounds a float32 array cannot hold exactly, which NumPy rounds to float32.
+CLIP_ROUNDED = (0.1, 0.9)
+# Python ints as bounds, which NumPy converts to the array's element type.
+CLIP_INTS = (-1, 1)
+# A lower bound above the upper one as doubles that rounds to the same
+# float32: reversed for a float64 array, equal bounds for a float32 one.
+CLIP_EQUAL_IN_F32 = (0.1 + 1e-9, 0.1)
+# A Python int a float32 cannot hold, one beyond what a double holds exactly,
+# and one beyond the range of a float32. NumPy rounds all three, and warns
+# for the last on a float32 array.
+CLIP_INT_NOT_F32, CLIP_INT_NOT_F64, CLIP_INT_TOO_LARGE = 2**24 + 1, 2**60, 2**200
+
+
+def _clip_bound_cases(dtype: str, kernel: str, default: tuple[str, float, float]) -> Iterator[Case]:
+    """Yield the sweep over values for bounds of each kind NumPy converts.
+
+    Args:
+        dtype: "f32" or "f64".
+        kernel: The array's clip kernel.
+        default: The spec's default set, as (name, lo, hi).
+
+    Yields:
+        One case per value class at FEW_SIZES for each kind of bound: the
+        method with the default bounds, Python floats a float32 cannot hold,
+        Python ints, NumPy scalars of the array's type, and, for float32,
+        bounds that are reversed as doubles and equal as float32. For float64
+        the same bounds are reversed, and no kernel may take the call.
+    """
+    scalar = np_dtype(dtype).type
+    same_type = (scalar(default[1]), scalar(default[2]))
+    for _, _, label, maker in value_arrays(dtype, FEW_SIZES):
+        yield Case("clip", f"x.clip(lo, hi) {dtype} {label}", partial(_made, maker),
+                   partial(_clip_method, default[1], default[2]), kernel)
+        for lo, hi in (CLIP_ROUNDED, CLIP_INTS, same_type):
+            yield Case("clip", f"np.clip(x, {lo!r}, {hi!r}) {dtype} {label}", partial(_made, maker),
+                       partial(_clip3, np.clip, lo, hi), kernel)
+        lo, hi = CLIP_EQUAL_IN_F32
+        if dtype == "f32":
+            yield Case("clip", f"np.clip(x, {lo!r}, {hi!r}) {dtype} {label}", partial(_made, maker),
+                       partial(_clip3, np.clip, lo, hi), kernel)
+    # Reversed for float64. Built from plain random values: the makers of
+    # some value classes call np.clip themselves, which a kernel takes.
+    if dtype == "f64":
+        lo, hi = CLIP_EQUAL_IN_F32
+        for n in FEW_SIZES:
+            yield Case("clip", f"np.clip(x, {lo!r}, {hi!r}) {dtype} n={n}", partial(_built, dtype, n, CONTIGUOUS),
+                       partial(_clip3, np.clip, lo, hi), None)
+
+
 def clip_cases() -> Iterator[Case]:
     """Yield the cases of `clip`.
 
-    The kernels take contiguous data with scalar bounds, lo <= hi, when the
-    output is not the input. NumPy buffers arrays that are misaligned or in
-    the other byte order and hands the loop contiguous chunks, so those may
-    reach the kernel too.
+    Three hooks serve clip. The function hook on `np.clip` and the method
+    hook on `x.clip` call the kernel directly for a contiguous float32 or
+    float64 array with no `out` and two bounds that keep the result in the
+    array's element type (Python floats and ints, NumPy scalars of the
+    array's type), lo <= hi. Every other call goes on to the `clip` ufunc,
+    whose loop hook takes contiguous data with scalar bounds, lo <= hi, when
+    the output is not the input. NumPy buffers arrays that are misaligned or
+    in the other byte order and hands the loop contiguous chunks, so those
+    may reach the kernel too. The counters do not say which of the hooks took
+    a call; `installation_checks` proves the direct path on its own.
     """
     kernels = {"f32": "clip_f32", "f64": "clip_f64"}
     for dtype, kernel in kernels.items():
@@ -468,25 +558,69 @@ def clip_cases() -> Iterator[Case]:
             for _, _, label, maker in value_arrays(dtype, sizes):
                 yield Case("clip", f"np.clip(x, {lo!r}, {hi!r}) {dtype} {label}", partial(_made, maker),
                            partial(_clip3, np.clip, lo, hi), kernel)
-        for _, _, label, maker in value_arrays(dtype, FEW_SIZES):
-            yield Case("clip", f"x.clip(lo, hi) {dtype} {label}", partial(_made, maker),
-                       partial(_clip_method, default[1], default[2]), kernel)
+        yield from _clip_bound_cases(dtype, kernel, default)
     yield from unusual_nan_cases("clip", kernels, "np.clip(x, -0.5, 0.5)", partial(_clip3, np.clip, -0.5, 0.5))
     yield from unusual_nan_cases("clip", kernels, "np.clip(x, 0.0, 1.0)", partial(_clip3, np.clip, 0.0, 1.0))
-    lo, hi = -0.5, 0.5
+    yield from unusual_nan_cases("clip", kernels, "x.clip(-0.5, 0.5)", partial(_clip_method, -0.5, 0.5))
+    lo, hi, nan = -0.5, 0.5, float("nan")
     spellings = (
         Spelling("np.clip(x, lo, hi)", partial(_clip3, np.clip, lo, hi), normalises=True),
         Spelling("x.clip(lo, hi)", partial(_clip_method, lo, hi), normalises=True),
-        Spelling("np.clip(x, lo, hi, out=fresh)", lambda x: _clip_into_fresh(x, lo, hi), normalises=True),
         Spelling("np.clip(x, min=lo, max=hi)", lambda x: np.clip(x, min=lo, max=hi), normalises=True),
+        Spelling("np.clip(x, max=hi, min=lo)", lambda x: np.clip(x, max=hi, min=lo), normalises=True),
+        Spelling("np.clip(x, a_min=lo, a_max=hi)", lambda x: np.clip(x, a_min=lo, a_max=hi), normalises=True),
+        Spelling("np.clip(a=x, a_min=lo, a_max=hi)", lambda x: np.clip(a=x, a_min=lo, a_max=hi), normalises=True),
+        Spelling("np.clip(x, lo, hi, None)", lambda x: np.clip(x, lo, hi, None), normalises=True),
+        Spelling("np.clip(x, lo, hi, out=None)", lambda x: np.clip(x, lo, hi, out=None), normalises=True),
+        Spelling("x.clip(min=lo, max=hi)", lambda x: x.clip(min=lo, max=hi), normalises=True),
+        Spelling("x.clip(lo, hi, None)", lambda x: x.clip(lo, hi, None), normalises=True),
+        Spelling("x.clip(lo, hi, out=None)", lambda x: x.clip(lo, hi, out=None), normalises=True),
+        Spelling("np.clip(x, -1, 1)", lambda x: np.clip(x, -1, 1), normalises=True),
+        Spelling("np.clip(x, 0.1, 0.9)", lambda x: np.clip(x, 0.1, 0.9), normalises=True),
+        Spelling("np.clip(x, -inf, inf)", lambda x: np.clip(x, -np.inf, np.inf), normalises=True),
+        Spelling("np.clip(x, lo, inf)", lambda x: np.clip(x, lo, np.inf), normalises=True),
+        Spelling("np.clip(x, -1e300, 1e300)", lambda x: np.clip(x, -1e300, 1e300), normalises=True),
+        Spelling("np.clip(x, -1e-300, 1e-300)", lambda x: np.clip(x, -1e-300, 1e-300), normalises=True),
+        Spelling("np.clip(x, -1e-40, 1e-40)", lambda x: np.clip(x, -1e-40, 1e-40), normalises=True),
+        Spelling("np.clip(x, 2**24 + 1, 2**25 + 2)", lambda x: np.clip(x, CLIP_INT_NOT_F32, 2 * CLIP_INT_NOT_F32), normalises=True),
+        Spelling("np.clip(x, -2**60, 2**60)", lambda x: np.clip(x, -CLIP_INT_NOT_F64, CLIP_INT_NOT_F64), normalises=True),
+        Spelling("np.clip(x, -2**200, 2**200)", lambda x: np.clip(x, -CLIP_INT_TOO_LARGE, CLIP_INT_TOO_LARGE), normalises=True),
+        Spelling("np.clip(x, False, True)", lambda x: np.clip(x, False, True), normalises=True),
+        Spelling("np.clip(x, np.float32(lo), np.float32(hi))", lambda x: np.clip(x, np.float32(lo), np.float32(hi)), normalises=True),
+        Spelling("np.clip(x, lo, np.float32(hi))", lambda x: np.clip(x, lo, np.float32(hi)), normalises=True),
+        Spelling("x.clip(np.float32(lo), np.float32(hi))", lambda x: x.clip(np.float32(lo), np.float32(hi)), normalises=True),
+        Spelling("np.clip(x, lo, hi, out=fresh)", lambda x: _clip_into_fresh(x, lo, hi), normalises=True),
         Spelling("np.clip(x, np.float64(lo), np.float64(hi))", lambda x: np.clip(x, np.float64(lo), np.float64(hi)), MAYBE),
-        Spelling("np.clip(x, lo, hi, out=x)", lambda x: _clip_in_place(x, lo, hi), NEVER, normalises=True),
+        Spelling("np.clip(x, lo, np.float64(hi))", lambda x: np.clip(x, lo, np.float64(hi)), MAYBE),
+        Spelling("x.clip(np.float64(lo), np.float64(hi))", lambda x: x.clip(np.float64(lo), np.float64(hi)), MAYBE),
+        Spelling("np.clip(x, np.array(lo), np.array(hi))", lambda x: np.clip(x, np.array(lo), np.array(hi)), MAYBE),
         Spelling("np.clip(x, lo_array, hi_array)", lambda x: np.clip(x, np.full(np.shape(x), lo), np.full(np.shape(x), hi)), MAYBE),
+        Spelling("np.clip(x, lo, hi, dtype=np.float64)", lambda x: np.clip(x, lo, hi, dtype=np.float64), MAYBE),
+        Spelling("np.clip(x, lo, hi, casting='unsafe')", lambda x: np.clip(x, lo, hi, casting="unsafe"), MAYBE),
+        Spelling("np.clip(x, lo, hi, out=zeros, where=x > 0)", lambda x: _clip_where(x, lo, hi), MAYBE),
+        Spelling("x.clip(lo, hi, order='F')", lambda x: x.clip(lo, hi, order="F"), MAYBE),
+        Spelling("np.clip(x, lo, hi, out=x)", lambda x: _clip_in_place(x, lo, hi), NEVER, normalises=True),
+        Spelling("x.clip(lo, hi, out=x)", lambda x: _clip_method_in_place(x, lo, hi), NEVER, normalises=True),
         Spelling("np.clip(x, lo, None)", lambda x: np.clip(x, lo, None), NEVER),
         Spelling("np.clip(x, None, hi)", lambda x: np.clip(x, None, hi), NEVER),
+        Spelling("np.clip(x, min=lo)", lambda x: np.clip(x, min=lo), NEVER),
+        Spelling("np.clip(x, max=hi)", lambda x: np.clip(x, max=hi), NEVER),
+        Spelling("np.clip(x, lo)", lambda x: np.clip(x, lo), NEVER),
+        Spelling("np.clip(x, a_min=lo, max=hi)", lambda x: np.clip(x, a_min=lo, max=hi), NEVER),
+        Spelling("np.clip(x, lo, hi, min=lo)", lambda x: np.clip(x, lo, hi, min=lo), NEVER),
+        Spelling("np.clip(x, lo, hi, bogus=1)", lambda x: np.clip(x, lo, hi, bogus=1), NEVER),
+        Spelling("np.clip(x, lo, hi, None, None)", lambda x: np.clip(x, lo, hi, None, None), NEVER),
+        Spelling("x.clip(lo)", lambda x: x.clip(lo), NEVER),
+        Spelling("x.clip(max=hi)", lambda x: x.clip(max=hi), NEVER),
+        Spelling("x.clip()", lambda x: x.clip(), NEVER),
+        Spelling("x.clip(lo, hi, None, None)", lambda x: x.clip(lo, hi, None, None), NEVER),
+        Spelling("x.clip(a_min=lo, a_max=hi)", lambda x: x.clip(a_min=lo, a_max=hi), NEVER),
         Spelling("np.clip(x, hi, lo) reversed", lambda x: np.clip(x, hi, lo), NEVER),
-        Spelling("np.clip(x, nan, hi)", lambda x: np.clip(x, float("nan"), hi), NEVER),
-        Spelling("np.clip(x, lo, nan)", lambda x: np.clip(x, lo, float("nan")), NEVER),
+        Spelling("x.clip(hi, lo) reversed", lambda x: x.clip(hi, lo), NEVER),
+        Spelling("np.clip(x, nan, hi)", lambda x: np.clip(x, nan, hi), NEVER),
+        Spelling("np.clip(x, lo, nan)", lambda x: np.clip(x, lo, nan), NEVER),
+        Spelling("x.clip(nan, hi)", lambda x: x.clip(nan, hi), NEVER),
+        Spelling("np.clip(x, np.float32(nan), np.float32(hi))", lambda x: np.clip(x, np.float32(nan), np.float32(hi)), NEVER),
     )
     for dtype in ("f32", "f64", "i64"):
         kernel = kernels.get(dtype)

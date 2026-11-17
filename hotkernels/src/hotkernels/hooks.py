@@ -134,10 +134,51 @@ def _argext_function(dtype: type, function: Callable, value: float) -> bool:
     return int(function(_marked(dtype, SMALL_PROBE_N, SMALL_PROBE_INDEX, value))) == SMALL_PROBE_INDEX
 
 
-def _clip(dtype: type) -> bool:
-    """Probe the clip loop: values from -1 to 1 clamped to the probe bounds."""
+def _argext_small_method(dtype: type, method: str, value: float) -> bool:
+    """Probe the method hook: `x.argmax()` or `x.argmin()` on a short array.
+
+    The array is shorter than the type slot serves, so only the method hook
+    can have taken the call.
+
+    Args:
+        dtype: Element type of the probe array.
+        method: "argmax" or "argmin".
+        value: The one non-zero element: positive for argmax, negative for argmin.
+
+    Returns:
+        Whether the method found the marked element.
+    """
+    x = _marked(dtype, SMALL_PROBE_N, SMALL_PROBE_INDEX, value)
+    return int(getattr(x, method)()) == SMALL_PROBE_INDEX
+
+
+def _clip_with(dtype: type, clip: Callable[[np.ndarray, float, float], np.ndarray]) -> bool:
+    """Probe a clip hook: values from -1 to 1 clamped to the probe bounds.
+
+    The loop hook takes every call the function and method hooks take, so
+    the probe of those two proves that the result is right and that a clip
+    kernel ran, not which hook ran it.
+
+    Args:
+        dtype: Element type of the probe array.
+        clip: Clips its first argument to the bounds given by the other two.
+
+    Returns:
+        Whether the result has the array's element type and the right values.
+    """
     x = np.linspace(-1.0, 1.0, PROBE_N).astype(dtype)
-    return bool(np.array_equal(np.clip(x, PROBE_LO, PROBE_HI), np.minimum(np.maximum(x, PROBE_LO), PROBE_HI)))
+    result = clip(x, PROBE_LO, PROBE_HI)
+    return result.dtype == dtype and bool(np.array_equal(result, np.minimum(np.maximum(x, PROBE_LO), PROBE_HI)))
+
+
+def _clip_method(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Return `x.clip(lo, hi)`."""
+    return x.clip(lo, hi)
+
+
+def _clip(dtype: type) -> bool:
+    """Probe the clip loop or the function hook: `np.clip(x, lo, hi)`."""
+    return _clip_with(dtype, np.clip)
 
 
 def _stride_mask() -> np.ndarray:
@@ -327,6 +368,10 @@ HOOKS: tuple[Hook, ...] = (
     Hook("function.putmask", FUNCTION, (Probe("maskfill_f64", partial(_maskfill, _putmask)),)),
     Hook("function.copyto", FUNCTION, (Probe("maskfill_f64", partial(_maskfill, _copyto)),)),
     Hook("function.where", FUNCTION, (Probe("nonzero_bool", partial(_nonzero, np.where)),)),
+    Hook("function.clip", FUNCTION, (
+        Probe("clip_f32", partial(_clip, np.float32)),
+        Probe("clip_f64", partial(_clip, np.float64)),
+    )),
     Hook("method.astype", METHOD, (Probe("cast_u8_f32", _astype),)),
     Hook("method.sum", METHOD, (Probe("sum_u8", _sum_method),)),
     Hook("method.nonzero", METHOD, (Probe("nonzero_bool", partial(_nonzero, _nonzero_method)),)),
@@ -338,6 +383,18 @@ HOOKS: tuple[Hook, ...] = (
     Hook("method.searchsorted", METHOD, (
         Probe("searchsorted_f64", _searchsorted),
         Probe("searchsorted_right_f64", _searchsorted_right),
+    )),
+    Hook("method.argmax", METHOD, (
+        Probe("argmax_f32", partial(_argext_small_method, np.float32, "argmax", 1.0)),
+        Probe("argmax_f64", partial(_argext_small_method, np.float64, "argmax", 1.0)),
+    )),
+    Hook("method.argmin", METHOD, (
+        Probe("argmin_f32", partial(_argext_small_method, np.float32, "argmin", -1.0)),
+        Probe("argmin_f64", partial(_argext_small_method, np.float64, "argmin", -1.0)),
+    )),
+    Hook("method.clip", METHOD, (
+        Probe("clip_f32", partial(_clip_with, np.float32, _clip_method)),
+        Probe("clip_f64", partial(_clip_with, np.float64, _clip_method)),
     )),
     Hook("index.get", INDEXING, (
         Probe("compress_f32", partial(_compress, np.float32)),
@@ -352,12 +409,12 @@ COMPRESS_HOOKS = ("index.get", "function.compress", "function.extract")
 # Every kernel, in the order the report lists them. Kernels of one operation
 # are adjacent.
 KERNELS: tuple[KernelInfo, ...] = (
-    KernelInfo("argmax_f32", "np.argmax", "float32", "argmax", ("slot.argmax.f32", "function.argmax")),
-    KernelInfo("argmax_f64", "np.argmax", "float64", "argmax", ("slot.argmax.f64", "function.argmax")),
-    KernelInfo("argmin_f32", "np.argmin", "float32", "argmin", ("slot.argmin.f32", "function.argmin")),
-    KernelInfo("argmin_f64", "np.argmin", "float64", "argmin", ("slot.argmin.f64", "function.argmin")),
-    KernelInfo("clip_f32", "np.clip", "float32", "clip", ("loop.clip.f32",)),
-    KernelInfo("clip_f64", "np.clip", "float64", "clip", ("loop.clip.f64",)),
+    KernelInfo("argmax_f32", "np.argmax", "float32", "argmax", ("slot.argmax.f32", "function.argmax", "method.argmax")),
+    KernelInfo("argmax_f64", "np.argmax", "float64", "argmax", ("slot.argmax.f64", "function.argmax", "method.argmax")),
+    KernelInfo("argmin_f32", "np.argmin", "float32", "argmin", ("slot.argmin.f32", "function.argmin", "method.argmin")),
+    KernelInfo("argmin_f64", "np.argmin", "float64", "argmin", ("slot.argmin.f64", "function.argmin", "method.argmin")),
+    KernelInfo("clip_f32", "np.clip", "float32", "clip", ("loop.clip.f32", "function.clip", "method.clip")),
+    KernelInfo("clip_f64", "np.clip", "float64", "clip", ("loop.clip.f64", "function.clip", "method.clip")),
     KernelInfo("compress_f32", "x[mask]", "float32", "compress", COMPRESS_HOOKS),
     KernelInfo("compress_f64", "x[mask]", "float64", "compress", COMPRESS_HOOKS),
     KernelInfo("maskfill_f64", "x[mask] = v", "float64", "maskfill", ("index.set", "function.putmask", "function.copyto")),

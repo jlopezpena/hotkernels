@@ -23,6 +23,7 @@
 #include <numpy/ufuncobject.h>
 
 #include <fenv.h>
+#include <float.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -210,6 +211,15 @@ static inline bool hk_as_exact_double(PyObject *obj, double *out) {
 PyObject *hk_try_sum(PyObject *array);
 PyObject *hk_try_argext(PyObject *array, bool want_max);
 
+// The array NumPy's clip returns for `array` clamped to the bounds `lo` and
+// `hi`, as given by the caller: the clip kernels, on a new array. `array` is
+// contiguous float32 or float64 with at least one element; each bound is an
+// object that leaves the result in the array's element type and converts to
+// it exactly as NumPy converts it, with lo <= hi after the conversion. A
+// caller whose NumPy operation needs more, such as no `out`, tests that
+// first. In hook_function.c.
+PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi);
+
 // The elements of `x` where `mask` is True, as a new one-dimensional array:
 // the compress kernels. `x` is contiguous float32 or float64 and `mask` a
 // contiguous boolean array of the same size, each of any shape; both are
@@ -253,11 +263,18 @@ bool hk_bind_arguments(PyObject *const *args, Py_ssize_t nargs, PyObject *kwname
 // Keyword names and short option strings are compact ASCII objects, whose
 // characters can be compared in place: this runs on every call that reaches a
 // hook with keywords, where a library call per comparison is most of what a
-// call left to NumPy costs.
+// call left to NumPy costs. The bytes are compared in a loop of its own for
+// the same reason: a strlen and a memcmp per parameter name cost about 20 ns
+// on a call with one keyword, measured on `x.clip(lo, None, out=None)`.
 static inline bool hk_text_is(PyObject *text, const char *ascii) {
-    const size_t length = strlen(ascii);
-    return PyUnicode_IS_COMPACT_ASCII(text) && (size_t)PyUnicode_GET_LENGTH(text) == length &&
-           memcmp(PyUnicode_DATA(text), ascii, length) == 0;
+    if (!PyUnicode_IS_COMPACT_ASCII(text)) return false;
+    const char *data = (const char *)PyUnicode_DATA(text);
+    const Py_ssize_t length = PyUnicode_GET_LENGTH(text);
+    for (Py_ssize_t i = 0; i < length; i++) {
+        // `ascii` ends at its NUL, which no character of `text` may match.
+        if (ascii[i] == '\0' || ascii[i] != data[i]) return false;
+    }
+    return ascii[length] == '\0';
 }
 
 // True when an argument was not given or is None.

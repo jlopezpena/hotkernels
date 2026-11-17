@@ -19,7 +19,7 @@ Wheels are for macOS on Apple Silicon, CPython 3.11 to 3.14, with NumPy 2.3 or a
 
 ## What gets faster
 
-`np.argmax`, `np.argmin`, `np.clip`, `x[mask]` (and `np.compress`, `np.extract`), `x[mask] = v` (and `np.putmask`, `np.copyto(..., where=mask)`), `np.nonzero` (and `np.where(mask)`), `np.cumsum`, `x.astype(np.float32)` from `uint8`, `np.sum` on `uint8`, `np.count_nonzero`, `np.histogram`, `np.bincount`, `np.isin`, `np.searchsorted` (and `np.digitize`, which calls it) and `np.interp`, for the element types each kernel covers. At a million elements, from Python, `x[mask]` on `float32` is about 31x faster and `np.histogram` about 9x.
+`np.argmax`, `np.argmin`, `np.clip`, `x[mask]` (and `np.compress`, `np.extract`), `x[mask] = v` (and `np.putmask`, `np.copyto(..., where=mask)`), `np.nonzero` (and `np.where(mask)`), `np.cumsum`, `x.astype(np.float32)` from `uint8`, `np.sum` on `uint8`, `np.count_nonzero`, `np.histogram`, `np.bincount`, `np.isin`, `np.searchsorted` (and `np.digitize`, which calls it) and `np.interp`, for the element types each kernel covers. At a million elements, from Python, `x[mask]` on `float32` is about 31x faster and `np.histogram` about 9x. On small arrays most of a NumPy call is NumPy's own call path, which hotkernels skips where it can: on 16 elements `np.clip(x, -0.5, 0.5)` is about 10x faster, when its bounds are plain numbers and there is no `out`, and `np.argmax(x)` about 14x.
 
 ## Using it
 

@@ -66,32 +66,33 @@ The same machine, timing one Python statement from call to result, on plain NumP
 
 | Statement | Elements | 16 elements | 1,048,576 elements |
 |---|---|---|---|
-| `np.argmax(x)` | float32 | 14.1x | 8.98x |
-| `np.clip(x, -0.5, 0.5)` | float32 | 1.02x | 10.9x |
-| `np.clip(x, -0.5, 0.5)` | float64 | 1.00x | 4.80x |
-| `x[mask]`, half selected | float32 | 2.50x | 31.0x |
-| `x[mask]`, half selected | float64 | 2.55x | 16.2x |
-| `x[mask] = 0.0`, half selected | float64 | 5.27x | 20.4x |
-| `np.nonzero(mask)`, few selected | bool | 1.25x | 13.7x |
-| `np.cumsum(x)` | int64 | 1.98x | 13.8x |
-| `x.astype(np.float32)` | uint8 | 1.88x | 5.21x |
-| `np.sum(x)` | uint8 | 31.8x | 15.6x |
-| `np.count_nonzero(x)` | float64 | 3.54x | 3.57x |
-| `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.25x | 9.33x |
-| `np.bincount(x)` | uint8 | 2.26x | 6.85x |
-| `np.isin(x, eight_values)` | int64 | 74.0x | 18.9x |
-| `np.searchsorted(a, v)` | float64 | 1.54x | 8.83x |
-| `np.searchsorted(a, v, side='right')` | float64 | 1.43x | 8.28x |
+| `np.argmax(x)` | float32 | 14.2x | 8.89x |
+| `x.argmax()` | float32 | 3.11x | 8.87x |
+| `np.clip(x, -0.5, 0.5)` | float32 | 11.0x | 9.92x |
+| `np.clip(x, -0.5, 0.5)` | float64 | 9.76x | 4.93x |
+| `x[mask]`, half selected | float32 | 2.49x | 31.0x |
+| `x[mask]`, half selected | float64 | 2.54x | 15.9x |
+| `x[mask] = 0.0`, half selected | float64 | 5.24x | 20.3x |
+| `np.nonzero(mask)`, few selected | bool | 1.25x | 13.5x |
+| `np.cumsum(x)` | int64 | 1.95x | 12.7x |
+| `x.astype(np.float32)` | uint8 | 1.89x | 4.11x |
+| `np.sum(x)` | uint8 | 32.5x | 15.7x |
+| `np.count_nonzero(x)` | float64 | 3.59x | 3.74x |
+| `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.16x | 9.43x |
+| `np.bincount(x)` | uint8 | 2.32x | 6.66x |
+| `np.isin(x, eight_values)` | int64 | 71.2x | 18.8x |
+| `np.searchsorted(a, v)` | float64 | 1.51x | 8.57x |
+| `np.searchsorted(a, v, side='right')` | float64 | 1.46x | 9.16x |
 | `np.digitize(x, bins)`, 1,000 bin edges | float64 | 1.10x | 26.7x |
-| `np.interp(x, xp, fp)` | float64 | 5.61x | 25.7x |
+| `np.interp(x, xp, fp)` | float64 | 5.54x | 22.4x |
 
-At 16 elements most of the gain is NumPy's own call path being skipped, not the kernel. `np.clip` gains nothing there: its kernel sits beneath NumPy's Python wrapper, which is nearly all of a small call.
+At 16 elements most of the gain is NumPy's own call path being skipped, not the kernel. `np.clip(x, -0.5, 0.5)` on 16 elements takes 1.2 µs on plain NumPy, nearly all of it NumPy's Python wrapper and ufunc machinery, and about 120 ns with hotkernels, which calls the kernel before any of that runs when the bounds are plain numbers and there is no `out`.
 
-- **A call no kernel takes costs under a nanosecond more.** `x[3]` takes 60.3 ns on plain NumPy and 60.8 ns with hotkernels installed.
+- **A call no kernel takes costs under a nanosecond more**, or a percent or so where a hook has to read its arguments. `x[3]` takes 60.5 ns on plain NumPy and 60.8 ns with hotkernels installed; `np.clip(x, -0.5, None)` takes 1.03 µs and 1.04 µs.
 - **An unmodified program.** [examples/workload.py](examples/workload.py) uses eleven of these operations on two million elements. It runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
 - **`np.searchsorted` and `np.interp` are timed with as many needles as elements**, and `np.digitize` with 1,000 bin edges. With a sorted array of 1,000 elements and a million needles `np.searchsorted` is 27x faster on either side and `np.interp` 19x.
-- **Checked from Python.** 85,602 NumPy calls give the same result, exceptions and warnings with hotkernels as without, and NumPy's own test suite gives the same outcome for each of its 47,234 tests.
-- **Taken on a machine in use**, in one run that started at a load average of 3.8. The full table is in [delivery/results/apple-m1-pro.md](delivery/results/apple-m1-pro.md).
+- **Checked from Python.** 96,734 NumPy calls give the same result, exceptions and warnings with hotkernels as without, and NumPy's own test suite gives the same outcome for each of its 47,234 tests.
+- **Taken on a machine in use**, in one run that started at a load average of 2.0. The full table is in [delivery/results/apple-m1-pro.md](delivery/results/apple-m1-pro.md).
 
 ## What is here
 
