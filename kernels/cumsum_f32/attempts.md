@@ -166,3 +166,23 @@ as the judge does; naive C is 5.0 / 30 / 205 and attempt 2 is 2.9 / 19.4 /
   at 24, 0.212 / 0.162 at 32. A throughput choice: a caller whose next step
   waits for the result sees the chain's latency (up to 57 cycles for 19
   elements).
+
+## 6. Cheaper call overhead: one constant, a shorter chunk header, `umaxv` check
+
+- **Idea:** three small things outside the loop, which matter at 64 and 256
+  elements. (a) Build the -0.0 vector once with `movi` and copy it with two
+  register moves instead of three `movi`. (b) One instruction fewer in the
+  chunk header (`csel` straight into the chunk size, `subs` from it).
+  (c) End the check with `umaxv` over the four lanes of the sum of squares
+  and an integer test of the exponent (one vector operation and a move to a
+  general register) instead of two `faddp`, `fsub` and `fcmp` (four vector
+  operations). A finite sum of squares is +0.0 or more, so its bits as an
+  unsigned integer are below those of +inf, and the largest pattern has an
+  all-ones exponent exactly when some lane is infinite or NaN.
+- **check:** pass (18,136 cases)
+- **compare:** significantly faster, 1.003x [1.003 – 1.004]
+- **Kept:** yes (a marginal gain, but significant at most sizes)
+- **Notes:** 1.01x [1.01 – 1.02] at 64, 1.00x elsewhere with intervals that
+  exclude 1.0 at 256, 1,024, 16,384, 65,536 and from 1,048,576 up. In the
+  standalone timer: 0.1386 against 0.1404 ns per element at 64, 0.1268
+  against 0.1271 at 128, no difference from 256.

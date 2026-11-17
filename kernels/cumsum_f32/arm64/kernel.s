@@ -84,8 +84,8 @@ _cumsum_f32:
     ldr     w11, [x0]               // out[0] is stored from this at the end, as a copy
     mov     x7, x1
     movi    v16.4s, #0x80, lsl #24  // -0.0 in every lane: -0.0 + v is v for every v
-    movi    v17.4s, #0x80, lsl #24
-    movi    v23.4s, #0x80, lsl #24
+    mov     v17.16b, v16.16b
+    mov     v23.16b, v16.16b
 Lchunk:
     movi    v18.2d, #0
     movi    v19.2d, #0
@@ -93,10 +93,9 @@ Lchunk:
     movi    v21.2d, #0
     mov     x3, #CHUNK
     cmp     x2, x3
-    csel    x3, x2, x3, lo          // elements in this chunk
-    mov     x9, x3
-    sub     x2, x2, x3
-    subs    x3, x3, #32
+    csel    x9, x2, x3, lo          // elements in this chunk
+    sub     x2, x2, x9
+    subs    x3, x9, #32
     b.lo    Lrest
 Lmain:
     ldp     q0, q1, [x0]
@@ -233,11 +232,15 @@ Lcheck:
     fadd    v18.4s, v18.4s, v19.4s
     fadd    v20.4s, v20.4s, v21.4s
     fadd    v18.4s, v18.4s, v20.4s
-    faddp   v18.4s, v18.4s, v18.4s
-    faddp   s0, v18.2s              // sum of the squares of every output of the chunk
-    fsub    s0, s0, s0              // 0.0 if that is finite, NaN if not
-    fcmp    s0, s0
-    b.vs    Lredo
+    // The four lanes hold sums of squares: +0.0 or more, or infinite, or NaN.
+    // As unsigned integers the bits of a finite one are below those of +inf
+    // (0x7f800000) and those of an infinity or a NaN are not, so the largest
+    // bit pattern has an all-ones exponent exactly when some lane is not finite.
+    umaxv   s0, v18.4s
+    fmov    w10, s0
+    lsr     w10, w10, #23           // sign and exponent
+    cmp     w10, #0xff
+    b.hs    Lredo
     cbnz    x2, Lchunk
 Lfinish:
     str     w11, [x7]               // out[0] = x[0], bit for bit
