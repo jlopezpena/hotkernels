@@ -50,7 +50,7 @@ flowchart TD
   src["kernel.s"] --> lint["<b>Lint</b><br/>no calls, no system calls,<br/>no writable data,<br/>no reserved registers"]
   lint --> build["<b>Build</b><br/>assemble the kernel,<br/>compile naive.c"]
   build --> correct["<b>Correctness</b><br/>thousands of generated cases,<br/>each on guarded memory,<br/>against the NumPy oracle"]
-  correct --> time["<b>Timing</b><br/>30 interleaved samples per size,<br/>bootstrap interval"]
+  correct --> time["<b>Timing</b><br/>interleaved samples per size,<br/>bootstrap interval"]
   time --> verdict["significantly faster /<br/>no significant difference /<br/>significantly slower"]
   lint -.->|"fail"| stop["FAIL<br/>first failure only,<br/>with a command to rerun it"]
   build -.->|"fail"| stop
@@ -146,14 +146,14 @@ The judge's method is built around that problem.
 
 - **Everything is timed inside C.** The kernel and the naive reference are called in a loop through a function pointer, so the measurement is the loop and not the cost of getting there.
 - **Eleven sizes**, each four times the last, from 16 elements to 16,777,216: from data that fits in the fastest cache to data far larger than any.
-- **Calibrated repeats.** For each size the repeat count is set so that one sample takes at least 10 ms.
-- **Thirty samples per contender per size.**
+- **Calibrated repeats.** For each size the repeat count is set so that one sample takes at least 1 ms.
+- **Three hundred samples per contender per size**, fewer where a single call is longer than a sample. The figures in this report were taken with the earlier setting, 30 samples of 10 ms, on a machine with nothing else running. Short samples came with the second architecture: on a desktop machine, memory traffic from other cores arrives in bursts of a few milliseconds, a 10 ms sample nearly always catches part of one, and the median of 30 such samples moved by up to 16% for arrays larger than a core's own cache. A 1 ms sample is either clear of the bursts or inside one, and the median of 300 is the undisturbed time.
 - **Interleaved.** The samples alternate between the contenders, so sample *i* of each was taken at nearly the same moment. Slow drift in the machine (temperature, another process waking up) then hits both.
 - **A pool of inputs at small sizes.** The loop cycles through different inputs, so a branch predictor cannot memorise one and make branchy code look better than it is.
 - **Performance cores.** The timing thread asks macOS for its highest scheduling class.
 - **Placed outputs.** The judge decides where an output buffer sits relative to the inputs, and does not leave it to the allocator. On x86-64 an output a few bytes behind its input, counted within a memory page, stalls the loop, so every timing keeps them clear, and a second table times the bad case on purpose.
 
-The speedup at one size is the ratio of the two median times. Its uncertainty comes from a **paired bootstrap**: draw 30 sample indices with replacement, take the medians of *both* contenders at those same indices, form the ratio; repeat 2,000 times; the 2.5th and 97.5th percentiles of those ratios are the 95% interval. Resampling in pairs is what makes interleaving pay off: noise the two contenders shared cancels in each ratio instead of inflating the interval. A speedup is **significant** when its interval excludes 1.0.
+The speedup at one size is the ratio of the two median times. Its uncertainty comes from a **paired bootstrap**: draw as many sample indices as there are samples, with replacement, take the medians of *both* contenders at those same indices, form the ratio; repeat 2,000 times; the 2.5th and 97.5th percentiles of those ratios are the 95% interval. Resampling in pairs is what makes interleaving pay off: noise the two contenders shared cancels in each ratio instead of inflating the interval. A speedup is **significant** when its interval excludes 1.0.
 
 <figure class="widget">
 <div data-widget="bootstrap"></div>
@@ -169,7 +169,7 @@ Two more guards:
 
 ### One edit against the last
 
-During iteration the question is narrower: is this edit faster than the version before it? `judge compare` builds the kernel from the last commit alongside the working copy and times the two against each other, interleaved, in the same process, with the same statistics. It prints one of three verdicts:
+During iteration the question is narrower: is this edit faster than the version before it? `judge compare` builds the kernel from the last commit alongside the working copy and times the two against each other, interleaved. It prints one of three verdicts:
 
 ```text
 RESULT: significantly faster, 1.021x [1.017 – 1.032]
@@ -178,6 +178,8 @@ RESULT: significantly slower, 0.949x [0.943 – 0.956]
 ```
 
 Only the first lets an edit stay. The middle line is from a real attempt whose point estimate was above 1; a looser rule would have kept it.
+
+The comparisons in this report were each taken in one process. `compare` now takes five rounds, each in a process of its own, and builds its interval from how much the rounds differ. Two builds of the same source are loaded at different addresses, which can cost one of them a mispredicted branch per call; within one process that offset is the same in every sample, so no amount of sampling shows it. A new process draws it again.
 
 ## Keeping the agent honest
 

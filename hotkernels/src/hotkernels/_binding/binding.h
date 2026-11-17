@@ -210,6 +210,28 @@ static inline bool hk_as_exact_double(PyObject *obj, double *out) {
 PyObject *hk_try_sum(PyObject *array);
 PyObject *hk_try_argext(PyObject *array, bool want_max);
 
+// The elements of `x` where `mask` is True, as a new one-dimensional array:
+// the compress kernels. `x` is contiguous float32 or float64 and `mask` a
+// contiguous boolean array of the same size, each of any shape; both are
+// read in C order. A caller whose NumPy operation needs more, such as both
+// being one-dimensional, tests that first. In hook_index.c.
+PyObject *hk_try_compress(PyObject *x, PyObject *mask);
+
+// The positions where a one-dimensional contiguous boolean array is True, as
+// the one-element tuple NumPy's nonzero returns: the nonzero_bool kernel. In
+// hook_method.c.
+PyObject *hk_try_nonzero(PyObject *mask);
+
+// Set the elements of `x` where `mask` is True to `value`, in place: the
+// maskfill kernel. `x` is contiguous, writable float64 and `mask` a
+// contiguous boolean array of the same size that does not share memory with
+// it, each of any shape; `value` is a Python float, or a Python int, which
+// is rounded to a double as NumPy rounds it (see hk_as_double). Returns true when the kernel did it, and false, having
+// changed nothing and set no exception, when the call belongs to NumPy. A
+// caller whose NumPy operation needs more, such as matching shapes, tests
+// that first. In hook_index.c.
+bool hk_try_maskfill(PyObject *x, PyObject *mask, PyObject *value);
+
 // Build a NumPy scalar of type `type_num` from the value at `value`. Returns
 // NULL with no exception set if it cannot be built.
 PyObject *hk_scalar(int type_num, void *value);

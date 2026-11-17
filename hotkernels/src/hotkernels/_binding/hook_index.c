@@ -22,18 +22,19 @@ static inline bool is_mask(PyObject *index) {
     return hk_is_plain_array(index) && PyArray_TYPE((PyArrayObject *)index) == NPY_BOOL;
 }
 
-// x[mask] for one-dimensional contiguous float32 or float64 `x` and a
-// boolean mask of the same length. As with nonzero, the kernel's output is
-// scratch, so it runs on a buffer of the binding's own and the selected
-// elements are copied into an array of exactly their number.
-static HK_NOINLINE PyObject *try_compress(PyObject *self, PyObject *index) {
+// The compress kernels on a buffer of the binding's own. See binding.h.
+// As with nonzero, the kernel's output is scratch, so it runs on a buffer of
+// n elements and the selected elements are copied into an array of exactly
+// their number. Shared with the function hooks for np.compress and
+// np.extract.
+HK_NOINLINE PyObject *hk_try_compress(PyObject *array, PyObject *selector) {
     hk_kernel kernel;
     int type_num;
-    if (hk_is_flat_1d(self, NPY_DOUBLE)) kernel = HK_COMPRESS_F64, type_num = NPY_DOUBLE;
-    else if (hk_is_flat_1d(self, NPY_FLOAT)) kernel = HK_COMPRESS_F32, type_num = NPY_FLOAT;
+    if (hk_is_flat(array, NPY_DOUBLE)) kernel = HK_COMPRESS_F64, type_num = NPY_DOUBLE;
+    else if (hk_is_flat(array, NPY_FLOAT)) kernel = HK_COMPRESS_F32, type_num = NPY_FLOAT;
     else return NULL;
-    if (!hk_is_flat_1d(index, NPY_BOOL)) return NULL;
-    PyArrayObject *x = (PyArrayObject *)self, *mask = (PyArrayObject *)index;
+    if (!hk_is_flat(selector, NPY_BOOL)) return NULL;
+    PyArrayObject *x = (PyArrayObject *)array, *mask = (PyArrayObject *)selector;
     const npy_intp n = PyArray_SIZE(x);
     if (n != PyArray_SIZE(mask)) return NULL;
 
@@ -64,6 +65,14 @@ static HK_NOINLINE PyObject *try_compress(PyObject *self, PyObject *index) {
     return result;
 }
 
+// x[mask] for one-dimensional `x` and a one-dimensional boolean mask. With
+// more dimensions `x[mask]` selects rows, or needs the shapes to match, and
+// is left to NumPy.
+static inline PyObject *try_compress(PyObject *self, PyObject *index) {
+    if (PyArray_NDIM((PyArrayObject *)self) != 1 || PyArray_NDIM((PyArrayObject *)index) != 1) return NULL;
+    return hk_try_compress(self, index);
+}
+
 // `a[mask]` with a boolean array as the index: take the kernel if the call
 // meets its conditions, and count it and pass it on if not.
 static HK_NOINLINE PyObject *get_by_mask(PyObject *self, PyObject *index) {
@@ -81,16 +90,16 @@ static PyObject *index_get(PyObject *self, PyObject *index) {
     return original_get(self, index);
 }
 
-// x[mask] = v for one-dimensional contiguous writable float64 `x`, a boolean
-// mask of the same length, and a Python float or int.
+// The maskfill kernel. See binding.h. Shared with the function hooks for
+// np.putmask and np.copyto.
 //
 // The kernel rewrites elements the mask does not select with their own bits.
 // The interpreter lock stays held throughout, so no other Python thread can
 // write one of them in between and have its write undone.
-static HK_NOINLINE bool try_maskfill(PyObject *self, PyObject *index, PyObject *value) {
+HK_NOINLINE bool hk_try_maskfill(PyObject *array, PyObject *selector, PyObject *value) {
     double fill;
-    if (!hk_is_flat_1d(self, NPY_DOUBLE) || !hk_is_flat_1d(index, NPY_BOOL)) return false;
-    PyArrayObject *x = (PyArrayObject *)self, *mask = (PyArrayObject *)index;
+    if (!hk_is_flat(array, NPY_DOUBLE) || !hk_is_flat(selector, NPY_BOOL)) return false;
+    PyArrayObject *x = (PyArrayObject *)array, *mask = (PyArrayObject *)selector;
     const npy_intp n = PyArray_SIZE(x);
     if (n != PyArray_SIZE(mask) || !PyArray_ISWRITEABLE(x) || !hk_as_double(value, &fill)) return false;
     // A boolean view of x's own memory would be read while it is written.
@@ -99,6 +108,12 @@ static HK_NOINLINE bool try_maskfill(PyObject *self, PyObject *index, PyObject *
     maskfill_f64(PyArray_DATA(x), PyArray_DATA(mask), (size_t)n, fill);
     hk_take(HK_MASKFILL_F64);
     return true;
+}
+
+// x[mask] = v for one-dimensional `x` and a one-dimensional boolean mask.
+static inline bool try_maskfill(PyObject *self, PyObject *index, PyObject *value) {
+    if (PyArray_NDIM((PyArrayObject *)self) != 1 || PyArray_NDIM((PyArrayObject *)index) != 1) return false;
+    return hk_try_maskfill(self, index, value);
 }
 
 // `a[mask] = v` with a boolean array as the index: take the kernel if the
