@@ -31,3 +31,31 @@
 - **compare:** no significant difference, 1.007x [1.000 – 1.013]
 - **Kept:** no
 - **Notes:** n = 64 gained (5.6 ns to 4.8 ns, 1.16x) but n = 16 lost (1.9 ns to 2.0 ns, 0.92x) to the extra test of the bounds at entry. It would also have helped only one shape of bounds. Not tried for the same range: `fmax`/`fmin` plus a vector test for NaN in the results instead of the FPSR reads. That is three operations per vector for any bounds, but any NaN in a short array, quiet ones included, would then cost a second pass, about 1.7 times the plain compare and select.
+
+## Result
+
+`uv run judge run clip_f32 --unlocked`, `kernel.s` as of commit 3101e7f, Apple M1 Pro, other work running on the machine at the time:
+
+| n | kernel | naive C | speedup [95% interval] |
+|---|---|---|---|
+| 16 | 1.9 ns | 2.2 ns | 1.17x [1.16 – 1.17] |
+| 64 | 5.9 ns | 6.2 ns | 1.04x [1.03 – 1.06] |
+| 256 | 16.5 ns | 22.1 ns | 1.34x [1.30 – 1.35] |
+| 1,024 | 58.8 ns | 84.1 ns | 1.43x [1.40 – 1.46] |
+| 4,096 | 226.4 ns | 336.9 ns | 1.49x [1.43 – 1.51] |
+| 16,384 | 829.8 ns | 1.4 us | 1.66x [1.65 – 1.67] |
+| 65,536 | 3.5 us | 5.3 us | 1.54x [1.54 – 1.54] |
+| 262,144 | 13.9 us | 21.5 us | 1.55x [1.55 – 1.55] |
+| 1,048,576 | 68.2 us | 86.0 us | 1.26x [1.26 – 1.29] |
+| 4,194,304 | 345.2 us | 536.5 us | 1.55x [1.55 – 1.57] |
+| 16,777,216 | 1.45 ms | 1.58 ms | 1.09x [1.08 – 1.12] |
+| overall | | | 1.36x [1.35 – 1.37] |
+
+Assembly is kept. Where it stands and what the numbers do not show:
+
+- From 4,096 elements up the fast loop runs at the speed of the system `memmove` for the same number of bytes (locally 0.16 cycles per element in the first-level cache, 0.20 in the second, 0.26 to 0.28 beyond), so there is nothing left for the clipping itself to give. Below 192 elements it is compare and select, as clang's loop is; the gain there (1.17x at 16, 1.04x at 64) is entry code only.
+- The speedup is for bounds that qualify for the fast path: `lo <= hi`, `lo` not +0.0, `hi` not -0.0. The judge's bounds (-0.5, 0.5) do. Bounds such as (0, 1) do not, because `fmax(-0.0, +0.0)` is +0.0 where C and NumPy keep -0.0; they take the compare-and-select path and run at the speed of `naive.c` (measured locally: 1.00x from 256 elements up).
+- It assumes FPSR.IOC is clear on entry, as it is in the judge. If the caller's thread has it set, which any earlier invalid operation does (0/0, or a vector comparison with a NaN such as `naive.c` or this kernel's own short path make on NaN data), then 192 to 1,535 elements take the compare-and-select path (speed of `naive.c`) and from 1,536 the fast path costs 33 ns more per call (locally 1.28x over `naive.c` at 2,048, 1.45x at 4,096, 1.6x at 16,384).
+- An array containing a signalling NaN is processed twice (locally 1.6 to 1.8 times the time of `naive.c`). Quiet NaNs cost nothing extra.
+- `x` and `out` must not overlap.
+- Verified by the judge: the result for its bounds at every size, memory safety, calling convention. Verified only by the local harness described under attempt 2: every other pair of bounds, signalling NaNs, non-default FPCR, FPSR flags preserved, and the compare-and-select path beyond a few hundred elements.

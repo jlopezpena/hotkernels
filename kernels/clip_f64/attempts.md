@@ -25,3 +25,24 @@ The design was worked out on `clip_f32` first; see `kernels/clip_f32/attempts.md
 - **compare:** significantly faster, 1.100x [1.094 – 1.104]
 - **Kept:** yes
 - **Notes:** 65,536: 1.16x, 262,144: 1.30x, 1,048,576: 1.37x, 4,194,304: 1.32x, 16,777,216: 1.07x. n = 256 measured 0.97x [0.96 – 0.98] in this run; the other sizes up to 16,384 are unchanged.
+
+## Result
+
+`uv run judge run clip_f64 --unlocked`, `kernel.s` as of commit 3101e7f, Apple M1 Pro, other work running on the machine at the time:
+
+| n | kernel | naive C | speedup [95% interval] |
+|---|---|---|---|
+| 16 | 2.9 ns | 3.2 ns | 1.09x [1.09 – 1.10] |
+| 64 | 11.0 ns | 11.0 ns | 1.00x [1.00 – 1.00] n.s. |
+| 256 | 28.8 ns | 42.5 ns | 1.47x [1.46 – 1.49] |
+| 1,024 | 109.9 ns | 171.3 ns | 1.56x [1.54 – 1.58] |
+| 4,096 | 424.2 ns | 676.5 ns | 1.59x [1.54 – 1.62] |
+| 16,384 | 1.6 us | 2.7 us | 1.67x [1.66 – 1.67] |
+| 65,536 | 6.9 us | 10.8 us | 1.56x [1.55 – 1.57] |
+| 262,144 | 27.7 us | 43.3 us | 1.56x [1.56 – 1.57] |
+| 1,048,576 | 135.6 us | 176.7 us | 1.30x [1.30 – 1.31] |
+| 4,194,304 | 705.5 us | 949.1 us | 1.35x [1.34 – 1.36] |
+| 16,777,216 | 2.92 ms | 3.14 ms | 1.08x [1.07 – 1.08] |
+| overall | | | 1.36x [1.36 – 1.37] |
+
+Assembly is kept. The same limits apply as for `clip_f32` (see the end of its log), with the thresholds halved: the speedup is for bounds with `lo <= hi`, `lo` not +0.0 and `hi` not -0.0, other bounds run at the speed of `naive.c`; with FPSR.IOC already set on entry, 96 to 767 elements run at the speed of `naive.c` and larger arrays pay 33 ns more per call (locally 1.29x over `naive.c` at 1,024 and 1.57x at 4,096); an array containing a signalling NaN is processed twice; `x` and `out` must not overlap. The judge verifies the result for its own bounds; everything else was verified with the local harness described under attempt 2.
