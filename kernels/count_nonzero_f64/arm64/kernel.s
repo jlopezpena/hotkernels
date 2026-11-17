@@ -131,6 +131,42 @@
     COUNT1  13, 11
 .endm
 
+// The same idea over 64 elements: three whole groups (elements 0-47), four
+// vectors (elements 48-55) and eight elements in general registers (56-63).
+// The four vectors end as eight 16-bit lanes of -1 or 0, which are added to
+// v17 directly. 56 vector instructions per 64 elements instead of 58.
+.macro HYBRID64
+    ldp     x9, x10, [x0, #448]
+    ldp     x12, x13, [x0, #464]
+    LOAD16  x0, 0
+    COUNT16 16
+    COUNT1  9, 8
+    COUNT1  10, 11
+    LOAD16  x0, 128
+    COUNT16 17
+    COUNT1  12, 8
+    COUNT1  13, 11
+    ldp     x9, x10, [x0, #480]
+    ldp     x12, x13, [x0, #496]
+    LOAD16  x0, 256
+    COUNT16 16
+    COUNT1  9, 8
+    COUNT1  10, 11
+    ldp     q0, q1, [x0, #384]
+    ldp     q2, q3, [x0, #416]
+    add     x0, x0, #512
+    cmtst   v0.2d, v0.2d, v31.2d
+    cmtst   v1.2d, v1.2d, v31.2d
+    cmtst   v2.2d, v2.2d, v31.2d
+    cmtst   v3.2d, v3.2d, v31.2d
+    uzp1    v0.4s, v0.4s, v1.4s
+    uzp1    v2.4s, v2.4s, v3.4s
+    uzp1    v0.8h, v0.8h, v2.8h
+    add     v17.8h, v17.8h, v0.8h
+    COUNT1  12, 8
+    COUNT1  13, 11
+.endm
+
 // \dst = minus the sum of the 16-bit lanes of v16 and v17, plus x6.
 // Clobbers v0, v16 and x7.
 .macro REDUCE dst
@@ -209,11 +245,16 @@ Lbig:
     movi    v30.2d, #0
     mov     x8, #0                  // counts of the elements tested in general registers
     mov     x11, #0
-    lsr     x5, x1, #5              // steps
+    lsr     x5, x1, #6              // steps of 64 elements
+    cbz     x5, Lstep32
 Lstep:
-    HYBRID32
+    HYBRID64
     subs    x5, x5, #1
     b.ne    Lstep
+Lstep32:
+    tbz     x1, #5, Lhybriddone
+    HYBRID32
+Lhybriddone:
     add     x6, x8, x11
 Lstepsdone:
     tst     x1, #31
