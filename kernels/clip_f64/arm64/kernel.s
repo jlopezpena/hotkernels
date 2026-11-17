@@ -58,10 +58,18 @@
 // Below this many elements, clearing and restoring a flag the caller left set
 // costs more than the fast path saves.
 .set STALE_MIN_N, 768
+// Below this many elements the lo = +0.0 path is not tried.
+.set ZERO_MIN_N, 256
 // The lo = +0.0 path works in chunks of this many 8-element blocks at least ...
 .set ZMIN_BLOCKS, 8
 // ... and at most.
 .set ZMAX_BLOCKS, 64
+// A chunk is the clean run so far shifted right by this much, within those limits.
+.set STAKE_SHIFT, 2
+// The very first chunk is this short, so that data full of -0.0 is found out early.
+.set ZPROBE_BLOCKS, 4
+// What a chunk with a -0.0 costs beyond three times its length, in blocks.
+.set ZSTRIKE_FIXED, 200
 // FPSR.IOC, the cumulative invalid-operation flag, is bit 0.
 .set IOC_BIT, 0
 // Every FPCR bit except the rounding mode (bits 22 and 23).
@@ -83,6 +91,10 @@ _clip_f64:
     fmov    x9, d1
     eor     x9, x9, #SIGN_BIT
     cbz     x9, Lexact              // hi is -0.0
+    cbnz    x8, Lmodes
+    cmp     x2, #ZERO_MIN_N
+    b.lo    Lexact                  // lo is +0.0 and the array is too short for that path
+Lmodes:
     mrs     x10, fpcr
     tst     w10, #FPCR_NOT_ROUNDING
     b.ne    Lexact                  // flush-to-zero, default-NaN or anything else unusual
@@ -145,17 +157,21 @@ Lstale:
 
 // ---- lo is +0.0 --------------------------------------------------------------
 // x14, x15 = input and output cursors, x8 = elements left, x12 = credit in
-// blocks, x13 = blocks in the current chunk, x10, x11 = where the chunk began,
-// x17 = block counter, v16-v19 = running minima of the element bit patterns.
+// blocks, x7 = blocks done since the last -0.0 (or the start), x13 = blocks in
+// the current chunk, x10, x11 = where the chunk began, x17 = block counter,
+// v16-v19 = running minima of the element bit patterns.
 Lzero:
     mov     x14, x0
     mov     x15, x1
     mov     x8, x2
     mov     x12, #0
+    mov     x7, #0
+    mov     x13, #ZPROBE_BLOCKS     // ZERO_MIN_N guarantees this many blocks
+    b       Lzrun
 Lzchunk:
     lsr     x9, x8, #3              // whole blocks left
     cbz     x9, Lztail
-    lsr     x13, x12, #1            // stake half of the credit ...
+    lsr     x13, x7, #STAKE_SHIFT   // a fraction of the clean run so far ...
     mov     x17, #ZMIN_BLOCKS
     cmp     x13, x17
     csel    x13, x17, x13, lo       // ... but at least ZMIN_BLOCKS
@@ -205,6 +221,7 @@ Lzblock:
     negs    w9, w9                  // overflows exactly when w9 is 0x80000000
     b.vs    Lzstrike
     add     x12, x12, x13           // a clean chunk earns its length
+    add     x7, x7, x13
 Lznext:
     sub     x8, x8, x13, lsl #3
     b       Lzchunk
@@ -225,8 +242,11 @@ Lzstrike:
     // the same here and is treated the same).
     mrs     x9, fpsr
     tbnz    w9, #IOC_BIT, Lexact    // a signalling NaN went through earlier: start over, exactly
-    subs    x12, x12, x13, lsl #2   // a strike costs four times the chunk
+    sub     x12, x12, x13           // a strike costs three times the chunk ...
+    sub     x12, x12, x13, lsl #1
+    subs    x12, x12, #ZSTRIKE_FIXED // ... and a fixed amount
     b.mi    Lzgiveup
+    mov     x7, #0
     mov     x17, x13
 Lzfix:                              // the chunk again, by compare and select
     ldp     q4, q5, [x10]
