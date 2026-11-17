@@ -68,6 +68,12 @@
 //   - So if DELTA >= 4 u N + D, an accepted lane has edge(b) <= v < edge(b+1):
 //     naive's first estimate is b, neither correction fires, the bin is b.
 //   The entry check N < 2^31 and M * N <= w * 2^39 gives 4 u N + D < 2^-12.
+//   The check is made in doubles, so it also requires fl(M * N) to be finite:
+//   near the top of the range both products overflow to infinity, compare as
+//   equal, and would pass for a range where the inequality is false. (With
+//   fl(M * N) finite the rounded comparison is good enough: an infinite right
+//   side means w * 2^39 really is the larger, and two finite products are each
+//   within u of their real values, which the bound's slack absorbs.)
 // The preconditions are checked once per call; if they fail the compute path
 // is used.
 //
@@ -201,7 +207,7 @@ Lzeroed:
     dup     v20.2d, v20.d[0]
 
     // Zone path entry check: nbins < 2^31, step normal (non-zero exponent),
-    // and max(|lo|, |hi|) * nbins <= width * 2^39.
+    // and max(|lo|, |hi|) * nbins finite and <= width * 2^39.
     lsr     x9, x3, #31
     cbnz    x9, Lcompute
     fmov    x9, d19
@@ -211,6 +217,10 @@ Lzeroed:
     fabs    d25, d21
     fmaxnm  d24, d24, d25
     fmul    d24, d24, d18
+    fmov    x9, d24                 // not negative, so the bits order as the values do
+    mov     x10, #0x7ff0000000000000
+    cmp     x9, x10
+    b.hs    Lcompute                // overflowed: infinity <= infinity below would pass
     mov     x9, #0x4260000000000000 // 2^39
     fmov    d25, x9
     fmul    d25, d17, d25

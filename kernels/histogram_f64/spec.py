@@ -14,9 +14,15 @@ from judge.spec import In, Kernel, Out, Scalar, ScalarSet, Size
 BINS = 50
 LO, HI = -3.0, 3.0
 
+# The largest finite float64, and the width of the two ranges that end at it.
+# With 1,000 bins, EDGE_WIDTH is narrow enough against FLOAT_MAX that an
+# estimated bin can be off by one, and wide enough that width * 2**39 overflows.
+FLOAT_MAX = float(np.finfo(np.float64).max)
+EDGE_WIDTH = 1e298
+
 # Further bin counts and ranges. The judge's data is mostly within a few units
-# of zero, so every range here overlaps that; a range far from the data would
-# count nothing and test nothing.
+# of zero, so every range but the last two overlaps that; a range far from the
+# data counts nothing and tests little.
 SCALAR_SETS = [
     # The smallest tables: every in-range element lands in the last bin, or one of two.
     ScalarSet("one_bin", {"nbins": 1}),
@@ -37,6 +43,15 @@ SCALAR_SETS = [
     ScalarSet("denormal_range", {"nbins": 5, "lo": -1e-310, "hi": 1e-310}),
     # A range that does not contain zero, so lo is not small against the width.
     ScalarSet("offset", {"nbins": 40, "lo": 0.25, "hi": 1.75}),
+    # Narrow ranges at the two ends of float64, where max(|lo|, |hi|) * nbins
+    # overflows. A kernel that decides how to count from such a product has to
+    # notice the overflow. The only values the judge generates inside these
+    # ranges are the largest magnitudes themselves, which sit on the outer
+    # edge, so these sets check that nothing else is counted and that the
+    # outer bin is right. They do not check the bins in between: that needs
+    # data placed inside the range.
+    ScalarSet("top_of_range", {"nbins": 1000, "lo": FLOAT_MAX - EDGE_WIDTH, "hi": FLOAT_MAX}),
+    ScalarSet("bottom_of_range", {"nbins": 1000, "lo": -FLOAT_MAX, "hi": -FLOAT_MAX + EDGE_WIDTH}),
 ]
 
 

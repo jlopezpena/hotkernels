@@ -149,7 +149,7 @@ KERNEL = Kernel(
 - **The reference is checked on every set too.** A `naive.c` that disagrees with NumPy for a listed combination fails as `reference`, which is how a wrong reference for some bounds would now be caught, provided the combination is listed.
 - **`timed=True`** adds a full timing sweep with that set, reported as its own table (`random, scalars=zero_lo`) and included in the overall figure. `compare` times it as well, so an edit that helps one set of scalars and hurts another shows both. Each timed set adds about half a minute to `run` and `compare`, so they should be few. The timing loop takes the scalars as arguments; they are not compiled into it.
 
-What this does not give: a combination nobody listed is still untested, and the array data does not follow the scalars. `histogram` is checked with fourteen bin counts and ranges, but the judge's data is random and seldom lands within rounding distance of a bin edge, which is where a histogram goes wrong. Evidence about edges still comes from a differential test outside the judge.
+What this does not give: a combination nobody listed is still untested, and the array data does not follow the scalars. `histogram` is checked with sixteen bin counts and ranges, but the judge's data is random and seldom lands within rounding distance of a bin edge, which is where a histogram goes wrong. Evidence about edges still comes from a differential test outside the judge.
 
 ### Why a Python file
 
