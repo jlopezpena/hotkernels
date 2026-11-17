@@ -20,7 +20,7 @@
 // group, and the counts are moved to a general register before a lane can
 // reach 65,536.
 
-// Steps of the main loop (32 elements, one group into each accumulator)
+// Steps of a main loop (32 elements, one group into each accumulator)
 // between flushes. Each lane is then at most 2 * 8192 = 16,384 and the two
 // accumulators added together at most 32,768, which fits in 16 bits.
 .set BLOCK_STEPS, 8192
@@ -59,7 +59,7 @@
 .endm
 
 // The same with `ldnp`, the load that hints the data will not be needed again
-// soon. Used in the main loop: it costs nothing while the array fits in the
+// soon. Used from one block up: it costs nothing while the array fits in the
 // caches and is a few percent faster once it does not.
 .macro LOAD16_STREAM base, off
     ldnp    q0, q1, [\base, #\off]
@@ -137,6 +137,29 @@ Lladder0:
 Lbig:
     movi    v16.2d, #0              // minus the count, 16-bit lanes
     movi    v17.2d, #0
+    cmp     x1, #(32 * BLOCK_STEPS)
+    b.hs    Lblocks
+    // Fewer steps than one block: no lane can overflow.
+    lsr     x5, x1, #5              // steps
+Lstep:
+    LOAD16  x0, 0
+    COUNT16 16
+    LOAD16  x0, 128
+    add     x0, x0, #256
+    COUNT16 17
+    subs    x5, x5, #1
+    b.ne    Lstep
+Lstepsdone:
+    tst     x1, #31
+    b.ne    Lbigtail
+    REDUCE  x0
+    ret
+Lbigtail:
+    REDUCE  x6
+    b       Ltail
+
+    // ---- One block or more: the counts are flushed after every block.
+Lblocks:
     lsr     x4, x1, #5              // steps left
 Lblock:
     mov     x5, #BLOCK_STEPS
@@ -145,24 +168,16 @@ Lblock:
     sub     x4, x4, x5
     cmp     x1, #HUGE_MIN_N
     b.hs    Lhugestep
-Lstep:
+Lblockstep:
     LOAD16_STREAM x0, 0
     COUNT16 16
     LOAD16_STREAM x0, 128
     add     x0, x0, #256
     COUNT16 17
     subs    x5, x5, #1
-    b.ne    Lstep
+    b.ne    Lblockstep
 Lblockdone:
-    cbnz    x4, Lflush
-    tst     x1, #31
-    b.ne    Lbigtail
-    REDUCE  x0
-    ret
-Lbigtail:
-    REDUCE  x6
-    b       Ltail
-Lflush:
+    cbz     x4, Lstepsdone
     REDUCE  x6
     movi    v16.2d, #0
     movi    v17.2d, #0
