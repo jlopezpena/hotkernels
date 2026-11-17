@@ -29,6 +29,8 @@
 #             vector, then blocks of the mixed loop with every load aligned,
 #             then the 32..127 path. From 32,768 bytes the loop also
 #             prefetches.
+#   4194304.. "huge": the same head, then four streams of `vpsadbw` read side
+#             by side, then the plain path for what is left
 #
 # The big path aligns its loads because a buffer from NumPy usually starts 16
 # bytes into a 64-byte cache line. Every second 32-byte load then straddles
@@ -44,6 +46,9 @@
 # prefetcher keeps up while the data is in the second-level cache, and falls
 # behind beyond it.
 .set PREFETCH_AHEAD, 4096
+# From this many bytes the huge path is used: twice the second-level cache of
+# this processor. Below it one stream is as fast or faster.
+.set HUGE_MIN_N, 4194304
 # From this many bytes the big loop prefetches. Below it the array can lie in
 # the first-level cache, where a prefetch only costs.
 .set PREFETCH_MIN_N, 32768
@@ -142,7 +147,8 @@ sum_u8:
     jae     .Lbig
 
     # ---- Plain path, 128..2047 bytes: 128 bytes per step into four
-    #      accumulators.
+    #      accumulators. Entered with ymm1 holding sums so far.
+.Lplainstart:
     vpxor   xmm2, xmm2, xmm2
     vpxor   xmm3, xmm3, xmm3
     vpxor   xmm4, xmm4, xmm4
@@ -197,6 +203,8 @@ sum_u8:
     vpsadbw ymm1, ymm2, ymm0
     add     rdi, rdx
     sub     rsi, rdx
+    cmp     r8, HUGE_MIN_N
+    jae     .Lhuge
     vpcmpeqd ymm10, ymm10, ymm10
     vpabsb  ymm9, ymm10                 # bytes of one
     vpsrlw  ymm10, ymm10, 15            # 16-bit lanes of one
@@ -250,6 +258,62 @@ sum_u8:
     MIXED_SUMS
     jne     .Lsteppf
     jmp     .Lwiden
+
+    # ---- Huge path: the array is larger than the second-level cache, and
+    #      memory, not the loop, sets the speed. The processor fetches ahead
+    #      of each stream of loads separately, so four streams deliver more
+    #      than one. Split what is left into four equal runs, a multiple of
+    #      64 bytes each, and read them side by side with `vpsadbw` alone.
+.Lhuge:
+    mov     rcx, rsi
+    shr     rcx, 2
+    and     rcx, -64                    # bytes per stream
+    lea     rdx, [rdi + rcx]            # second stream, and end of the first
+    lea     r9, [rdx + rcx]             # third
+    lea     r10, [r9 + rcx]             # fourth
+    mov     rax, rdx
+    lea     r11, [rcx * 4]
+    sub     rsi, r11                    # 0..255 bytes follow the fourth stream
+    vpxor   xmm2, xmm2, xmm2
+    vpxor   xmm3, xmm3, xmm3
+    vpxor   xmm4, xmm4, xmm4
+.p2align 6
+.Lhugestep:
+    vpsadbw ymm5, ymm0, [rdi]
+    vpsadbw ymm6, ymm0, [rdx]
+    vpsadbw ymm7, ymm0, [r9]
+    vpsadbw ymm8, ymm0, [r10]
+    vpaddq  ymm1, ymm1, ymm5
+    vpaddq  ymm2, ymm2, ymm6
+    vpaddq  ymm3, ymm3, ymm7
+    vpaddq  ymm4, ymm4, ymm8
+    vpsadbw ymm5, ymm0, [rdi + 32]
+    vpsadbw ymm6, ymm0, [rdx + 32]
+    vpsadbw ymm7, ymm0, [r9 + 32]
+    vpsadbw ymm8, ymm0, [r10 + 32]
+    # One line per stream, PREFETCH_AHEAD bytes on. Past the end of the last
+    # stream these addresses lie outside the array, as in the big loop.
+    prefetcht0 [rdi + PREFETCH_AHEAD]
+    prefetcht0 [rdx + PREFETCH_AHEAD]
+    prefetcht0 [r9 + PREFETCH_AHEAD]
+    prefetcht0 [r10 + PREFETCH_AHEAD]
+    add     rdi, 64
+    add     rdx, 64
+    add     r9, 64
+    add     r10, 64
+    vpaddq  ymm1, ymm1, ymm5
+    vpaddq  ymm2, ymm2, ymm6
+    vpaddq  ymm3, ymm3, ymm7
+    vpaddq  ymm4, ymm4, ymm8
+    cmp     rdi, rax
+    jne     .Lhugestep
+    vpaddq  ymm1, ymm1, ymm2
+    vpaddq  ymm3, ymm3, ymm4
+    vpaddq  ymm1, ymm1, ymm3
+    mov     rdi, r10                    # what is left starts after the fourth stream
+    cmp     rsi, 128
+    jae     .Lplainstart
+    jmp     .Ltail
 
     # ---- Fewer than 32 bytes. No 256-bit register is written here. The
     #      block starts on a 64-byte boundary so that the path for n = 16,

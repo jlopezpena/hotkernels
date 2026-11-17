@@ -209,3 +209,11 @@ far below what the caches deliver.
 - **Kept:** yes
 - **Notes:** 1.09x at 4,096 and 1.10x at 16,384 (75.5 ns to 68.6 ns, 239 bytes per ns), no significant difference elsewhere. What the first try showed about the 16-byte path: aligned to 32 bytes it ran in 0.9 ns when its block started at offset 0 of a cache line and 1.1 ns at offset 32, where its 37 bytes of code cross into the next line. So attempt 5's reason was incomplete: it is the 64-byte line that matters, not the 32-byte window.
 
+## x86-64 12. Four streams from 4,194,304 bytes
+
+- **Idea:** beyond the second-level cache memory sets the speed, and this processor fetches ahead of each stream of loads separately. The ARM64 log found two streams no faster on the M1 (attempt 6 there). A private micro-benchmark here, `vpsadbw` only with a prefetch per stream, bytes per ns for one / two / four / eight streams: 151 / 140 / 134 / not run at 1,048,576; 97 / 102 / 103 / 101 at 4,194,304; 85 / 89 / 95 / 95 at 16,777,216; 35 / 41 / 47 / 50 at 67,108,864; 32 / 37 / 42 / 45 at 268,435,456. So from 4,194,304 bytes, twice the second-level cache: after the aligned head, split the rest into four equal runs and read them side by side, 64 bytes of each per step. The loop is `vpsadbw` alone: at these sizes one port is more than memory delivers, and 64-bit lanes need no widening. The 0 to 255 bytes after the fourth run go through the plain path. Eight streams would need registers that have to be saved, for 6% more beyond the caches and nothing inside them.
+- **check:** pass
+- **compare:** significantly faster, 1.011x [1.000 – 1.024]
+- **Kept:** yes
+- **Notes:** 1.06x at 4,194,304 and 1.06x at 16,777,216, neither significant alone (their intervals reach from 0.96x to 1.19x), nothing elsewhere. The verdict is at the edge. What argues for it beyond the verdict is the micro-benchmark above the judge's largest size: 33% at 64 MB and 256 MB, which the judge does not time. Checked privately at the threshold: n of 4,194,303, 4,194,304 and five sizes just above it, at three alignments, on all-0xFF data.
+
