@@ -19,7 +19,7 @@
 //
 // There are four code paths. The length of a chooses one, and each needs at
 // least one full group of needles:
-//   n < 16            one needle at a time (Lscalar)
+//   n < 16            eight needles at once (Lsmall)
 //   16 <= n < 64      sixteen needles at once, bases in x0-x15 (below)
 //   64 <= n < 1,048,576   64 needles at once, bases in vector registers (Lv64)
 //   n >= 1,048,576        128 needles at once, bases kept in out (Lbig)
@@ -28,7 +28,9 @@
 // call with fewer needles than its path's group takes a narrower path:
 //   n >= 1,048,576, 64 to 127 needles   Lv64, whose 32-bit bases reach any
 //                                       n below 2^32
-//   otherwise                           Lscalar
+//   otherwise                           Lsmall, eight at once, the
+//                                       missing lanes repeating the last
+//                                       needle when there are fewer
 //
 // ---- The sixteen-needle path
 //
@@ -1476,8 +1478,186 @@ Lnan_group:
     mov     x4, #16
     mov     x8, #1                  // come back to Lnext afterwards
     b       Lscalar
-Lsmall:                             // x14 needles, one at a time
+    // ---- Fewer needles than the paths above take: eight searches at once.
+    // Each needle keeps a base, as at the top of the file, updated with fcmp
+    // and csel; the step size is shared and lives in a register, so there is
+    // one loop over the steps. From eight needles, groups of eight are taken
+    // and leftovers are covered by redoing the last eight. Below eight, the
+    // missing lanes repeat the last needle and only the real results are
+    // stored. A NaN needle sends the whole call to Lscalar, and so does one
+    // needle against an array of 1,048,576 or more.
+    // x0 a, x1 v, x2 out, x3 n, x14 needles (all kept for Lscalar);
+    // x4 group's first needle, x5-x12 bases, x13 h, x16 passes left,
+    // x17 &a[h - 1], x15 scratch; d0-d7 keys, d16-d19 scratch
+Lsmall:
     cbz     x14, Ldone
+    cbz     x3, Lfew_scalar         // empty array: every answer is 0
+    // One needle in an array far larger than the cache: the branchy search
+    // is faster, because the processor runs ahead down the predicted half
+    // and its loads overlap, where this search waits for every probe.
+    mov     x15, #1048576
+    cmp     x3, x15
+    ccmp    x14, #1, #0, hs
+    b.eq    Lfew_scalar
+    mov     x4, x1
+    cmp     x14, #8
+    b.hs    Lfew_load
+    sub     x15, x14, #1            // last needle; lanes past it repeat it
+    ldr     d0, [x1]
+    mov     x16, #1
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d1, [x1, x16, lsl #3]
+    mov     x16, #2
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d2, [x1, x16, lsl #3]
+    mov     x16, #3
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d3, [x1, x16, lsl #3]
+    mov     x16, #4
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d4, [x1, x16, lsl #3]
+    mov     x16, #5
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d5, [x1, x16, lsl #3]
+    mov     x16, #6
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d6, [x1, x16, lsl #3]
+    mov     x16, #7
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d7, [x1, x16, lsl #3]
+    b       Lfew_search
+Lfew_load:
+    ldp     d0, d1, [x4]
+    ldp     d2, d3, [x4, #16]
+    ldp     d4, d5, [x4, #32]
+    ldp     d6, d7, [x4, #48]
+Lfew_search:
+    // fmax returns NaN if either operand is NaN.
+    fmax    d16, d0, d1
+    fmax    d17, d2, d3
+    fmax    d18, d4, d5
+    fmax    d19, d6, d7
+    fmax    d16, d16, d17
+    fmax    d18, d18, d19
+    fmax    d16, d16, d18
+    fcmp    d16, d16
+    b.vs    Lfew_scalar
+    clz     x16, x3
+    mov     x15, #63
+    sub     x15, x15, x16           // k = floor(log2(n))
+    mov     x13, #1
+    lsl     x13, x13, x15           // p
+    add     x17, x0, x13, lsl #3
+    ldur    d16, [x17, #-8]         // a[p - 1]
+    sub     x15, x3, x13            // n - p
+    fcmp    d16, d0
+    csel    x5, x15, xzr, mi       // base = (a[p - 1] < key) ? n - p : 0
+    fcmp    d16, d1
+    csel    x6, x15, xzr, mi
+    fcmp    d16, d2
+    csel    x7, x15, xzr, mi
+    fcmp    d16, d3
+    csel    x8, x15, xzr, mi
+    fcmp    d16, d4
+    csel    x9, x15, xzr, mi
+    fcmp    d16, d5
+    csel    x10, x15, xzr, mi
+    fcmp    d16, d6
+    csel    x11, x15, xzr, mi
+    fcmp    d16, d7
+    csel    x12, x15, xzr, mi
+    lsr     x13, x13, #1
+    cmp     x13, #0
+    csinc   x13, x13, xzr, ne       // h = max(p / 2, 1)
+    mov     x15, #64
+    sub     x16, x15, x16           // k steps and the last probe: 64 - clz(n)
+Lfew_pass:
+    add     x17, x0, x13, lsl #3
+    sub     x17, x17, #8            // &a[h - 1]
+    ldr     d16, [x17, x5, lsl #3]
+    fcmp    d16, d0
+    add     x15, x5, x13
+    csel    x5, x15, x5, mi       // base += h if a[base + h - 1] < key
+    ldr     d17, [x17, x6, lsl #3]
+    fcmp    d17, d1
+    add     x15, x6, x13
+    csel    x6, x15, x6, mi
+    ldr     d16, [x17, x7, lsl #3]
+    fcmp    d16, d2
+    add     x15, x7, x13
+    csel    x7, x15, x7, mi
+    ldr     d17, [x17, x8, lsl #3]
+    fcmp    d17, d3
+    add     x15, x8, x13
+    csel    x8, x15, x8, mi
+    ldr     d16, [x17, x9, lsl #3]
+    fcmp    d16, d4
+    add     x15, x9, x13
+    csel    x9, x15, x9, mi
+    ldr     d17, [x17, x10, lsl #3]
+    fcmp    d17, d5
+    add     x15, x10, x13
+    csel    x10, x15, x10, mi
+    ldr     d16, [x17, x11, lsl #3]
+    fcmp    d16, d6
+    add     x15, x11, x13
+    csel    x11, x15, x11, mi
+    ldr     d17, [x17, x12, lsl #3]
+    fcmp    d17, d7
+    add     x15, x12, x13
+    csel    x12, x15, x12, mi
+    lsr     x15, x13, #1
+    cmp     x15, #0
+    csinc   x13, x15, xzr, ne       // h = max(h / 2, 1): the last probe is h = 1 again
+    subs    x16, x16, #1
+    b.ne    Lfew_pass
+    cmp     x14, #8
+    b.lo    Lfew_short
+    sub     x15, x2, x1
+    add     x15, x4, x15            // this group's out
+    stp     x5, x6, [x15]
+    stp     x7, x8, [x15, #16]
+    stp     x9, x10, [x15, #32]
+    stp     x11, x12, [x15, #48]
+    add     x4, x4, #64
+    sub     x15, x14, #8
+    add     x15, x1, x15, lsl #3    // first needle of the last full group
+    cmp     x4, x15
+    b.ls    Lfew_load
+    add     x16, x15, #64           // end of the needles
+    cmp     x4, x16
+    b.eq    Ldone
+    mov     x4, x15                 // 1 to 7 left: redo the last eight
+    b       Lfew_load
+Lfew_short:                         // 1 to 7 needles: store only theirs
+    str     x5, [x2]
+    cmp     x14, #2
+    b.lo    Ldone
+    str     x6, [x2, #8]
+    cmp     x14, #3
+    b.lo    Ldone
+    str     x7, [x2, #16]
+    cmp     x14, #4
+    b.lo    Ldone
+    str     x8, [x2, #24]
+    cmp     x14, #5
+    b.lo    Ldone
+    str     x9, [x2, #32]
+    cmp     x14, #6
+    b.lo    Ldone
+    str     x10, [x2, #40]
+    cmp     x14, #7
+    b.lo    Ldone
+    str     x11, [x2, #48]
+    ret
+Lfew_scalar:
     mov     x4, x14
     mov     x8, #0
     // Plain binary search for x4 needles of any value. Rare path.
