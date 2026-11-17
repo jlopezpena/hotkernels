@@ -1,6 +1,6 @@
 # x86-64: design
 
-This is a proposal for review. Nothing here is implemented yet. It details the "x86-64 kernels" item under [Later](core-design.md#later) in the core design: which x86-64 to target, what has to change in the judge, the survey and the package, how the existing kernels are carried over, and how the existing documents are amended so that they explain two architectures and not one.
+This began as a proposal for review. Steps 1 to 4 of its [order of work](#order-of-work) are done: the judge and the survey run on Linux x86-64, and the survey is recorded. No x86-64 kernel exists yet. It details the "x86-64 kernels" item under [Later](core-design.md#later) in the core design: which x86-64 to target, what has to change in the judge, the survey and the package, how the existing kernels are carried over, and how the existing documents are amended so that they explain two architectures and not one.
 
 ## Summary
 
@@ -13,7 +13,7 @@ This is a proposal for review. Nothing here is implemented yet. It details the "
 
 ## What changed in the building
 
-The judge now runs on Linux x86-64 (step 3 of the [order of work](#order-of-work)). Where the building departed from the proposal:
+The judge and the survey now run on Linux x86-64 (steps 3 and 4 of the [order of work](#order-of-work)). Where the building departed from the proposal:
 
 | Proposed | Built | Why |
 |---|---|---|
@@ -25,6 +25,9 @@ The judge now runs on Linux x86-64 (step 3 of the [order of work](#order-of-work
 | Not mentioned | Every kernel must end with the note that it needs no executable stack | Current Linux refuses to load a library that needs one |
 | Not mentioned | The wrapper passes a seventh and eighth integer argument on the stack | The convention has six integer registers, and the judge's spec allows eight arguments |
 | The attempts logs moved beside each kernel in this step | Not yet; a separate pull request | It touches every kernel directory and the documentation site, and is easier to review alone |
+| The survey ported by changing its clock and scheduling calls, its flags and its reading of the vectoriser remarks | The remarks needed no change, since clang is the compiler on both. The survey takes the compiler, the flags, the library suffix and the core claim from the judge | One place decides how C is built and where a timing thread runs. A survey and a judge run never share a core |
+| Not mentioned | The survey records which vector instruction sets NumPy uses, the pinned CPU, and the judge's warnings about turbo, power saving and load | NumPy's own loops are the other contender, and which ones it has is what differs between architectures |
+| Not mentioned | The survey places each output buffer half a page from its input | Left to the allocator the output often sat 16 bytes after the input within the page, which made NumPy up to 8x slower and the ratios meaningless. See [open issue 8](#open-issues) |
 
 **Checked with clang.** The selftest passes with clang 21.1.8 as the compiler, which is what the design asks for, and continuous integration runs it on Linux. It was developed with gcc standing in, before clang was installed on this machine, and passes with both. The choice of compiler matters as much as [open issue 2](#open-issues) expected: the naive C for `sum_u8` takes 49 ns for 1,024 bytes built by clang and 127 ns built by gcc.
 
@@ -40,11 +43,11 @@ The judge now runs on Linux x86-64 (step 3 of the [order of work](#order-of-work
 | Caches | 2 MB second-level cache per performance core, 24 MB third-level cache shared |
 | Has | AVX2, FMA, BMI1, BMI2, LZCNT, POPCNT, MOVBE; beyond x86-64-v3 also AVX-VNNI, GFNI, VAES, SHA |
 | Does not have | AVX-512 |
-| System | Linux 7.0, gcc 15.2, GNU assembler 2.46. No clang, no nasm |
+| System | Linux 7.0, clang 21.1.8, GNU assembler 2.46. gcc 15.2 is installed and not used. No nasm |
 
 ## What was measured before writing this
 
-The survey was run once on this machine to see where NumPy stands. It is not a recorded result.
+The survey was run once on this machine to see where NumPy stands, before it was ported. It is not a recorded result. **A recorded run has since replaced it:** [survey-design.md](survey-design.md#results-on-x86-64), taken with clang. The NumPy figures below agree with it. The naive C figures do not all, because this first look built the C with gcc. The section is kept as it was written, as the basis the design was reviewed on.
 
 - **How.** `uv run survey run`, pinned to one performance core, NumPy 2.5.5. The survey is not ported, so it ran through a temporary stand-in outside the repository that sent its `clang` calls to gcc 15.2 with `-march=native` and supplied the two macOS functions its C file calls. The reference loop drifted by 0.03% over the run.
 - **What it is good for.** NumPy's time per element, and how far a compiled C loop is from it. Sizes from 1,048,576 elements up showed scatter between variants of the same operation, so those are read as rough.
@@ -133,6 +136,7 @@ Several candidates do more than make a loop faster. They would remove a caveat t
 
 - **Masked loads and stores for leftover elements.** A masked load does not fault on the elements it leaves out, so a kernel could finish an array with one masked vector, with no scalar loop and no overlapping vector. Whether that satisfies "no reads outside the buffers, by even one byte" is a question about the rule: [open issue 3](#open-issues).
 - **Non-temporal stores** for outputs larger than the third-level cache: `clip`, `cumsum`, `compress`. They skip reading the destination before writing it. They need aligned addresses and change what the caller finds in its caches afterwards.
+- **An output that sits just behind the input.** Found by the survey: when the output buffer starts 8 to 128 bytes after the input, counted within a 4 KB page, the processor takes each store for a store to the elements about to be loaded. `np.clip` then takes 8x as long, `np.add` 2x and the naive C `clip` 1.5x ([survey-design.md](survey-design.md#where-the-output-sits)). Two power-of-two arrays allocated one after the other are often exactly there. A kernel could test the two addresses on entry and take a path that does not stall: loading further ahead of its stores, or running from the end of the arrays to the start. Every kernel that reads one buffer and writes another is concerned: `clip`, `cumsum`, `cast`, `compress`. On `clip`, where a kernel is otherwise level with NumPy, this may be the only place it wins. How it is timed is [open issue 8](#open-issues).
 - **Alignment of data.** A 32-byte load that straddles two cache lines costs more than one that does not. AGENTS.md says unaligned loads cost nothing; that was measured on the M1 and is not assumed here.
 - **Alignment of code.** Where a loop sits relative to 32- and 64-byte boundaries affects how this processor decodes it.
 - **Instructions slow on other x86-64 processors.** `pext` and `pdep`, gathers and masked stores are fast here and not everywhere. With one machine the judge cannot see that: [open issue 4](#open-issues).
@@ -174,7 +178,7 @@ The judge's design holds: it builds and tests whichever kernel directory matches
 
 - **Port.** Three things are macOS-only: the clock and scheduling calls in `survey/naive.c`, the compiler flags, and the reading of clang's vectoriser remarks. The stand-in used for the measurement above shows the size of the change.
 - **Run and record** on this machine under `survey/results/`, with clang.
-- **A shortlist per architecture.** The ARM64 order of work was set by where NumPy is slow on ARM64. The x86-64 order is set by the recorded run. Expected, from the first measurement: `sum_u8`, the mask kernels, `cumsum`, `searchsorted` and `interp`, `histogram` and `bincount`, `isin`, `count_nonzero`, then `argmax` and `clip`, with `cast_u8_f32` last and probably dropped.
+- **A shortlist per architecture.** The ARM64 order of work was set by where NumPy is slow on ARM64. The x86-64 order is set by the recorded run, which is now in [survey-design.md](survey-design.md#results-on-x86-64) and confirms what was expected from the first measurement: `sum_u8`, the mask kernels, `cumsum`, `searchsorted` and `interp`, `histogram` and `bincount`, `isin`, `count_nonzero`, then `argmax` and `clip`, with `cast_u8_f32` last and probably dropped.
 
 ## The package and its delivery
 
@@ -250,6 +254,7 @@ Steps 3 to 6 each take their own pull request or several. Step 5 follows AGENTS.
 5. **Instructions beyond the level that this machine has.** AVX-VNNI and GFNI. Recommended: not used. A second tier needs a run-time choice between two kernels, which is the AVX-512 design.
 6. **Releases with two platforms.** A release re-measures every speed it quotes. With two platforms that needs both machines, or notes that quote one platform and say so. Not decided here; it belongs in an amendment to [release-design.md](release-design.md) at step 6.
 7. **One findings document or two.** *Decided in review: one*, split by family and then by architecture, so the two are read side by side and the caller constraints sit in one table. The alternative was a second document per architecture, which is shorter to write and loses the comparison.
+8. **Where the judge puts its timing buffers.** *Open; raised by the survey.* The time of a loop that reads one buffer and writes another depends on where the two sit relative to each other within a page, by up to 8x for NumPy and 1.5x for compiled C ([survey-design.md](survey-design.md#where-the-output-sits)). The judge takes its timing buffers from NumPy's allocator (`judge/bench.py`), as the survey did, so the allocator decides which case a kernel is timed in, and it can differ from one size to the next and from one run to the next. This has not been measured in the judge. Recommended: the judge places the output of a timed call at a fixed distance from the input, half a page, so `compare` measures the kernel and not the allocator; and `run` adds one more line that times the bad placement, 16 bytes, because that is what a user's two power-of-two arrays get. It is a change to the judge, so it needs its own amendment to [judge-design.md](judge-design.md), before the first kernel that writes an output buffer is timed. `sum_u8` has no output buffer and does not wait for it.
 
 ## Decisions made in review
 

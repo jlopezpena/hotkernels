@@ -84,6 +84,8 @@ def run(
         log.warning("WARNING: the machine was noisy; the reference loop drifted by %.1f%%", drift * 100)
 
     meta = describe_machine([c.cfn for c in chosen], drift)
+    for warning in meta.get("warnings", []):
+        log.warning("WARNING: %s", warning)
     stem = out or _SLUG_SEPARATORS.sub("-", meta["cpu"].lower()).strip("-")
     RESULTS.mkdir(exist_ok=True)
     result_file = RESULTS / f"{stem}.json"

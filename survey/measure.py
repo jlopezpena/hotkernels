@@ -2,9 +2,13 @@
 
 The method borrows from the judge where that is cheap: C is timed inside C,
 samples of the two contenders are interleaved, the median is reported, the
-thread asks for the performance cores, and a reference loop is timed before and
-after a run to detect a noisy machine. It is not the judge: there are no
+thread is kept on the performance cores, and a reference loop is timed before
+and after a run to detect a noisy machine. It is not the judge: there are no
 confidence intervals, and one input per candidate.
+
+The survey runs wherever the judge does, and takes from it what differs between
+platforms: the compiler and its flags, the name of a shared library, and how
+the timing thread is kept on a fast core.
 """
 from __future__ import annotations
 
@@ -22,6 +26,10 @@ from typing import Callable
 
 import numpy as np
 
+from judge import cores
+from judge.build import C_FLAGS, CC, SHARED_SUFFIX
+from judge.cli import machine
+
 from .candidates import HELPERS, Cand
 
 log = logging.getLogger(__name__)
@@ -31,10 +39,11 @@ ROOT = HERE.parent
 NAIVE_C = HERE / "naive.c"
 # Build output. Not committed.
 BUILD = ROOT / ".judge" / "survey"
-LIBRARY = BUILD / "libnaive.dylib"
+LIBRARY = BUILD / f"libnaive{SHARED_SUFFIX}"
 
-# The flags the judge uses for a kernel's naive.c.
-CFLAGS = ["-O3", "-mcpu=native", "-std=c11", "-Wall", "-Wextra"]
+# The flags the judge uses for a kernel's naive.c on this platform, with more
+# warnings switched on.
+CFLAGS = [*C_FLAGS, "-Wextra"]
 
 # Element counts measured: one element (fixed cost only), then cache-resident
 # sizes through to data far larger than any cache.
@@ -74,8 +83,29 @@ _VECTORISED = re.compile(r"naive\.c:(\d+):\d+: remark: vectorized loop \(vectori
 _MACRO_KERNEL = re.compile(r"[A-Z_]+\((\w+)")
 # A kernel written out by hand.
 _PLAIN_KERNEL = re.compile(r"NOINLINE i64 (\w+)\(")
+# A pointer argument of a candidate: `ptr(<name of an array in its environment>)`.
+_POINTER_ARGUMENT = re.compile(r"ptr\((\w+)\)")
+# Size of a memory page. On x86-64 the processor compares only the address bits
+# within a page when it decides whether a load has to wait for an earlier
+# store. Two buffers that are megabytes apart still get in each other's way if
+# the output starts a few bytes after an input, counted within the page: the
+# stores are mistaken for stores to the elements about to be loaded. Measured
+# on an Intel Core i5-14600KF at 1,048,576 float64 elements, np.clip then
+# takes 8x as long and the naive C loop 1.5x.
+PAGE_BYTES = 4096
+# The effect was gone once the output started this many bytes after the input.
+CLEAR_BYTES = 256
+# Where in the page the survey puts an output buffer, counted from the first
+# input: as far from it as the page allows.
+OUTPUT_GAP_BYTES = PAGE_BYTES // 2
 # How `pmset -g` reports that Low Power Mode is on.
 _LOW_POWER_ON = re.compile(r"lowpowermode\s+1")
+_MACOS = platform.system() == "Darwin"
+# The entry of NumPy's build description that lists its vector instruction sets.
+_NUMPY_SIMD = "SIMD Extensions"
+# Within it: the sets NumPy was compiled to require, and the further ones it
+# found on this processor and switches to at run time.
+_NUMPY_SIMD_REQUIRED, _NUMPY_SIMD_FOUND = "baseline", "found"
 
 
 def ptr(a: np.ndarray) -> int:
@@ -94,13 +124,16 @@ def build() -> ctypes.CDLL:
     """Compile naive.c into a shared library and load it.
 
     Returns:
-        The loaded library, with the timing thread already moved to the
-        highest scheduling class.
+        The loaded library, with the timing thread already kept on a fast
+        core: moved to the highest scheduling class on macOS, pinned to one
+        performance core on Linux. NumPy is timed on the same thread, so this
+        covers both contenders.
     """
     BUILD.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["clang", *CFLAGS, "-shared", "-o", str(LIBRARY), str(NAIVE_C)], check=True)
+    subprocess.run([CC, *CFLAGS, "-shared", "-o", str(LIBRARY), str(NAIVE_C)], check=True)
     lib = ctypes.CDLL(str(LIBRARY))
     lib.survey_init()
+    cores.claim()
     return lib
 
 
@@ -134,7 +167,7 @@ def vectorised() -> dict[str, list[str]]:
     """
     source = NAIVE_C.read_text().splitlines()
     remarks = subprocess.run(
-        ["clang", *CFLAGS, "-c", "-o", "/dev/null", str(NAIVE_C),
+        [CC, *CFLAGS, "-c", "-o", "/dev/null", str(NAIVE_C),
          "-Rpass=loop-vectorize", "-fno-caret-diagnostics"],
         capture_output=True, text=True, check=True).stderr
     found: dict[str, list[str]] = {}
@@ -162,6 +195,67 @@ def calibrate(run: Callable[[int], float]) -> int:
         reps = max(reps * 2, scaled)
 
 
+def _input_addresses(cand: Cand, env: dict) -> list[int]:
+    """List where a candidate's input buffers start.
+
+    Args:
+        cand: The candidate.
+        env: Its environment, holding the arrays it is timed on.
+
+    Returns:
+        The address of every array the candidate passes to C by pointer,
+        other than its output buffer, in argument order.
+    """
+    names = [name for arg in cand.args for name in _POINTER_ARGUMENT.findall(arg)]
+    return [ptr(env[name]) for name in names if name != cand.out]
+
+
+def _clear_of(address: int, inputs: list[int]) -> bool:
+    """Say whether an output buffer at an address keeps out of the way of the inputs.
+
+    Args:
+        address: Where the output buffer would start.
+        inputs: Where the input buffers start.
+
+    Returns:
+        True when, counted within a page, the output starts either exactly
+        where each input does or at least CLEAR_BYTES after it.
+    """
+    gaps = [(address - start) % PAGE_BYTES for start in inputs]
+    return all(gap == 0 or gap >= CLEAR_BYTES for gap in gaps)
+
+
+def placed_output(cand: Cand, env: dict) -> np.ndarray | None:
+    """Make a candidate's output buffer at a fixed place relative to its inputs.
+
+    Left alone, the allocator decides where the output sits. For two arrays of
+    a power-of-two size allocated one after the other, that is often 16 bytes
+    after the input within the page, the worst place there is on x86-64 (see
+    PAGE_BYTES). The ratio would then measure the allocator, not the operation.
+
+    Args:
+        cand: The candidate.
+        env: Its environment, with the output buffer as its setup made it.
+
+    Returns:
+        An uninitialised array of the same shape and type as the output
+        buffer, half a page after the first input counted within the page, or
+        the nearest place after that which is clear of every input. None when
+        the candidate has no output buffer, allocates it on every call, or
+        has no input buffer to be placed against.
+    """
+    inputs = _input_addresses(cand, env)
+    if cand.out is None or cand.alloc or not inputs:
+        return None
+    made = env[cand.out]
+    # One page more than needed, so any position within a page can be chosen.
+    block = np.empty(made.nbytes + PAGE_BYTES, np.uint8)
+    wanted = inputs[0] + OUTPUT_GAP_BYTES
+    offsets = [(wanted + step - ptr(block)) % PAGE_BYTES for step in range(0, PAGE_BYTES, CLEAR_BYTES)]
+    offset = next(o for o in offsets if _clear_of(ptr(block) + o, inputs))
+    return block[offset:offset + made.nbytes].view(made.dtype).reshape(made.shape)
+
+
 def environment_for(cand: Cand, n: int) -> dict:
     """Build the input a candidate is measured on.
 
@@ -171,11 +265,16 @@ def environment_for(cand: Cand, n: int) -> dict:
 
     Returns:
         The environment its expressions are evaluated in: `np`, `rng`, `n`,
-        `ptr`, the helper functions, and everything the candidate's setup made.
+        `ptr`, the helper functions, and everything the candidate's setup
+        made, with the output buffer moved to a fixed place relative to the
+        inputs (see `placed_output`).
     """
     env = {"np": np, "rng": np.random.default_rng(SEED), "n": n, "ptr": ptr, **HELPERS}
     for name, expression in cand.setup.items():
         env[name] = eval(expression, env)
+    output = placed_output(cand, env)
+    if output is not None:
+        env[cand.out] = output
     return env
 
 
@@ -195,6 +294,23 @@ def agrees(cand: Cand, env: dict) -> bool:
     return bool(np.allclose(got, expect, rtol=cand.rtol))
 
 
+def output_page_gaps(cand: Cand, env: dict) -> list[int]:
+    """Say where a candidate's output buffer sits in its page relative to its inputs.
+
+    Args:
+        cand: The candidate.
+        env: Its environment, holding the arrays it is timed on.
+
+    Returns:
+        For each input buffer, how many bytes after it the output buffer
+        starts, modulo the page size. Empty when the candidate has no output
+        buffer or allocates it on every call, where the address is not known.
+    """
+    if cand.out is None or cand.alloc:
+        return []
+    return [(ptr(env[cand.out]) - start) % PAGE_BYTES for start in _input_addresses(cand, env)]
+
+
 def measure(lib: ctypes.CDLL, cand: Cand, n: int, samples: int, budget_s: float) -> dict:
     """Check one candidate at one size, then time NumPy and naive C on it.
 
@@ -207,8 +323,9 @@ def measure(lib: ctypes.CDLL, cand: Cand, n: int, samples: int, budget_s: float)
 
     Returns:
         One result row: the candidate's identity, whether naive C agreed with
-        NumPy, and the median and fastest time per call for each contender in
-        nanoseconds.
+        NumPy, the median and fastest time per call for each contender in
+        nanoseconds, and where the output buffer sat relative to the inputs
+        (see `output_page_gaps`).
     """
     env = environment_for(cand, n)
     args = [eval(expression, env) for expression in cand.args]
@@ -247,6 +364,7 @@ def measure(lib: ctypes.CDLL, cand: Cand, n: int, samples: int, budget_s: float)
         "key": cand.key, "group": cand.group, "stmt": cand.stmt, "cfn": cand.cfn,
         "n": n, "work": int(eval(cand.work, env)), "alloc": cand.alloc,
         "naive_matches_numpy": ok, "samples": len(c_ns),
+        "out_page_gaps": output_page_gaps(cand, env),
         "numpy_ns": statistics.median(numpy_ns), "c_ns": statistics.median(c_ns),
         "numpy_min_ns": min(numpy_ns), "c_min_ns": min(c_ns),
         "numpy_over_c": statistics.median(numpy_ns) / statistics.median(c_ns),
@@ -285,6 +403,41 @@ def _output_of(command: list[str]) -> str:
     return subprocess.run(command, capture_output=True, text=True).stdout.strip()
 
 
+def numpy_simd() -> dict[str, list[str]]:
+    """Report which vector instruction sets this NumPy build uses here.
+
+    NumPy's own loops are the other contender, and how fast they are depends
+    on this: an operation NumPy leaves scalar on one architecture has a vector
+    loop on another.
+
+    Returns:
+        `required`: the sets NumPy was compiled to require. `found`: the
+        further ones it found on this processor and switches to at run time.
+        Both empty if this NumPy build does not say.
+    """
+    described = np.show_config(mode="dicts").get(_NUMPY_SIMD, {})
+    return {"required": list(described.get(_NUMPY_SIMD_REQUIRED, [])),
+            "found": list(described.get(_NUMPY_SIMD_FOUND, []))}
+
+
+def power_state() -> dict:
+    """Record whether the system was holding the processor back during a run.
+
+    Returns:
+        On macOS, `low_power_mode`: whether Low Power Mode was on. On Linux,
+        `pinned_cpu`: the CPU the timing thread was pinned to, and `warnings`:
+        one sentence per problem the judge's checks found (turbo switched off,
+        a power-saving frequency setting, other work running, a core shared
+        with a judge run).
+    """
+    if _MACOS:
+        return {"low_power_mode": bool(_LOW_POWER_ON.search(_output_of(["pmset", "-g"])))}
+    core = cores.claim()
+    if core is None:
+        return {}
+    return {"pinned_cpu": core.cpu, "warnings": cores.throttle_warnings(core)}
+
+
 def describe_machine(kernels: list[str], drift: float) -> dict:
     """Record what a run was measured on.
 
@@ -294,18 +447,20 @@ def describe_machine(kernels: list[str], drift: float) -> dict:
 
     Returns:
         The metadata stored beside the result rows: processor, operating
-        system, compiler, NumPy and Python versions, git revision, the
-        reference drift, and which kernels clang vectorised.
+        system, compiler, NumPy and Python versions, the vector instruction
+        sets NumPy uses, git revision, the reference drift, the power state
+        (see `power_state`), and which kernels clang vectorised.
     """
     loops = vectorised()
     return {
-        "cpu": _output_of(["sysctl", "-n", "machdep.cpu.brand_string"]),
+        "cpu": machine(),
         "os": platform.platform(),
-        "clang": _output_of(["clang", "--version"]).splitlines()[0],
+        "clang": _output_of([CC, "--version"]).splitlines()[0],
         "cflags": CFLAGS,
         "numpy": np.__version__,
+        "numpy_simd": numpy_simd(),
         "python": platform.python_version(),
-        "low_power_mode": bool(_LOW_POWER_ON.search(_output_of(["pmset", "-g"]))),
+        **power_state(),
         "reference_drift": drift,
         "git": _output_of(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
         "c_vectorised": {name: loops.get(name, []) for name in sorted(kernels)},

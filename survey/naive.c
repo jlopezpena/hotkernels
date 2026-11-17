@@ -1,16 +1,26 @@
 // Naive C baselines for the phase 2 survey.
 //
 // Each kernel is the simplest correct loop that matches NumPy's semantics.
-// It is compiled by survey/measure.py with `clang -O3 -mcpu=native` and timed inside C
-// by the bench_* functions, so no Python call overhead is included.
+// It is compiled by survey/measure.py with `clang -O3`, tuned for the machine it
+// runs on, and timed inside C by the bench_* functions, so no Python call
+// overhead is included.
 //
 // These are survey baselines, not kernel-contract `naive.c` files. A candidate
 // that is chosen for phase 3 gets its own reviewed naive.c under kernels/.
 
-#include <pthread.h>
+#ifndef __APPLE__
+// On Linux, clock_gettime is only declared under a feature macro when the
+// compiler is asked for strict C11.
+#define _GNU_SOURCE
+#endif
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+
+#ifdef __APPLE__
+#include <pthread.h>
+#endif
 
 typedef float f32;
 typedef double f64;
@@ -19,10 +29,26 @@ typedef uint8_t u8;
 
 #define NOINLINE __attribute__((noinline))
 
-static inline uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
+static inline uint64_t now_ns(void) {
+#ifdef __APPLE__
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+#endif
+}
 
 // Ask macOS for the highest QoS class so the timing thread stays on P-cores.
-int survey_init(void) { return pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0); }
+// Linux has no such class: there survey/measure.py pins the thread to one
+// performance core from Python, so there is nothing to do here.
+int survey_init(void) {
+#ifdef __APPLE__
+    return pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#else
+    return 0;
+#endif
+}
 
 // The kernel is called through a volatile function pointer so the compiler can
 // neither inline it into the timing loop nor hoist it out.

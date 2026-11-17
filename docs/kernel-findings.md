@@ -69,7 +69,7 @@ Every figure is how many times faster the kernel is. "vs naive C" and "vs NumPy"
 
 ### x86-64
 
-No results yet. NumPy is a different opponent there: it already has vector loops for `argmax`, `clip` and `astype`, so the ARM64 figures above are not a forecast. What a first measurement suggests is in [x86-64-design.md](x86-64-design.md#what-was-measured-before-writing-this).
+No results yet. NumPy is a different opponent there: it already has vector loops for `argmax`, `clip` and `astype`, so the ARM64 figures above are not a forecast. Where NumPy stands on that machine against naive C is recorded in [survey-design.md](survey-design.md#results-on-x86-64).
 
 ## How the numbers were taken
 
@@ -83,7 +83,7 @@ No results yet. NumPy is a different opponent there: it already has vector loops
 
 ### x86-64
 
-Nothing has been measured by the judge on x86-64 yet. The judge has to be ported first.
+Nothing has been measured by the judge on x86-64 yet. The judge runs there, and no x86-64 kernel has been written.
 
 ## What the judge had to learn
 
