@@ -197,7 +197,9 @@ sequenceDiagram
   end
 ```
 
-Each hook goes in one at a time and proves itself with a real call through NumPy's public interface. If the kernel's counter did not move, or the answer is wrong, the hook is removed and `report()` says so. The failure mode of an incompatible NumPy is therefore "that operation is not accelerated", never "that operation is wrong".
+Each hook goes in one at a time and proves itself with a real call through NumPy's public interface. If the kernel's counter did not move, or the answer is wrong, the hook is removed and `report()` says so. The failure mode of a NumPy that routes a call differently is therefore "that operation is not accelerated", never "that operation is wrong".
+
+A NumPy that routes the call the same way but answers it differently is another matter, and the self-test does not see it. NumPy 2.0 makes every zero `np.clip` returns +0.0, where later releases and the kernel keep its sign; before 2.3, `np.count_nonzero(x)` returns a Python `int` where later releases and the binding return `np.intp`. On those releases every hook passed its self-test and stayed in place. The differential test below found both, run against each NumPy 2 release, and the package now requires NumPy 2.3 and refuses an older one. Continuous integration runs that test against the oldest NumPy the package claims and the newest on PyPI.
 
 `uninstall()` restores the pointers in reverse order, and only a pointer that is still the one hotkernels put there. If something else has patched the same place since, it is left alone and reported.
 
