@@ -47,17 +47,18 @@ static const char *const CUMSUM_PARAMETERS[] = {"axis", "dtype", "out"};
 
 // ------------------------------------------------------------------ astype
 
+// The type `np.float32` and its dtype object, which NumPy keeps one of.
+// Fetched when the hook is applied.
+static PyObject *float32_type;
+static PyObject *float32_descr;
+
 // True when `dtype`, the argument of astype, names native float32 in one of
 // the usual spellings: the type `np.float32`, its dtype object, or the
-// strings "float32" and "f4".
+// strings "float32" and "f4". The two objects are compared by identity,
+// which is the cheapest test and comes first: astype is called with a type
+// object far more often than with anything else.
 static bool names_float32(PyObject *dtype) {
-    if (dtype == (PyObject *)&PyFloatArrType_Type) return true;
-    if (PyArray_DescrCheck(dtype)) {
-        PyArray_Descr *float32 = PyArray_DescrFromType(NPY_FLOAT);
-        const bool same = dtype == (PyObject *)float32;
-        Py_DECREF(float32);
-        return same;
-    }
+    if (dtype == float32_type || dtype == float32_descr) return true;
     if (PyUnicode_CheckExact(dtype)) {
         return PyUnicode_CompareWithASCIIString(dtype, "float32") == 0 ||
                PyUnicode_CompareWithASCIIString(dtype, "f4") == 0;
@@ -65,21 +66,29 @@ static bool names_float32(PyObject *dtype) {
     return false;
 }
 
-// x.astype(np.float32) for a contiguous uint8 array, with every other
-// argument at its default. The result has the shape of the input.
-static PyObject *method_astype(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
-    if (nargs == 1 && kwnames == NULL && hk_is_flat(self, NPY_UINT8) && names_float32(args[0])) {
-        PyArrayObject *x = (PyArrayObject *)self;
-        PyObject *result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), NPY_FLOAT);
-        if (result != NULL) {
-            const npy_intp n = PyArray_SIZE(x);
-            HK_BEGIN_NOGIL(n)
-            cast_u8_f32(PyArray_DATA(x), PyArray_DATA((PyArrayObject *)result), (size_t)n);
-            HK_END_NOGIL
-            hk_take(HK_CAST_U8_F32);
-            return result;
-        }
+// Convert a contiguous uint8 array to float32. The result has the shape of
+// the input.
+static HK_NOINLINE PyObject *try_astype(PyObject *self) {
+    PyArrayObject *x = (PyArrayObject *)self;
+    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), NPY_FLOAT);
+    if (result == NULL) {
         PyErr_Clear();
+        return NULL;
+    }
+    const npy_intp n = PyArray_SIZE(x);
+    HK_BEGIN_NOGIL(n)
+    cast_u8_f32(PyArray_DATA(x), PyArray_DATA((PyArrayObject *)result), (size_t)n);
+    HK_END_NOGIL
+    hk_take(HK_CAST_U8_F32);
+    return result;
+}
+
+// x.astype(np.float32) for a contiguous uint8 array, with every other
+// argument at its default.
+static PyObject *method_astype(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    if (hk_is_flat(self, NPY_UINT8) && nargs == 1 && kwnames == NULL && names_float32(args[0])) {
+        PyObject *result = try_astype(self);
+        if (result != NULL) return result;
     }
     hk_pass(HK_OP_ASTYPE);
     return ((hk_fast_keywords)(void (*)(void))methods[M_ASTYPE].original)(self, args, nargs, kwnames);
@@ -106,7 +115,7 @@ static PyObject *method_sum(PyObject *self, PyObject *const *args, Py_ssize_t na
 // anywhere in it, whatever it reports. So it runs on a buffer of the
 // binding's own, and the reported indices are copied into an array of
 // exactly that size.
-static PyObject *try_nonzero(PyObject *self) {
+static HK_NOINLINE PyObject *try_nonzero(PyObject *self) {
     if (!hk_is_flat_1d(self, NPY_BOOL)) return NULL;
     PyArrayObject *mask = (PyArrayObject *)self;
     const npy_intp n = PyArray_SIZE(mask);
@@ -154,7 +163,7 @@ static PyObject *method_nonzero(PyObject *self, PyObject *args) {
 // True when a cumsum call leaves `axis`, `dtype` and `out` at None, however
 // it spells that: `x.cumsum()`, `x.cumsum(None)` or, as np.cumsum(x) does,
 // `x.cumsum(axis=None, dtype=None, out=None)`.
-static bool cumsum_arguments_are_default(PyObject *args, PyObject *kwargs) {
+static HK_NOINLINE bool cumsum_arguments_are_default(PyObject *args, PyObject *kwargs) {
     const Py_ssize_t positional = PyTuple_GET_SIZE(args);
     if (positional > CUMSUM_PARAMETER_COUNT) return false;
     for (Py_ssize_t i = 0; i < positional; i++) {
@@ -173,26 +182,31 @@ static bool cumsum_arguments_are_default(PyObject *args, PyObject *kwargs) {
     return true;
 }
 
-// x.cumsum() for a contiguous int64 array, and for float32 and float64 when
-// install(inexact=True) was given. The result is one-dimensional, as NumPy's
-// is when no axis is given.
+// The kernel for `x.cumsum()` on this array: int64 always, float32 and
+// float64 when install(inexact=True) was given. Returns HK_KERNEL_COUNT when
+// there is none. This is tested before the arguments are looked at: most
+// calls are for another element type, and rejecting those must cost almost
+// nothing.
+static hk_kernel cumsum_kernel(PyObject *self) {
+    if (hk_is_flat(self, NPY_INT64)) return HK_CUMSUM_I64;
+    if (hk_inexact && hk_is_flat(self, NPY_FLOAT)) return HK_CUMSUM_F32;
+    if (hk_inexact && hk_is_flat(self, NPY_DOUBLE)) return HK_CUMSUM_F64;
+    return HK_KERNEL_COUNT;
+}
+
+// Run a cumsum kernel. The result is one-dimensional, as NumPy's is when no
+// axis is given.
 //
 // The float kernels regroup the additions and can raise floating-point
 // exceptions NumPy's sequential sum does not, or the other way round (issue
 // 9). NumPy turns those into warnings. So the flags are cleared before the
 // kernel, and if any that NumPy reports is set afterwards the kernel's output
 // is dropped and NumPy computes the result and issues its own warnings.
-static PyObject *try_cumsum(PyObject *self) {
-    hk_kernel kernel;
-    int type_num;
-    if (hk_is_flat(self, NPY_INT64)) kernel = HK_CUMSUM_I64, type_num = NPY_INT64;
-    else if (hk_inexact && hk_is_flat(self, NPY_FLOAT)) kernel = HK_CUMSUM_F32, type_num = NPY_FLOAT;
-    else if (hk_inexact && hk_is_flat(self, NPY_DOUBLE)) kernel = HK_CUMSUM_F64, type_num = NPY_DOUBLE;
-    else return NULL;
+static HK_NOINLINE PyObject *try_cumsum(PyObject *self, hk_kernel kernel) {
     PyArrayObject *x = (PyArrayObject *)self;
     npy_intp n = PyArray_SIZE(x);
     if (n < 1) return NULL;
-    PyObject *result = PyArray_SimpleNew(1, &n, type_num);
+    PyObject *result = PyArray_SimpleNew(1, &n, PyArray_TYPE(x));
     if (result == NULL) {
         PyErr_Clear();
         return NULL;
@@ -222,8 +236,9 @@ static PyObject *try_cumsum(PyObject *self) {
 
 // Called with a tuple and a dictionary (METH_VARARGS | METH_KEYWORDS).
 static PyObject *method_cumsum(PyObject *self, PyObject *args, PyObject *kwargs) {
-    if (cumsum_arguments_are_default(args, kwargs)) {
-        PyObject *result = try_cumsum(self);
+    const hk_kernel kernel = cumsum_kernel(self);
+    if (kernel != HK_KERNEL_COUNT && cumsum_arguments_are_default(args, kwargs)) {
+        PyObject *result = try_cumsum(self, kernel);
         if (result != NULL) return result;
     }
     hk_pass(HK_OP_CUMSUM);
@@ -241,6 +256,10 @@ static hk_method methods[M_COUNT] = {
 
 // Point the method at the binding. See hk_hook.apply.
 static int method_apply(int index) {
+    if (float32_descr == NULL) {
+        float32_type = (PyObject *)&PyFloatArrType_Type;
+        float32_descr = (PyObject *)PyArray_DescrFromType(NPY_FLOAT);
+    }
     PyObject *descriptor = PyObject_GetAttrString((PyObject *)&PyArray_Type, methods[index].name);
     if (descriptor == NULL) return -1;
     if (!Py_IS_TYPE(descriptor, &PyMethodDescr_Type)) {

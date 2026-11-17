@@ -8,6 +8,7 @@
 _Atomic uint64_t hk_taken[HK_KERNEL_COUNT];
 _Atomic uint64_t hk_passed[HK_OPERATION_COUNT];
 bool hk_inexact = false;
+PyTypeObject *hk_ndarray_type;
 
 // Kernel names, in the order of hk_kernel.
 static const char *const HK_KERNEL_NAMES[HK_KERNEL_COUNT] = {
@@ -156,5 +157,6 @@ static struct PyModuleDef binding_module = {
 PyMODINIT_FUNC PyInit__binding(void) {
     import_array();
     import_umath();
+    hk_ndarray_type = &PyArray_Type;
     return PyModule_Create(&binding_module);
 }

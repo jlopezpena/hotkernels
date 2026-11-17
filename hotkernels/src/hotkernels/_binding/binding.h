@@ -55,20 +55,32 @@ typedef enum {
     HK_OPERATION_COUNT
 } hk_operation;
 
-// Calls a kernel took, and calls passed on to NumPy. Atomic because NumPy
-// runs inner loops with the interpreter lock released, so two threads can be
-// inside a hook at once. Relaxed ordering: these are statistics.
+// Calls a kernel took, and calls passed on to NumPy.
+//
+// NumPy runs inner loops with the interpreter lock released, so two threads
+// can be inside a hook at once and the counters must be atomic objects. They
+// are updated by a separate load and store, not by an atomic add: an atomic
+// add costs several nanoseconds on every call that passes through a hook,
+// which is more than the rest of a fallback. The price is that two threads
+// counting the same thing at the same instant can lose one of the two
+// counts. These are statistics for report(), and install()'s self-test,
+// which does depend on them, runs on one thread.
 extern _Atomic uint64_t hk_taken[HK_KERNEL_COUNT];
 extern _Atomic uint64_t hk_passed[HK_OPERATION_COUNT];
 
+// Add one to a counter. See above for why this is not an atomic add.
+static inline void hk_count(_Atomic uint64_t *counter) {
+    atomic_store_explicit(counter, atomic_load_explicit(counter, memory_order_relaxed) + 1, memory_order_relaxed);
+}
+
 // Record that kernel `k` handled a call.
 static inline void hk_take(hk_kernel k) {
-    atomic_fetch_add_explicit(&hk_taken[k], 1, memory_order_relaxed);
+    hk_count(&hk_taken[k]);
 }
 
 // Record that a call to operation `op` reached a hook and went to NumPy.
 static inline void hk_pass(hk_operation op) {
-    atomic_fetch_add_explicit(&hk_passed[op], 1, memory_order_relaxed);
+    hk_count(&hk_passed[op]);
 }
 
 // True when install(inexact=True) was given: kernels that are not
@@ -76,6 +88,14 @@ static inline void hk_pass(hk_operation op) {
 extern bool hk_inexact;
 
 // -------------------------------------------------------------- the checks
+
+// Keeps a function out of line. A hook's first lines run on every call NumPy
+// receives, most of which no kernel takes. If the compiler folds the work of
+// taking a kernel into the hook, every call pays for that work's stack frame
+// before the first test: saving registers and reserving the scratch buffer
+// cost an index operation more than the hook's own test does. The work is
+// therefore kept in functions of its own, marked with this.
+#define HK_NOINLINE __attribute__((noinline))
 
 // The largest magnitude up to which a double represents every integer, 2^53.
 #define HK_EXACT_INT_LIMIT 9007199254740992LL
@@ -88,13 +108,22 @@ extern bool hk_inexact;
 // buffer comes from malloc.
 #define HK_STACK_SCRATCH_BYTES 2048
 
+// The ndarray type. NumPy's headers reach it through a table of pointers; it
+// is kept here so that the test made on every hooked call is one comparison.
+extern PyTypeObject *hk_ndarray_type;
+
+// True when `obj` is exactly an ndarray, not an instance of a subclass.
+static inline bool hk_is_plain_array(PyObject *obj) {
+    return Py_TYPE(obj) == hk_ndarray_type;
+}
+
 // True when `obj` is exactly an ndarray, not a subclass, holding elements of
 // NumPy type `type_num` in native byte order as one C-contiguous run with at
 // least one dimension. A kernel can then treat its data as a flat buffer of
 // PyArray_SIZE elements. Alignment is not required: the kernels accept
 // unaligned buffers.
 static inline bool hk_is_flat(PyObject *obj, int type_num) {
-    if (!PyArray_CheckExact(obj)) return false;
+    if (!hk_is_plain_array(obj)) return false;
     PyArrayObject *a = (PyArrayObject *)obj;
     return PyArray_TYPE(a) == type_num && PyArray_ISNOTSWAPPED(a) &&
            PyArray_NDIM(a) >= 1 && PyArray_IS_C_CONTIGUOUS(a);

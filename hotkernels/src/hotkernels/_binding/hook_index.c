@@ -19,14 +19,14 @@ static objobjargproc original_set;
 // True when `index` is a plain boolean ndarray. Tested first, on every index
 // operation: for an integer or a slice it fails on the first comparison.
 static inline bool is_mask(PyObject *index) {
-    return PyArray_CheckExact(index) && PyArray_TYPE((PyArrayObject *)index) == NPY_BOOL;
+    return hk_is_plain_array(index) && PyArray_TYPE((PyArrayObject *)index) == NPY_BOOL;
 }
 
 // x[mask] for one-dimensional contiguous float32 or float64 `x` and a
 // boolean mask of the same length. As with nonzero, the kernel's output is
 // scratch, so it runs on a buffer of the binding's own and the selected
 // elements are copied into an array of exactly their number.
-static PyObject *try_compress(PyObject *self, PyObject *index) {
+static HK_NOINLINE PyObject *try_compress(PyObject *self, PyObject *index) {
     hk_kernel kernel;
     int type_num;
     if (hk_is_flat_1d(self, NPY_DOUBLE)) kernel = HK_COMPRESS_F64, type_num = NPY_DOUBLE;
@@ -64,13 +64,20 @@ static PyObject *try_compress(PyObject *self, PyObject *index) {
     return result;
 }
 
-// The hooked `a[i]`.
-static PyObject *index_get(PyObject *self, PyObject *index) {
-    if (is_mask(index) && PyArray_CheckExact(self)) {
+// `a[mask]` with a boolean array as the index: take the kernel if the call
+// meets its conditions, and count it and pass it on if not.
+static HK_NOINLINE PyObject *get_by_mask(PyObject *self, PyObject *index) {
+    if (hk_is_plain_array(self)) {
         PyObject *result = try_compress(self, index);
         if (result != NULL) return result;
         hk_pass(HK_OP_COMPRESS);
     }
+    return original_get(self, index);
+}
+
+// The hooked `a[i]`. Anything but a boolean array index leaves at once.
+static PyObject *index_get(PyObject *self, PyObject *index) {
+    if (is_mask(index)) return get_by_mask(self, index);
     return original_get(self, index);
 }
 
@@ -80,7 +87,7 @@ static PyObject *index_get(PyObject *self, PyObject *index) {
 // The kernel rewrites elements the mask does not select with their own bits.
 // The interpreter lock stays held throughout, so no other Python thread can
 // write one of them in between and have its write undone.
-static bool try_maskfill(PyObject *self, PyObject *index, PyObject *value) {
+static HK_NOINLINE bool try_maskfill(PyObject *self, PyObject *index, PyObject *value) {
     double fill;
     if (!hk_is_flat_1d(self, NPY_DOUBLE) || !hk_is_flat_1d(index, NPY_BOOL)) return false;
     PyArrayObject *x = (PyArrayObject *)self, *mask = (PyArrayObject *)index;
@@ -94,18 +101,31 @@ static bool try_maskfill(PyObject *self, PyObject *index, PyObject *value) {
     return true;
 }
 
-// The hooked `a[i] = v`. A NULL value is `del a[i]`, which is NumPy's to refuse.
-static int index_set(PyObject *self, PyObject *index, PyObject *value) {
-    if (value != NULL && is_mask(index) && PyArray_CheckExact(self)) {
+// `a[mask] = v` with a boolean array as the index: take the kernel if the
+// call meets its conditions, and count it and pass it on if not.
+static HK_NOINLINE int set_by_mask(PyObject *self, PyObject *index, PyObject *value) {
+    if (hk_is_plain_array(self)) {
         if (try_maskfill(self, index, value)) return 0;
         hk_pass(HK_OP_MASKFILL);
     }
     return original_set(self, index, value);
 }
 
+// The hooked `a[i] = v`. A NULL value is `del a[i]`, which is NumPy's to
+// refuse. Anything but a boolean array index leaves at once.
+static int index_set(PyObject *self, PyObject *index, PyObject *value) {
+    if (value != NULL && is_mask(index)) return set_by_mask(self, index, value);
+    return original_set(self, index, value);
+}
+
 // Point `a[i]` (index 0) or `a[i] = v` (index 1) at the binding. See
-// hk_hook.apply. PyType_Modified tells CPython to drop anything it cached
-// about the type.
+// hk_hook.apply.
+//
+// CPython reads these two pointers from the type on every index operation
+// and caches nothing derived from them, so nothing has to be invalidated.
+// PyType_Modified is deliberately not called: it would discard the type's
+// cached attribute lookups, and CPython stops caching for a type altogether
+// once it has been modified a thousand times.
 static int index_apply(int index) {
     PyMappingMethods *mapping = PyArray_Type.tp_as_mapping;
     if (mapping == NULL || mapping->mp_subscript == NULL || mapping->mp_ass_subscript == NULL) {
@@ -119,7 +139,6 @@ static int index_apply(int index) {
         original_set = mapping->mp_ass_subscript;
         mapping->mp_ass_subscript = index_set;
     }
-    PyType_Modified(&PyArray_Type);
     return 0;
 }
 
@@ -133,7 +152,6 @@ static int index_remove(int index) {
         if (mapping->mp_ass_subscript != index_set) return 0;
         mapping->mp_ass_subscript = original_set;
     }
-    PyType_Modified(&PyArray_Type);
     return 1;
 }
 

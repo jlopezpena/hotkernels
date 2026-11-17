@@ -119,7 +119,7 @@ PyObject *hk_try_argext(PyObject *array, bool want_max) {
 // True when `array` is a plain float32 or float64 ndarray. NumPy sends such a
 // call on to the type slot, whose hook counts it, so it is not counted here.
 static bool reaches_type_slot(PyObject *array) {
-    if (!PyArray_CheckExact(array)) return false;
+    if (!hk_is_plain_array(array)) return false;
     const int type_num = PyArray_TYPE((PyArrayObject *)array);
     return type_num == NPY_FLOAT || type_num == NPY_DOUBLE;
 }
@@ -149,7 +149,7 @@ static PyObject *call_argmin(HK_VECTORCALL_PARAMETERS) {
 
 // np.count_nonzero(a) for a contiguous int64 or float64 array. NumPy returns
 // the count as an np.intp scalar when no axis is given.
-static PyObject *try_count_nonzero(PyObject *array) {
+static HK_NOINLINE PyObject *try_count_nonzero(PyObject *array) {
     hk_kernel kernel;
     if (hk_is_flat(array, NPY_INT64)) kernel = HK_COUNT_NONZERO_I64;
     else if (hk_is_flat(array, NPY_DOUBLE)) kernel = HK_COUNT_NONZERO_F64;
@@ -298,7 +298,7 @@ static PyObject *histogram_edges(PyObject *first, PyObject *last, Py_ssize_t bin
 // np.histogram(a, bins, range) for a contiguous float64 array, an integer
 // number of bins, and no density or weights. Returns the pair NumPy returns:
 // the counts as int64 and the bin edges as float64.
-static PyObject *try_histogram(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+static HK_NOINLINE PyObject *try_histogram(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     enum { A, BINS, RANGE, DENSITY, WEIGHTS, PARAMETERS };
     static const char *const names[PARAMETERS] = {"a", "bins", "range", "density", "weights"};
     PyObject *bound[PARAMETERS];
@@ -358,7 +358,7 @@ static PyObject *call_histogram(HK_VECTORCALL_PARAMETERS) {
 // without weights. The kernel always fills 256 counters. NumPy's result has
 // one entry more than the largest value present, or `minlength` entries if
 // that is more, so the counters are cut or padded to that length.
-static PyObject *try_bincount(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+static HK_NOINLINE PyObject *try_bincount(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     enum { X, WEIGHTS, MINLENGTH, PARAMETERS };
     // `x` can only be given by position.
     static const char *const names[PARAMETERS] = {NULL, "weights", "minlength"};
@@ -437,7 +437,7 @@ static bool isin_test_values(PyObject *test, int64_t values[ISIN_TEST_VALUES]) {
 
 // np.isin(element, test_elements) for a contiguous int64 array and at most
 // eight int64 test values, with every other argument left at its default.
-static PyObject *try_isin(PyObject *element, PyObject *test) {
+static HK_NOINLINE PyObject *try_isin(PyObject *element, PyObject *test) {
     int64_t values[ISIN_TEST_VALUES];
     if (!hk_is_flat(element, NPY_INT64) || !isin_test_values(test, values)) return NULL;
     PyArrayObject *x = (PyArrayObject *)element;

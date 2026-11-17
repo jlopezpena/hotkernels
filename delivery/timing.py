@@ -26,6 +26,7 @@ import numpy as np
 import hotkernels
 from hotkernels.environment import BINDING_MODULE
 
+from .cases import SLOT_MIN_N
 from .check import operation_kernels
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -71,6 +72,13 @@ class Timed:
     kernel: str | None
     # Whether the statement needs install(inexact=True).
     inexact: bool = False
+    # Element count from which the kernel takes the call. Below it the
+    # statement is measured as one left to NumPy.
+    min_n: int = 0
+
+    def kernel_at(self, n: int) -> str | None:
+        """Return the kernel that takes the call at `n` elements, or None."""
+        return self.kernel if n >= self.min_n else None
 
 
 @dataclass(frozen=True)
@@ -150,7 +158,7 @@ def _set_element(x: np.ndarray) -> None:
 # Statements a kernel takes: at least one per installed kernel.
 TAKEN: tuple[Timed, ...] = (
     Timed("argmax", "np.argmax(x)", "float32", partial(_floats, np.float32), np.argmax, "argmax_f32"),
-    Timed("argmax", "x.argmax()", "float32", partial(_floats, np.float32), lambda x: x.argmax(), "argmax_f32"),
+    Timed("argmax", "x.argmax()", "float32", partial(_floats, np.float32), lambda x: x.argmax(), "argmax_f32", min_n=SLOT_MIN_N),
     Timed("argmax", "np.argmax(x)", "float64", partial(_floats, np.float64), np.argmax, "argmax_f64"),
     Timed("argmin", "np.argmin(x)", "float32", partial(_floats, np.float32), np.argmin, "argmin_f32"),
     Timed("argmin", "np.argmin(x)", "float64", partial(_floats, np.float64), np.argmin, "argmin_f64"),
@@ -216,12 +224,13 @@ def _calls_per_batch(call: Callable, arguments: tuple) -> int:
     return int(min(max(TARGET_BATCH_NS / once, MIN_CALLS), MAX_CALLS))
 
 
-def _kernel_ran(entry: Timed, arguments: tuple) -> bool:
+def _kernel_ran(entry: Timed, arguments: tuple, kernel: str | None) -> bool:
     """Make one call with hotkernels installed and say whether the expected thing happened.
 
     Args:
         entry: The statement.
         arguments: Its arguments.
+        kernel: The kernel expected to take the call, or None.
 
     Returns:
         For a statement with a kernel, whether that kernel took the call; for
@@ -231,8 +240,8 @@ def _kernel_ran(entry: Timed, arguments: tuple) -> bool:
     before = binding.counters()[0]
     entry.call(*arguments)
     after = binding.counters()[0]
-    if entry.kernel:
-        return after[entry.kernel] > before[entry.kernel]
+    if kernel:
+        return after[kernel] > before[kernel]
     return all(after[k] == before[k] for k in operation_kernels(entry.operation))
 
 
@@ -251,6 +260,7 @@ def measure(entry: Timed, n: int) -> Measurement:
             case the timing would describe something else.
     """
     arguments = entry.make(n)
+    kernel = entry.kernel_at(n)
     hotkernels.uninstall()
     calls = _calls_per_batch(entry.call, arguments)
     plain, installed = [], []
@@ -258,11 +268,11 @@ def measure(entry: Timed, n: int) -> Measurement:
         hotkernels.uninstall()
         plain.append(_batch(entry.call, arguments, calls))
         hotkernels.install(inexact=entry.inexact)
-        if not _kernel_ran(entry, arguments):
+        if not _kernel_ran(entry, arguments, kernel):
             raise RuntimeError(f"{entry.statement} ({entry.data}, n={n}) was not routed as expected")
         installed.append(_batch(entry.call, arguments, calls))
     hotkernels.uninstall()
-    return Measurement(entry.operation, entry.statement, entry.data, entry.kernel, n, min(plain), min(installed))
+    return Measurement(entry.operation, entry.statement, entry.data, kernel, n, min(plain), min(installed))
 
 
 def run(entries: Iterable[Timed], sizes: tuple[int, ...] = SIZES) -> list[Measurement]:
