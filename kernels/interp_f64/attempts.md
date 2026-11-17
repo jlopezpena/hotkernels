@@ -203,3 +203,134 @@ replace the indicative and single-pass figures above wherever they are quoted.
 |---|---|---|---|---|
 | 64 queries | 5.17x [5.04 – 5.26] | 7.85x [7.57 – 8.10] | 16.2x [16.0 – 16.3] | 15.7x [15.6 – 15.8] |
 | 1,000 queries | 5.00x [4.93 – 5.03] | 6.40x [6.23 – 6.61] | 15.3x [15.0 – 16.0] | 16.8x [16.3 – 17.8] |
+
+## Fewer queries than a group (issue 39)
+
+[Issue 39](https://github.com/sofeikov/kernel-arena/issues/39): a call with
+fewer queries than one group (fewer than 16, or fewer than 64 from 64 sample
+points) went one query at a time through `Lslow`, a branchy copy of
+`naive.c`, and so did every call with 2 to 15 sample points (one sample
+point has its own path).
+
+What `judge compare` times here: the default scalar set (64 queries) and
+`many` (1,000), at every size from 16 to 16,777,216 sample points. Both take a
+group path at every size, so no timed call reaches `Lslow`. The sets with 1,
+15, 17 and 63 queries are checked, not timed, and the sweep starts above 15
+sample points. A change to the few-query path therefore always reports "no
+significant difference" and cannot be kept under the one rule. This is
+[issue 65](https://github.com/sofeikov/kernel-arena/issues/65), found by the
+same run on `searchsorted_f64`. The judge also checks no call with 2 to 14
+queries, which is where a padded short group is
+([issue 67](https://github.com/sofeikov/kernel-arena/issues/67)).
+
+So the attempts below were judged by `check` and `compare`, and their speed
+by a local C harness: the kernel on `HEAD` against the working copy, fresh
+queries on every call (a pool of a million, so the branch predictor cannot
+learn them), best of seven runs of 20,000 calls, the two interleaved; Apple M1
+Pro, with the self-hosted CI runner and a desktop session on the machine. The
+harness also compared the two outputs bit for bit. Each attempt was checked
+as well by a local program against `naive.c`, bit for bit, for every query
+count from 0 to 80 at every length from 1 to 300 sample points and at
+511 to 1,048,577, on random, tied and special values (NaN, infinities, signed
+zeros among the queries, the sample points and the values), with every buffer
+ending at an inaccessible page: 150,366 cases, all identical.
+
+## 9. Eight queries at once, a short group padded with its last query
+
+- **Idea:** as attempt 12 of `searchsorted_f64`. Stage 1 is this kernel's
+  search (count of `xp[1 .. n-2]` that are `<= v`) for eight queries at once,
+  with the bases in x5-x12, the queries in d0-d7, `fcmp` + `csel ls` per
+  probe and the step size shared. Stage 2 is the same arithmetic as the group
+  path, one query at a time in scalar registers (`fdiv`, `fmadd`, two
+  `fcsel`), the result replacing the query in its register, and a NaN fma
+  result sends the call from this group to the end to `Lslow`. From eight
+  queries, groups of eight with leftovers covered by redoing the last eight;
+  below eight, the missing lanes load the last query again (`csel` on the
+  index) and only the real results are stored. It serves every call that took
+  `Lslow` except two sample points (nothing to search) and, as in
+  `searchsorted_f64`, one query against 1,048,576 points or more.
+- **check:** pass, 157,062 cases
+- **compare:** no significant difference, 1.000x [0.999 – 1.000]: no timed
+  call takes the path
+- **Kept:** no
+- **Notes:** locally against `HEAD`, from 64 to 16,384 points: 8 to 63
+  queries 5.3x to 8.8x, 4 queries 2.9x to 4.4x; from 1,048,576, 3.4x to 5.9x
+  and 2.0x to 3.2x. But one query was 0.64x at 16 points and 0.76x at 64 (36
+  against 23 ns): padding one query to eight lanes costs eight searches'
+  worth of instructions, and at small sizes the eight lanes are bound by
+  throughput, not by the latency of a step. A mutation of one lane's `csel`
+  (`ls` to `mi`) fails `check` at once.
+
+## 10. One query: the same two stages for it alone
+
+- **Idea:** attempt 9, with a copy of the two stages for exactly one query
+  (`Lfew_one`): one base, one probe per step, the arithmetic once, and a NaN
+  fma result handing the call to `Lslow`.
+- **check:** pass, 157,062 cases
+- **compare:** not run separately (the path is not timed; see above)
+- **Kept:** no
+- **Notes:** one query locally, against `HEAD`: 2.5x to 3.3x from 16 to
+  262,144 points (12 against 29 ns at 16, 19 against 61 ns at 4,096).
+
+## 11. Two to four queries: four lanes
+
+- **Idea:** attempt 10, with a four-lane copy of the two stages for two to
+  four queries (`Lfew4`), padded to four by repeating the last query.
+- **check:** pass, 157,062 cases. The judge checks no call with 2 to 14
+  queries, so this path was not run by it: replacing its store of the third
+  result by `nop` still passes (157,062 cases). The local program against
+  `naive.c` catches that mutation (`n=3 q=3`); issue 67 asks for the sets.
+- **compare:** not run separately (the path is not timed)
+- **Kept:** no
+- **Notes:** against attempt 10 locally, two to four queries are 1.9x faster
+  at 16 points, 1.6x at 4,096 and 1.2x to 1.35x from 1,048,576; five and seven
+  queries are unchanged (same code). So the eight lanes are bound by
+  throughput even far beyond the cache.
+
+## 12. One query against a large array stays branchless
+
+- **Idea:** attempt 9 kept one query against 1,048,576 points or more in
+  `Lslow`, because the branchy search was faster there in `searchsorted_f64`
+  (attempt 14 of its log). Measure it here and drop the test if not. Also: the
+  eight-lane padded group now only serves five to seven queries, so its first
+  five queries are loaded and stored directly; and the test for two sample
+  points moved into the few-query path, so the group paths' entry is the same
+  instructions as on `HEAD` (with the test in front, `compare` once reported
+  "significantly slower", 1.000x [0.999 – 1.000], 0.2 ns at 16 points).
+- **check:** pass, 157,062 cases
+- **compare:** no significant difference, 1.000x [1.000 – 1.000]
+- **Kept:** no. The kernel is unchanged on this run's branch; attempts 9 to
+  12 together are on the branch `claude/interp_f64-few-needles-attempt`, to be
+  judged once the spec times few queries (issue 65) and checks 2 to 14
+  (issue 67).
+- **Notes:** one query against `HEAD` locally, with the test and without it:
+  1.00x / 2.0x at 1,048,576, 1.00x / 1.5x at 4,194,304, 1.00x / 1.2x at
+  16,777,216. Here the branchless search wins at every size, unlike in
+  `searchsorted_f64`; why the two kernels differ was not looked into.
+
+  The final kernel against `HEAD` locally, nanoseconds per call, old / new:
+
+  | n | 1 query | 2 | 4 | 5 | 8 | 15 | 32 | 63 |
+  |---|---|---|---|---|---|---|---|---|
+  | 4 | 14 / 7, 1.9x | 23 / 18, 1.3x | 37 / 16, 2.3x | 42 / 27, 1.6x | 62 / 25, 2.5x | 95 / 41, 2.3x | 190 / 77, 2.5x | 369 / 154, 2.4x |
+  | 16 | 19 / 7, 2.8x | 35 / 14, 2.4x | 71 / 14, 4.9x | 87 / 27, 3.2x | 135 / 27, 5.1x | 248 / 53, 4.7x | group path | group path |
+  | 64 | 27 / 9, 2.9x | 50 / 18, 2.7x | 105 / 19, 5.5x | 125 / 34, 3.7x | 197 / 34, 5.8x | 363 / 66, 5.5x | 771 / 131, 5.9x | 1,508 / 260, 5.8x |
+  | 4,096 | 61 / 18, 3.3x | 122 / 33, 3.7x | 239 / 33, 7.2x | 297 / 54, 5.5x | 472 / 54, 8.7x | 879 / 107, 8.2x | 1,868 / 214, 8.7x | 3,670 / 425, 8.6x |
+  | 65,536 | 105 / 40, 2.6x | 209 / 72, 2.9x | 414 / 73, 5.7x | 498 / 99, 5.0x | 789 / 103, 7.7x | 1,475 / 200, 7.4x | 3,139 / 408, 7.7x | 6,168 / 808, 7.6x |
+  | 1,048,576 | 187 / 89, 2.1x | 372 / 165, 2.3x | 725 / 178, 4.1x | 905 / 240, 3.8x | 1,435 / 256, 5.6x | 2,664 / 491, 5.4x | 5,452 / 958, 5.7x | 10,707 / 1,880, 5.7x |
+  | 16,777,216 | 585 / 471, 1.2x | 1,155 / 863, 1.3x | 2,276 / 888, 2.6x | 2,735 / 1,146, 2.4x | 4,354 / 1,245, 3.5x | 8,134 / 2,435, 3.3x | 17,335 / 4,898, 3.5x | 34,104 / 9,700, 3.5x |
+
+  No cell is slower than `HEAD`. With 64 queries at 3 to 15 points (now eight
+  at a time instead of one at a time) it is 2.5x at 3 points, 3.4x at 8 and
+  4.3x at 15.
+
+Not tried, and why:
+
+- Two four-lane groups for five to seven queries instead of one padded group
+  of eight: two four-query calls cost more than one padded group of eight at
+  every size measured (for example 2 x 19 against 34 ns for five queries at
+  64 points, 2 x 888 against 1,146 ns at 16,777,216).
+- More than eight lanes in general registers: x0-x17 are all in use (eight
+  bases, the step, the pass count, the probe pointer, a scratch, the group,
+  out, the last group, xp, fp and n). Moving state to vector registers, as
+  the group paths do, is what those paths already are.
