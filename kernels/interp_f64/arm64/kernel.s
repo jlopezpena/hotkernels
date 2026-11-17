@@ -5,8 +5,10 @@
 // and fp; bit-identical to naive.c, which follows NumPy case by case.
 //
 // Queries are handled in groups of 64 (16 when n < 64), in two stages. A call
-// with fewer queries than one group, or fewer than 16 sample points, is done
-// one query at a time by Lslow.
+// with fewer queries than one group, or 3 to 15 sample points, takes the same
+// two stages eight queries at a time in general registers (Lfew; one query,
+// and two to four, have their own narrower copies). Two sample points go one
+// query at a time through Lslow.
 //
 // Stage 1, the search. For each query v it finds
 //     jc = number of i in [1, n-2] with xp[i] <= v
@@ -33,8 +35,7 @@
 // Inside the range and off a sample point, that is exactly naive.c's value.
 // The rare cases are not decided here: whenever the fma result is NaN (a NaN
 // query, infinities, the NaN fallbacks) the four queries of that iteration
-// are recomputed by Lslow, which is naive.c line by line. Lslow also handles
-// everything when n < 16.
+// are recomputed by Lslow, which is naive.c line by line.
 // From 1,048,576 points the fp loads are cache misses, so they are prefetched
 // for the whole group as soon as stage 1 has produced the indices.
 //
@@ -57,15 +58,15 @@ _interp_f64:
     cmp     x4, #1
     b.eq    Lone
     cmp     x4, #16
-    b.lo    Lall_slow
-    cmp     x5, #16
-    b.lo    Lall_slow               // too few queries for a group
+    b.lo    Lfew
     lsr     x6, x4, #32
     cbnz    x6, Lall_slow           // bases are 32-bit
+    cmp     x5, #16
+    b.lo    Lfew                    // too few queries for a group
     cmp     x4, #64
     b.lo    Lgroups
     cmp     x5, #64
-    b.lo    Lall_slow               // too few queries for a group of 64
+    b.lo    Lfew                    // too few queries for a group of 64
 Lgroups:
     mov     x11, x5                 // queries; x5 is scratch from here
     sub     x5, x4, #2              // m
@@ -643,6 +644,457 @@ Lagain:
     b       Lg16
 Ldone:
     ret
+
+    // ---- Fewer queries than a group: eight at once, in general registers.
+    // Taken by every call with fewer queries than its group (fewer than 16,
+    // or fewer than 64 from 64 sample points) and every call with 3 to 15
+    // sample points. Stage 1 is the search at the top of the file, one fcmp +
+    // csel per probe, with the eight bases in x5-x12 and the step size
+    // shared. Stage 2 is the same arithmetic, one query at a time, and the
+    // result replaces the query in its register. From eight queries, groups
+    // of eight, leftovers covered by redoing the last eight. Below eight, the
+    // missing lanes repeat the last query and only the real results are
+    // stored, so no buffer is needed. Whenever an fma result is NaN, Lslow
+    // takes over from this group to the end of the call. One query, and two
+    // to four, have their own copies of the two stages (Lfew_one, Lfew4):
+    // padding them to eight lanes costs up to twice their time.
+    // x0 group's first query, x3 out - x, x14 the last full group's first
+    // query (or the number of queries when there are fewer than eight),
+    // x5-x12 bases, x13 h, x16 passes left, x17 &a[h - 1], x15 scratch;
+    // d0-d7 queries then results, d16-d23 scratch, d24 NaN detector
+Lfew:
+    cmp     x4, #3
+    b.lo    Lall_slow               // two points: nothing to search
+    cmp     x5, #1
+    b.eq    Lfew_one
+    cmp     x5, #4
+    b.ls    Lfew4
+    mov     x14, x5                 // queries
+    sub     x3, x3, x0              // out - x
+    cmp     x14, #8
+    b.hs    Lfew_full
+    sub     x15, x14, #1            // last query; lanes past it repeat it
+    ldp     d0, d1, [x0]            // five to seven queries: 0-4 exist
+    ldp     d2, d3, [x0, #16]
+    ldr     d4, [x0, #32]
+    mov     x16, #5
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d5, [x0, x16, lsl #3]
+    mov     x16, #6
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d6, [x0, x16, lsl #3]
+    mov     x16, #7
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d7, [x0, x16, lsl #3]
+    b       Lfew_search
+Lfew_one:                           // one query: the same search for it alone
+    ldr     d0, [x0]
+    sub     x15, x4, #2             // m
+    clz     x16, x15
+    mov     x17, #63
+    sub     x17, x17, x16           // k = floor(log2(m))
+    mov     x13, #1
+    lsl     x13, x13, x17           // p
+    sub     x15, x15, x13           // m - p
+    ldr     d16, [x1, x13, lsl #3]  // a[p - 1] = xp[p]
+    mov     x17, #64
+    sub     x16, x17, x16           // k steps and the last probe
+    fcmp    d16, d0
+    csel    x5, x15, xzr, ls        // base = (a[p - 1] <= v) ? m - p : 0
+    lsr     x13, x13, #1
+    cmp     x13, #0
+    csinc   x13, x13, xzr, ne       // h = max(p / 2, 1)
+Lfew_one_pass:
+    add     x17, x1, x13, lsl #3    // &a[h - 1] = xp + h
+    ldr     d16, [x17, x5, lsl #3]
+    fcmp    d16, d0
+    add     x15, x5, x13
+    csel    x5, x15, x5, ls         // base += h if a[base + h - 1] <= v
+    lsr     x15, x13, #1
+    cmp     x15, #0
+    csinc   x13, x15, xzr, ne       // h = max(h / 2, 1): the last probe is h = 1 again
+    subs    x16, x16, #1
+    b.ne    Lfew_one_pass
+    add     x15, x1, x5, lsl #3
+    ldp     d16, d17, [x15]         // xp[jc], xp[jc+1]
+    add     x15, x2, x5, lsl #3
+    ldp     d18, d19, [x15]         // fp[jc], fp[jc+1]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d0, d16            // t = v - xp[jc]
+    fdiv    d21, d21, d20           // slope
+    fmadd   d23, d21, d22, d18      // slope * t + fp[jc], fused
+    fcmp    d23, d23
+    b.vs    Lfew_one_redo           // NaN: naive.c decides
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt       // !(t > 0): fp[jc]
+    fcmp    d0, d17
+    fcsel   d0, d19, d23, ge        // v >= xp[jc+1]: fp[jc+1]
+    str     d0, [x3]
+    ret
+Lfew_one_redo:
+    mov     x5, #1
+    b       Lall_slow
+Lfew4:                              // 2 to 4 queries: four lanes, the last query repeated
+    mov     x14, x5                 // queries
+    sub     x15, x14, #1
+    ldr     d0, [x0]
+    ldr     d1, [x0, #8]
+    mov     x16, #2
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d2, [x0, x16, lsl #3]
+    mov     x16, #3
+    cmp     x16, x15
+    csel    x16, x16, x15, ls
+    ldr     d3, [x0, x16, lsl #3]
+    sub     x15, x4, #2             // m
+    clz     x16, x15
+    mov     x17, #63
+    sub     x17, x17, x16           // k = floor(log2(m))
+    mov     x13, #1
+    lsl     x13, x13, x17           // p
+    sub     x15, x15, x13           // m - p
+    ldr     d16, [x1, x13, lsl #3]  // a[p - 1] = xp[p]
+    mov     x17, #64
+    sub     x16, x17, x16           // k steps and the last probe
+    fcmp    d16, d0
+    csel    x5, x15, xzr, ls
+    fcmp    d16, d1
+    csel    x6, x15, xzr, ls
+    fcmp    d16, d2
+    csel    x7, x15, xzr, ls
+    fcmp    d16, d3
+    csel    x8, x15, xzr, ls
+    lsr     x13, x13, #1
+    cmp     x13, #0
+    csinc   x13, x13, xzr, ne       // h = max(p / 2, 1)
+Lfew4_pass:
+    add     x17, x1, x13, lsl #3    // &a[h - 1] = xp + h
+    ldr     d16, [x17, x5, lsl #3]
+    fcmp    d16, d0
+    add     x15, x5, x13
+    csel    x5, x15, x5, ls
+    ldr     d17, [x17, x6, lsl #3]
+    fcmp    d17, d1
+    add     x15, x6, x13
+    csel    x6, x15, x6, ls
+    ldr     d16, [x17, x7, lsl #3]
+    fcmp    d16, d2
+    add     x15, x7, x13
+    csel    x7, x15, x7, ls
+    ldr     d17, [x17, x8, lsl #3]
+    fcmp    d17, d3
+    add     x15, x8, x13
+    csel    x8, x15, x8, ls
+    lsr     x15, x13, #1
+    cmp     x15, #0
+    csinc   x13, x15, xzr, ne       // h = max(h / 2, 1): the last probe is h = 1 again
+    subs    x16, x16, #1
+    b.ne    Lfew4_pass
+    movi    d24, #0
+    add     x15, x1, x5, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x5, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d0, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d0, d17
+    fcsel   d0, d19, d23, ge
+    add     x15, x1, x6, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x6, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d1, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d1, d17
+    fcsel   d1, d19, d23, ge
+    add     x15, x1, x7, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x7, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d2, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d2, d17
+    fcsel   d2, d19, d23, ge
+    add     x15, x1, x8, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x8, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d3, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d3, d17
+    fcsel   d3, d19, d23, ge
+    fcmp    d24, d24
+    b.vs    Lfew4_redo
+    stp     d0, d1, [x3]
+    cmp     x14, #3
+    b.lo    Ldone
+    str     d2, [x3, #16]
+    b.eq    Ldone
+    str     d3, [x3, #24]
+    ret
+Lfew4_redo:
+    mov     x5, x14
+    b       Lall_slow
+
+Lfew_full:
+    sub     x15, x14, #8
+    add     x14, x0, x15, lsl #3    // first query of the last full group
+Lfew_load:
+    ldp     d0, d1, [x0]
+    ldp     d2, d3, [x0, #16]
+    ldp     d4, d5, [x0, #32]
+    ldp     d6, d7, [x0, #48]
+Lfew_search:
+    sub     x15, x4, #2             // m
+    clz     x16, x15
+    mov     x17, #63
+    sub     x17, x17, x16           // k = floor(log2(m))
+    mov     x13, #1
+    lsl     x13, x13, x17           // p
+    sub     x15, x15, x13           // m - p
+    ldr     d16, [x1, x13, lsl #3]  // a[p - 1] = xp[p]
+    mov     x17, #64
+    sub     x16, x17, x16           // k steps and the last probe: 64 - clz(m)
+    fcmp    d16, d0
+    csel    x5, x15, xzr, ls        // base = (a[p - 1] <= v) ? m - p : 0
+    fcmp    d16, d1
+    csel    x6, x15, xzr, ls
+    fcmp    d16, d2
+    csel    x7, x15, xzr, ls
+    fcmp    d16, d3
+    csel    x8, x15, xzr, ls
+    fcmp    d16, d4
+    csel    x9, x15, xzr, ls
+    fcmp    d16, d5
+    csel    x10, x15, xzr, ls
+    fcmp    d16, d6
+    csel    x11, x15, xzr, ls
+    fcmp    d16, d7
+    csel    x12, x15, xzr, ls
+    lsr     x13, x13, #1
+    cmp     x13, #0
+    csinc   x13, x13, xzr, ne       // h = max(p / 2, 1)
+Lfew_pass:
+    add     x17, x1, x13, lsl #3    // &a[h - 1] = xp + h
+    ldr     d16, [x17, x5, lsl #3]
+    fcmp    d16, d0
+    add     x15, x5, x13
+    csel    x5, x15, x5, ls       // base += h if a[base + h - 1] <= v
+    ldr     d17, [x17, x6, lsl #3]
+    fcmp    d17, d1
+    add     x15, x6, x13
+    csel    x6, x15, x6, ls
+    ldr     d16, [x17, x7, lsl #3]
+    fcmp    d16, d2
+    add     x15, x7, x13
+    csel    x7, x15, x7, ls
+    ldr     d17, [x17, x8, lsl #3]
+    fcmp    d17, d3
+    add     x15, x8, x13
+    csel    x8, x15, x8, ls
+    ldr     d16, [x17, x9, lsl #3]
+    fcmp    d16, d4
+    add     x15, x9, x13
+    csel    x9, x15, x9, ls
+    ldr     d17, [x17, x10, lsl #3]
+    fcmp    d17, d5
+    add     x15, x10, x13
+    csel    x10, x15, x10, ls
+    ldr     d16, [x17, x11, lsl #3]
+    fcmp    d16, d6
+    add     x15, x11, x13
+    csel    x11, x15, x11, ls
+    ldr     d17, [x17, x12, lsl #3]
+    fcmp    d17, d7
+    add     x15, x12, x13
+    csel    x12, x15, x12, ls
+    lsr     x15, x13, #1
+    cmp     x15, #0
+    csinc   x13, x15, xzr, ne       // h = max(h / 2, 1): the last probe is h = 1 again
+    subs    x16, x16, #1
+    b.ne    Lfew_pass
+    movi    d24, #0
+    add     x15, x1, x5, lsl #3
+    ldp     d16, d17, [x15]  // xp[jc], xp[jc+1]
+    add     x15, x2, x5, lsl #3
+    ldp     d18, d19, [x15]  // fp[jc], fp[jc+1]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d0, d16  // t = v - xp[jc]
+    fdiv    d21, d21, d20  // slope
+    fmadd   d23, d21, d22, d18  // slope * t + fp[jc], fused
+    fmax    d24, d24, d23  // stays NaN once any fma result is NaN
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt  // !(t > 0): fp[jc]
+    fcmp    d0, d17
+    fcsel   d0, d19, d23, ge  // v >= xp[jc+1]: fp[jc+1]
+    add     x15, x1, x6, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x6, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d1, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d1, d17
+    fcsel   d1, d19, d23, ge
+    add     x15, x1, x7, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x7, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d2, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d2, d17
+    fcsel   d2, d19, d23, ge
+    add     x15, x1, x8, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x8, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d3, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d3, d17
+    fcsel   d3, d19, d23, ge
+    add     x15, x1, x9, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x9, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d4, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d4, d17
+    fcsel   d4, d19, d23, ge
+    add     x15, x1, x10, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x10, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d5, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d5, d17
+    fcsel   d5, d19, d23, ge
+    add     x15, x1, x11, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x11, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d6, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d6, d17
+    fcsel   d6, d19, d23, ge
+    add     x15, x1, x12, lsl #3
+    ldp     d16, d17, [x15]
+    add     x15, x2, x12, lsl #3
+    ldp     d18, d19, [x15]
+    fsub    d20, d17, d16
+    fsub    d21, d19, d18
+    fsub    d22, d7, d16
+    fdiv    d21, d21, d20
+    fmadd   d23, d21, d22, d18
+    fmax    d24, d24, d23
+    fcmp    d22, #0.0
+    fcsel   d23, d23, d18, gt
+    fcmp    d7, d17
+    fcsel   d7, d19, d23, ge
+    fcmp    d24, d24
+    b.vs    Lfew_redo               // some fma result was NaN
+    add     x15, x0, x3             // this group's out
+    cmp     x14, #8
+    b.lo    Lfew_short
+    stp     d0, d1, [x15]
+    stp     d2, d3, [x15, #16]
+    stp     d4, d5, [x15, #32]
+    stp     d6, d7, [x15, #48]
+    add     x0, x0, #64
+    cmp     x0, x14
+    b.ls    Lfew_load
+    add     x15, x14, #64           // end of the queries
+    cmp     x0, x15
+    b.eq    Ldone
+    mov     x0, x14                 // 1 to 7 left: redo the last eight
+    b       Lfew_load
+Lfew_short:                         // 5 to 7 queries: store only theirs
+    stp     d0, d1, [x15]
+    stp     d2, d3, [x15, #16]
+    str     d4, [x15, #32]
+    cmp     x14, #6
+    b.lo    Ldone
+    str     d5, [x15, #40]
+    cmp     x14, #7
+    b.lo    Ldone
+    str     d6, [x15, #48]
+    ret
+Lfew_redo:                          // Lslow from this group to the end
+    mov     x5, x0
+    add     x6, x0, x3
+    mov     x8, x14                 // fewer than eight: all of them
+    cmp     x14, #8
+    b.lo    Lfew_redo_go
+    add     x8, x14, #64
+    sub     x8, x8, x0
+    lsr     x8, x8, #3              // queries from this group to the end
+Lfew_redo_go:
+    mov     x7, #0                  // return when done
+    b       Lslow
 
 Lone:                               // one sample point: every query gets fp[0]
     ldr     d0, [x2]
