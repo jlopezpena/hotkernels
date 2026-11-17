@@ -146,6 +146,8 @@ Take the shortlisted kernels to `install()`, in the order given in [survey-desig
 - An unmodified script runs faster after adding the one line, with output that meets each kernel's correctness mode, and `report()` shows the kernels being hit.
 - The overhead of a patched call that falls back is measured and negligible.
 
+**Status:** the kernels have had a first pass, recorded in [kernel-findings.md](kernel-findings.md): 21 of the 22 have assembly that beats naive C and one ships as C. The binding and `install()` are not started.
+
 ## Non-goals
 
 - Reimplementing all of NumPy.

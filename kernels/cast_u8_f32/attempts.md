@@ -1,5 +1,7 @@
 # cast_u8_f32 attempts
 
+**Verdict: ships as its naive C.** The assembly developed below was removed after the final timing. On an idle machine it was 1.05x [0.99 – 1.08] over naive C in one run (not significant) and 1.06x [1.00 – 1.07] in the next. All of the gain is at three sizes: 1.40x at 16 elements, 1.06x to 1.13x at 64, and 1.15x to 1.17x at 16,777,216. The eight sizes from 256 to 4,194,304 tie, because clang's loop is already at the limit of one 16-byte store per cycle. The last assembly version is `kernels/cast_u8_f32/arm64/kernel.s` in the commit before the one that removed it.
+
 ## 1. `tbl` + `ucvtf`, 16 bytes per iteration, overlapping tail
 
 - **Idea:** the same loop body clang emits for `naive.c` (one 16-byte load, four `tbl` to spread the bytes into 32-bit lanes, four `ucvtf`, four stores), but with no overlap test at entry, two constant loads instead of four `adrp`/`ldr` pairs, and no scalar remainder: a leftover of 1 to 15 bytes is one more block ending exactly at the end, 4 to 15 bytes are a front piece and an overlapping back piece, and below 4 is a scalar loop.
