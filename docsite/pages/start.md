@@ -94,8 +94,8 @@ A kernel takes a call only when the array is a plain, contiguous `ndarray` of th
 
 | You write | Element types | A kernel takes it when |
 |---|---|---|
-| `np.argmax(x)`, `np.argmin(x)`, `x.argmax()` | float32, float64 | For these types, including strided input and `axis=` (one kernel call per row or column). Runs shorter than 128 elements reached through the method stay with NumPy, which is as fast there |
-| `np.clip(x, lo, hi)`, `x.clip(lo, hi)` | float32, float64 | Scalar bounds with `lo <= hi`; the output is not the input |
+| `np.argmax(x)`, `np.argmin(x)`, `x.argmax()`, `x.argmin()` | float32, float64 | For these types, including strided input and `axis=` (one kernel call per row or column). A strided run or a row shorter than 128 elements stays with NumPy, which is as fast there |
+| `np.clip(x, lo, hi)`, `x.clip(lo, hi)` | float32, float64 | Scalar bounds with `lo <= hi`; the output is not the input. Small arrays gain most with bounds that are Python numbers and no `out` |
 | `x[mask]` | float32, float64 | Both one-dimensional and the same length |
 | `np.compress(mask, x)`, `np.extract(mask, x)` | float32, float64 | `x` and `mask` the same size, `x` of any shape. For `np.compress` the mask is one-dimensional and there is no `axis` or `out` |
 | `x[mask] = v` | float64 | As for `x[mask]`, and `v` is a Python float or int |
@@ -122,12 +122,13 @@ How much faster each one is, from Python and at three sizes, is in [the results]
 - **A mask holding a byte other than 0 or 1 goes to NumPy.** NumPy treats any non-zero byte as True, and a boolean view of other data can hold a 2. Every mask is read once before a kernel sees it, in the indexing syntax and in the function forms alike.
 - **The mask functions are counted under the indexing syntax.** In `report()`, `np.compress` and `np.extract` count on the `x[mask]` rows, `np.putmask` and `np.copyto` on `x[mask] = v`, and `np.where(mask)` on `np.nonzero`. `np.copyto` without `where` and `np.where(mask, a, b)` are other operations and are not counted at all.
 - **`np.clip(x, 0, 1)` is faster by less than `np.clip(x, -1, 1)`.** A lower bound of exactly zero needs extra care for negative zeros. It is still several times faster than NumPy.
+- **A small `np.clip` is fast when its bounds are plain numbers.** `np.clip(x, lo, hi)` and `x.clip(lo, hi)` skip NumPy's own call path, most of a call on a small array, when the bounds are Python floats or ints, or NumPy scalars of the array's own type, and there is no `out`, `dtype`, `casting` or `where`. The result has the element type NumPy gives it: a float32 array clipped to Python floats stays float32. Other calls, such as `np.float64` bounds on a float32 array (NumPy returns float64), `out=`, or a bound of `None`, go through NumPy's call path first; the kernel still serves them where it served them before, and they gain only on larger arrays.
 - **`np.isin` is fastest when the test values are close together**: all between 0 and 65,534, or all within 32,767 of the first one. Otherwise it runs at the speed of compiled C, which is still ahead of NumPy.
 - **`np.searchsorted` and `np.interp` trust you that the array is sorted, as NumPy does.** Neither checks. On an array that is not sorted both return a meaningless result, and the kernel's is not the same meaningless result as NumPy's. Sorted data, including NaNs at the end of `a`, gives NumPy's answer bit for bit.
 - **`np.digitize` is served when its bins increase.** It calls `np.searchsorted`, on either side. With decreasing bins it searches them reversed, as a view no kernel takes, and runs at NumPy's speed.
 - **`np.interp` with a few queries against a long table stays with NumPy.** A NaN among the sample points is something the kernel cannot handle, so `xp` is read once before every call. With more than 64 sample points per query that pass would cost more than the kernel saves.
 - **Free-threaded Python is not supported.** `install()` does nothing there, and `report()` says so.
-- **Subclasses mostly stay with NumPy.** `x[mask]`, the methods and the hooked functions take a kernel only for a plain `ndarray`; masked arrays, memory maps and your own subclasses go to NumPy there. `clip` and `argmax` are hooked beneath NumPy's own handling of array types, so they serve whatever plain buffer NumPy hands them, and NumPy wraps the result as it always did.
+- **Subclasses mostly stay with NumPy.** `x[mask]`, the methods and the hooked functions take a kernel only for a plain `ndarray`; masked arrays, memory maps and your own subclasses go to NumPy there. `clip` and `argmax` are also hooked beneath NumPy's own handling of array types, so for a subclass they serve whatever plain buffer NumPy hands them, and NumPy wraps the result as it always did.
 
 ## Checking it yourself
 
@@ -135,7 +136,7 @@ From a clone of the repository:
 
 ```bash
 uv run delivery demo          # run examples/workload.py with and without hotkernels, and compare
-uv run delivery check         # 85,602 NumPy calls, both ways; results, errors and warnings must agree
+uv run delivery check         # 96,734 NumPy calls, both ways; results, errors and warnings must agree
 uv run delivery time          # time each statement from Python on your machine
 uv run delivery numpy-tests   # NumPy's own test suite, both ways; about ten minutes
 ```
