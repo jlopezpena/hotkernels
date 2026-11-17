@@ -101,7 +101,11 @@ Supported platform: macOS on Apple Silicon (ARM64).
 
 ## Using hotkernels
 
-In this repository, `uv sync` builds the package. It needs the Xcode command line tools.
+```bash
+pip install hotkernels
+```
+
+Wheels are published for macOS on Apple Silicon, CPython 3.11 to 3.14. Elsewhere the package installs from its source distribution without a compiler, and `install()` does nothing. In this repository, `uv sync` builds the package from `kernels/`; that needs the Xcode command line tools.
 
 ```python
 import numpy as np
@@ -122,6 +126,7 @@ hotkernels.uninstall()          # NumPy is exactly as it was
 - `with hotkernels.enabled():` installs for the duration of a block.
 - A kernel takes a call only when the array is a plain contiguous `ndarray` of its element type and every other argument is one it implements. Any other call goes to NumPy as it was written.
 - On any other platform, `install()` does nothing and `report()` says why.
+- `python -m hotkernels script.py [args ...]` runs an unmodified script with hotkernels installed; `-m module` runs a module, and `--report` prints the report at the end.
 
 ## Using the judge
 

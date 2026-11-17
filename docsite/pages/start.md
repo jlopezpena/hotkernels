@@ -7,27 +7,32 @@ There is very little to do. Install the package, call `install()` once, and NumP
 | Machine | A Mac with Apple Silicon (ARM64) |
 | Python | 3.11 or later, the standard build with the interpreter lock |
 | NumPy | 2.0 or later |
-| To build | The Xcode command line tools: `xcode-select --install` |
 
-The package is compiled when it is installed, because there are no prebuilt wheels yet. That takes a few seconds and needs the compiler above.
+Wheels are published for CPython 3.11 to 3.14. With another Python the package is built from source when it is installed, which takes a few seconds and needs the Xcode command line tools (`xcode-select --install`).
 
-On any other machine the package still installs and `install()` does nothing, so code that calls it stays portable.
+On any other machine the package still installs, with no compiler, and `install()` does nothing, so code that calls it stays portable.
 
 ## Install
 
-With `pip`:
-
 ```bash
-pip install "git+https://github.com/sofeikov/hotkernels#subdirectory=hotkernels"
+pip install hotkernels
 ```
 
-With `uv`:
-
-```bash
-uv pip install "hotkernels @ git+https://github.com/sofeikov/hotkernels#subdirectory=hotkernels"
-```
+or `uv pip install hotkernels`.
 
 To work on the kernels themselves, clone the repository and run `uv sync`; the judge and the other development tools come with it.
+
+## Without changing your code
+
+`python -m hotkernels` runs a script with hotkernels installed, as `python` would run it:
+
+```bash
+python -m hotkernels my_script.py --its --own --arguments
+python -m hotkernels -m pytest            # a module, as python -m runs it
+python -m hotkernels --report my_script.py  # print report() to standard error at the end
+```
+
+`--inexact` installs the kernels that are not bit-identical to NumPy as well.
 
 ## Turn it on
 
