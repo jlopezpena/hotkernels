@@ -18,7 +18,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15 # the same runner as ci.yml, where `uv run` is known to build the workspace
+    # The site is built from Markdown and recorded results, and needs no kernel.
+    # On Linux the package builds without its extension, and a runner is
+    # assigned at once; hosted macOS runners can take a quarter of an hour.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
