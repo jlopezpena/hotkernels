@@ -68,7 +68,20 @@ Three rows are well below the judge's figure. The mask kernels pay for a buffer 
 
 Two defects in the binding were found by `delivery check` while it was being written, and are fixed: `np.count_nonzero` returned a Python `int` where NumPy returns `np.intp`, and `np.histogram` issued NumPy's overflow warnings twice for a range wider than a double can hold.
 
-Not built, and recorded as issues: the function forms of the mask operations ([issue 15]({I}15)), a second size for the two search kernels ([issue 16]({I}16)), removing NumPy's wrapper for `np.clip` and for the methods ([issue 17]({I}17)), running the check against other NumPy versions ([issue 18]({I}18)), and wheels ([issue 19]({I}19)).
+Not built, and recorded as issues:
+
+| Left for later | Issue |
+|---|---|
+| The function forms of the mask operations: `np.compress`, `np.extract`, `np.putmask`, `np.copyto`, `np.where(mask)` | [15](https://github.com/sofeikov/kernel-arena/issues/15) |
+| A second size for `searchsorted_f64` and `interp_f64`, without which they cannot be bound | [16](https://github.com/sofeikov/kernel-arena/issues/16) |
+| Skipping NumPy's wrapper for `np.clip` and for methods on small arrays | [17](https://github.com/sofeikov/kernel-arena/issues/17) |
+| `delivery check` against the oldest and newest NumPy 2 releases | [18](https://github.com/sofeikov/kernel-arena/issues/18) |
+| Wheels, a build that needs no checkout, `python -m hotkernels` | [19](https://github.com/sofeikov/kernel-arena/issues/19) |
+| `x[mask]` and `np.nonzero` keep about two thirds of the kernel's speed: the buffer, the copy and the mask check | [20](https://github.com/sofeikov/kernel-arena/issues/20) |
+| Free-threaded Python | [21](https://github.com/sofeikov/kernel-arena/issues/21) |
+| A case with repeated test values in the `isin_i64` spec, since the binding pads with repeats | [22](https://github.com/sofeikov/kernel-arena/issues/22) |
+
+Open before this work and still open: in-place `clip` and `cumsum` ([7](https://github.com/sofeikov/kernel-arena/issues/7)), mask bytes other than 0 or 1 in the kernels themselves ([8](https://github.com/sofeikov/kernel-arena/issues/8)), the kernels' safety against a writer during `argmax` ([9](https://github.com/sofeikov/kernel-arena/issues/9)), and whether float `cumsum` may be non-monotonic at all ([10](https://github.com/sofeikov/kernel-arena/issues/10)). The binding screens for each; none is fixed in the kernels.
 
 ## What the user gets
 
