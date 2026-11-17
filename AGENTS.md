@@ -13,6 +13,33 @@ This file is for coding agents. The first half applies to any work here; the sec
 - Timings are only meaningful on native hardware. Never report numbers taken under emulation.
 - A pull request that changes what a user of the package gets leaves a release note. See [Release notes](#release-notes).
 - READMEs describe the present state only: what exists and how to use it. No phases, status, roadmap or development history. Plans belong in `docs/`, and history belongs in git. When a change makes a README inaccurate, update it in the same change.
+- A change is not finished until every text that describes it is right. See [Documentation moves with the change](#documentation-moves-with-the-change).
+
+## Documentation moves with the change
+
+The documentation and the explanations written for users are part of the change, not a follow-up. Update them in the same pull request as the code, every time, without being asked.
+
+**Find what the change made untrue.** Search the repository for the kernel's name, the NumPy call, and any count or figure the change moves (`grep -rn "20 of the 22" --include='*.md' .`). A statement that was true before the change and is false after it is a defect of the change, wherever it is written.
+
+**Where to look.**
+
+| The change affects | Update |
+|---|---|
+| Which NumPy calls a kernel takes, or the conditions for it | `docsite/pages/start.md` ("What gets faster", "Things worth knowing"), `hotkernels/README.md`, the hook table in `docs/delivery-design.md`, `docsite/pages/report/delivery.md` |
+| How many kernels exist, are installed, or are bit-identical | `README.md`, `hotkernels/README.md`, `docsite/pages/index.md`, the report chapters under `docsite/pages/report/` that quote the count |
+| A speed figure | `README.md` (the docsite reads its tables from there), `docs/kernel-findings.md`, `delivery/results/` for figures taken from Python. Only figures from native hardware, with the size they were measured at |
+| How a kernel works, what it requires of its caller, or a limit it has | `docs/kernel-findings.md`, the kernel's chapter under `docsite/pages/report/`, the header comment of its `kernel.s` |
+| The judge: the spec format, a command, a field of a case description | `docs/judge-design.md`, `kernels/README.md`, the kernel half of this file, `docsite/pages/report/judge.md` |
+| What `report()` prints | The sample output in `docsite/pages/start.md` |
+| The tools: a command added, renamed or removed | The "Using ..." section of `README.md` |
+
+**Design documents.** A design in `docs/` is written before the code. When the building departs from it, say so in the document in the same pull request (a "What changed in the building" section, as in `docs/delivery-design.md`), and resolve what it listed as open. Do not leave a design that describes something other than what was built.
+
+**Explain it to a user.** Where the change is visible to someone who calls NumPy, the user-facing pages (`docsite/pages/start.md`, `hotkernels/README.md`) say what they get and what they must know, in their terms: the call they write, not the hook or the file that serves it. This is in addition to the release note, which is one bullet; the pages are where the conditions and the caveats go.
+
+**Say what you updated.** The pull request description lists the documents changed, or says that the change makes no existing statement untrue and how that was checked.
+
+`uv run docsite build` must succeed after any change to `docsite/`, to `README.md`, or to a file the site reads its figures from.
 
 ## Python code standards
 
