@@ -19,7 +19,7 @@ import typer
 
 from . import bench as B
 from . import selftest as S
-from .build import ARCH, BUILD, ROOT, BuildError, build_asm
+from .build import ARCH, BUILD, CC, ROOT, BuildError, build_asm
 from .check import KERNEL, NAIVE, Built, CheckResult, build_all, check, format_result
 from .render import render
 
@@ -49,6 +49,10 @@ NUMPY_NOTE = (
     "without a binding. At small sizes the NumPy column flatters the kernel. Naive C is the "
     "honest baseline."
 )
+
+# Where Linux describes the processor, and the field that holds its name.
+_CPUINFO = Path("/proc/cpuinfo")
+_CPUINFO_MODEL = "model name"
 
 # Branch the reference files must match during a kernel run.
 _REFERENCE_BRANCH = "main"
@@ -135,12 +139,17 @@ def machine() -> str:
                                capture_output=True, text=True).stdout.strip()
         if brand:
             return brand
+    if _CPUINFO.exists():
+        for line in _CPUINFO.read_text().splitlines():
+            field, _, value = line.partition(":")
+            if field.strip() == _CPUINFO_MODEL and value.strip():
+                return value.strip()
     return platform.processor() or platform.machine()
 
 
 def environment(locked: bool) -> dict:
     """Describe where and how a report was produced, for the JSON record."""
-    clang = subprocess.run(["clang", "--version"], capture_output=True, text=True).stdout
+    clang = subprocess.run([CC, "--version"], capture_output=True, text=True).stdout
     return {
         "arch": ARCH,
         "machine": machine(),
@@ -185,7 +194,7 @@ def run_bench(built: Built, quick: bool, locked: bool) -> dict:
 
     report = B.analyse(data, subject, baselines)
     report.update(kernel=k.name, samples=samples, subject=subject, baselines=baselines,
-                  warnings=B.noise_warnings(canary_before, canary_after),
+                  warnings=B.noise_warnings(canary_before, canary_after, harness.core),
                   environment=environment(locked))
     return report
 
@@ -339,7 +348,7 @@ def compare(
     log.info("\n" + render(
         "timing.txt.j2",
         title=f"{k.name} ({ARCH}): working copy vs {against}",
-        warnings=B.noise_warnings(canary_before, canary_after),
+        warnings=B.noise_warnings(canary_before, canary_after, harness.core),
         report=report, kernel=NEW, baselines=[OLD], labels=_COMPARE_LABELS, notes=[],
         verdict=_compare_verdict(report["overall"][f"vs_{OLD}"]),
     ).rstrip())
