@@ -27,7 +27,8 @@
 #             then the path above
 #   2048..    "big": the bytes up to the next 32-byte boundary as one masked
 #             vector, then blocks of the mixed loop with every load aligned,
-#             then the 32..127 path
+#             then the 32..127 path. From 32,768 bytes the loop also
+#             prefetches.
 #
 # The big path aligns its loads because a buffer from NumPy usually starts 16
 # bytes into a 64-byte cache line. Every second 32-byte load then straddles
@@ -43,6 +44,31 @@
 # prefetcher keeps up while the data is in the second-level cache, and falls
 # behind beyond it.
 .set PREFETCH_AHEAD, 4096
+# From this many bytes the big loop prefetches. Below it the array can lie in
+# the first-level cache, where a prefetch only costs.
+.set PREFETCH_MIN_N, 32768
+
+# One step of the mixed loop, in two parts so that a prefetch can go between
+# them: the loads of 128 bytes at rdi, then the sums into ymm1 (64-bit lanes)
+# and ymm2 to ymm4 (16-bit lanes), the cursor moved on and compared with the
+# end of the block in rdx. ymm0 = zeros, ymm9 = bytes of one.
+.macro MIXED_LOADS
+    vpsadbw ymm5, ymm0, [rdi]
+    vmovdqu ymm6, [rdi + 32]
+    vmovdqu ymm7, [rdi + 64]
+    vmovdqu ymm8, [rdi + 96]
+.endm
+.macro MIXED_SUMS
+    sub     rdi, -128
+    vpmaddubsw ymm6, ymm6, ymm9
+    vpmaddubsw ymm7, ymm7, ymm9
+    vpmaddubsw ymm8, ymm8, ymm9
+    vpaddq  ymm1, ymm1, ymm5
+    vpaddw  ymm2, ymm2, ymm6
+    vpaddw  ymm3, ymm3, ymm7
+    vpaddw  ymm4, ymm4, ymm8
+    cmp     rdi, rdx
+.endm
 
 .section .rodata
 .p2align 6
@@ -160,6 +186,7 @@ sum_u8:
     # ---- Big path. First the h = 0..31 bytes in front of the next 32-byte
     #      boundary: the first 32 bytes of the array, masked to its first h.
 .Lbig:
+    mov     r8, rsi                     # n, to choose the loop by
     mov     edx, edi
     neg     edx
     and     edx, 31                     # h
@@ -185,26 +212,16 @@ sum_u8:
     vpxor   xmm2, xmm2, xmm2
     vpxor   xmm3, xmm3, xmm3
     vpxor   xmm4, xmm4, xmm4
+    cmp     r8, PREFETCH_MIN_N
+    jae     .Lsteppf
+    # This loop is 60 bytes of code. Started on a 64-byte boundary it lies in
+    # one cache line, and its closing compare and jump are not split.
+.p2align 6
 .Lstep:
-    vpsadbw ymm5, ymm0, [rdi]
-    vmovdqu ymm6, [rdi + 32]
-    vmovdqu ymm7, [rdi + 64]
-    vmovdqu ymm8, [rdi + 96]
-    # Ask for the two cache lines PREFETCH_AHEAD bytes on. Near the end of
-    # the array these addresses lie past it: a prefetch never faults and
-    # reads nothing the program can see.
-    prefetcht0 [rdi + PREFETCH_AHEAD]
-    prefetcht0 [rdi + PREFETCH_AHEAD + 64]
-    sub     rdi, -128
-    vpmaddubsw ymm6, ymm6, ymm9
-    vpmaddubsw ymm7, ymm7, ymm9
-    vpmaddubsw ymm8, ymm8, ymm9
-    vpaddq  ymm1, ymm1, ymm5
-    vpaddw  ymm2, ymm2, ymm6
-    vpaddw  ymm3, ymm3, ymm7
-    vpaddw  ymm4, ymm4, ymm8
-    cmp     rdi, rdx
+    MIXED_LOADS
+    MIXED_SUMS
     jne     .Lstep
+.Lwiden:
     # Widen: three accumulators of 16-bit lanes into 32-bit lanes (at most
     # 3 * 65,280 each), then into the 64-bit sums.
     vpmaddwd ymm2, ymm2, ymm10
@@ -220,10 +237,25 @@ sum_u8:
     jae     .Lblock
     jmp     .Ltail
 
+    # The same loop with a prefetch, for arrays too large for the
+    # first-level cache.
+.p2align 6
+.Lsteppf:
+    MIXED_LOADS
+    # Ask for the two cache lines PREFETCH_AHEAD bytes on. Near the end of
+    # the array these addresses lie past it: a prefetch never faults and
+    # reads nothing the program can see.
+    prefetcht0 [rdi + PREFETCH_AHEAD]
+    prefetcht0 [rdi + PREFETCH_AHEAD + 64]
+    MIXED_SUMS
+    jne     .Lsteppf
+    jmp     .Lwiden
+
     # ---- Fewer than 32 bytes. No 256-bit register is written here. The
-    #      block starts on a 32-byte boundary so that the path for n = 16 lies
-    #      in one line of the decoded-instruction cache.
-.p2align 5
+    #      block starts on a 64-byte boundary so that the path for n = 16,
+    #      37 bytes of code, lies in one cache line wherever the code above
+    #      it ends.
+.p2align 6
 .Lunder32:
     cmp     esi, 16
     jb      .Lunder16

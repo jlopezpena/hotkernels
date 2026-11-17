@@ -201,3 +201,11 @@ far below what the caches deliver.
 - **Kept:** yes
 - **Notes:** 1.14x at 16,777,216, 1.08x at 4,194,304 (not significant: that size scattered between 0.97x and 1.23x), 1.03x to 1.04x at 262,144 and 1,048,576, 1.01x at 65,536. It costs more inside the first-level cache than the micro-benchmark said: 0.92x at 16,384 (69.3 ns to 75.7 ns) and 0.97x at 4,096. Near the end of the array the prefetched addresses lie up to 4,223 bytes past it. A prefetch never faults and reads nothing the program can see, as the ARM64 count kernels already rely on.
 
+## x86-64 11. A loop without the prefetch below 32,768 bytes; loops and the short block pinned to 64-byte boundaries
+
+- **Idea:** attempt 10's prefetch cost 8% at 16,384, where the array is in the first-level cache and there is nothing to fetch. Give the big path two copies of its loop, chosen once by n: without the prefetch below 32,768 bytes, with it from there. Adding code moves everything after it, and attempts 3, 4, 8 and 9 showed that where the code lands is worth 3% to 20% at some sizes. So pin what is sensitive: both loops and the under-32 block start on 64-byte boundaries.
+- **check:** pass
+- **compare:** first without the pins: no significant difference, 1.020x [0.998 – 1.029], with 1.09x at 4,096 and 16,384 but 0.83x at 16 and 0.96x to 0.97x at 65,536 and 262,144, none of whose instructions had changed. With the pins: significantly faster, 1.020x [1.005 – 1.032]
+- **Kept:** yes
+- **Notes:** 1.09x at 4,096 and 1.10x at 16,384 (75.5 ns to 68.6 ns, 239 bytes per ns), no significant difference elsewhere. What the first try showed about the 16-byte path: aligned to 32 bytes it ran in 0.9 ns when its block started at offset 0 of a cache line and 1.1 ns at offset 32, where its 37 bytes of code cross into the next line. So attempt 5's reason was incomplete: it is the 64-byte line that matters, not the 32-byte window.
+
