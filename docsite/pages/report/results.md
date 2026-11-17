@@ -26,6 +26,10 @@ These are the figures that matter to someone running NumPy code: one Python stat
 | `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.27x | 9.40x |
 | `np.bincount(x)` | uint8 | 2.23x | 6.74x |
 | `np.isin(x, eight_values)` | int64 | 72.8x | 18.2x |
+| `np.searchsorted(a, v)` | float64 | 1.36x | 7.76x |
+| `np.interp(x, xp, fp)` | float64 | 5.44x | 30.5x |
+
+The last two rows are timed with as many needles as elements, in a later run on a busier machine; they are not in the recorded result the figure above reads.
 
 Read the two columns as two different stories. At a million elements the number is the kernel. At 16 elements it is mostly NumPy's own call path being skipped: `np.sum` on 16 bytes is 33x faster because a 1.2 µs wrapper was replaced by a 37 ns call, not because of how the bytes are added.
 
@@ -108,7 +112,8 @@ The pattern is consistent: the judge verifies what its generated inputs exercise
 
 ## What is not delivered
 
-- **Two kernels are not installed.** `searchsorted_f64` and `interp_f64` take one length for both of their inputs and cannot serve a real call until they take two.
+- **`side='right'` for `np.searchsorted`**, and with it the default form of `np.digitize`. The kernel implements the left side only.
+- **`np.interp` with `left`, `right` or `period`**, and with more than 64 sample points per query, where reading the sample points for NaN would cost more than the kernel saves.
 - **One or two element types per operation.** `np.argmax` on int32, `x[mask]` on int64, `np.sum` on float64: all go to NumPy. (NumPy is already fast on several of those.)
 - **Plain arrays only.** Subclasses reaching the function, method and indexing hooks go to NumPy.
 - **Function forms of the mask operations.** `np.compress`, `np.extract`, `np.putmask`, `np.copyto` and `np.where(mask)` are not hooked yet; the indexing syntax is.

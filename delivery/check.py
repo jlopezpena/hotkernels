@@ -256,8 +256,8 @@ def run_operation(operation: str, cases: Iterable[Case], inexact: bool, keep: Ca
 # Name of the summary line for the checks of install() and uninstall() themselves.
 INSTALLATION = "install and uninstall"
 # NumPy objects whose identity must survive install() and uninstall().
-_HOOKED_OBJECTS = ("argmax", "argmin", "count_nonzero", "sum", "histogram", "bincount", "isin", "clip")
-_HOOKED_METHODS = ("astype", "sum", "nonzero", "cumsum")
+_HOOKED_OBJECTS = ("argmax", "argmin", "count_nonzero", "sum", "histogram", "bincount", "isin", "interp", "clip")
+_HOOKED_METHODS = ("astype", "sum", "nonzero", "cumsum", "searchsorted")
 
 
 def _numpy_objects() -> list[object]:

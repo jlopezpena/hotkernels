@@ -119,7 +119,7 @@ If you believe the spec, the naive reference or the judge is wrong, stop and say
 
 | Command | Use it for | Time |
 |---|---|---|
-| `uv run judge check <kernel>` | After every edit. Lint and correctness. | About 5 seconds, up to 15 for a kernel with many scalar sets |
+| `uv run judge check <kernel>` | After every edit. Lint and correctness. | About 5 seconds, up to 25 for a kernel with many scalar sets |
 | `uv run judge compare <kernel> --against HEAD` | After `check` passes. Is this edit faster? | About 30 seconds |
 | `uv run judge run <kernel>` | The full report against naive C and NumPy. | About 30 seconds |
 | `uv run judge check <kernel> --case '<case>'` | Rerun one failing case. | Instant |

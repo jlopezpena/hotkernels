@@ -202,6 +202,7 @@ A test suite that has never failed proves little. So the judge ships with delibe
 | Writes one element past the capacity of a scratch buffer | memory safety |
 | Writes to an input | memory safety |
 | Hard-codes the default value of a scalar argument | wrong result, in another scalar set |
+| Reads one byte past an input whose length is a scalar argument | memory safety |
 | Overwrites a register it must preserve | calling convention |
 | Uses the register the platform reserves | lint |
 | Is correct but slower than naive C | reported as significantly slower |
@@ -216,5 +217,6 @@ The judge was designed around two toy kernels and then met twenty real ones. Eac
 - **A scale for tolerances**, as described above, after a correct regrouped `cumsum` failed by millions of ulps of a cancelled result.
 - **A lone negative zero** as a value class, after a `clip` kernel whose repair path stored nothing was found to pass every case, because no case reached that path and then continued.
 - **Inputs that must be sorted**, fixed-size buffers, buffers sized by a scalar, and buffers modified in place.
+- **A second length.** `np.searchsorted(a, v)` has two lengths that have nothing to do with each other, and the judge had one. The first search kernels were therefore written and judged with as many needles as elements, a shape no real call has, and could not be installed. An input may now take its length from a scalar argument, and the spec lists the needle counts that matter: none, one, and the counts either side of every group width the kernel works in.
 
 It still has blind spots: scalar combinations nobody listed, input densities between the ones it times, a single repeated input at large sizes. They are listed with their consequences in [chapter 8]([[ root ]]report/results/#what-the-judge-does-not-see), because a tool like this is only trustworthy if you know where it is not looking.

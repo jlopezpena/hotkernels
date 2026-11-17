@@ -14,7 +14,7 @@ The binding is the same C on every architecture. The figures in this document, t
 - **A hook costs about 1 ns on a call that does not take a kernel.** Measured: 0.5 to 1.4 ns per call, on calls that cost 59 ns and up.
 - **End to end from Python, the speedups hold.** At a million elements: `np.argmax` 8.6x, `np.clip` 4.9x, `x[mask]` 9.8x to 16x, `x[mask] = v` 7.6x to 21x. The mask selection figure is lower than the judge's 22.5x, because a result has to be allocated.
 - **A hooked function can also skip NumPy's Python wrapper.** `np.argmax` on 16 elements drops from 573 ns to 65 ns. That is a win of the binding, not of a kernel.
-- **Two kernels cannot serve real calls yet.** `searchsorted_f64` and `interp_f64` take one length for both of their inputs. They need a second size before they are worth binding.
+- **Two kernels could not serve real calls when this was built.** `searchsorted_f64` and `interp_f64` took one length for both of their inputs. They were given a second and bound afterwards; see [two-sizes-design.md](two-sizes-design.md).
 - **One decision replaces an earlier one.** The float `cumsum` kernels are not installed by default. See [Decisions made in review](#decisions-made-in-review).
 
 ## Status
@@ -24,11 +24,11 @@ Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with NumPy 2.5
 | # | Criterion | Result |
 |---|---|---|
 | 1 | An unmodified script runs faster with the one line, and `report()` shows the kernels hit | Met. [`examples/workload.py`](../examples/workload.py) uses eleven operations on two million elements: 45 ms on plain NumPy, 8.4 ms installed, identical results. `uv run delivery demo` |
-| 2 | `delivery check` passes | Met. 70,031 calls over the 13 hooked operations agree in result, exception, warnings and the state of their arguments, and the kernel ran exactly where each case says |
+| 2 | `delivery check` passes | Met. 75,307 calls over the 15 hooked operations agree in result, exception, warnings and the state of their arguments, and the kernel ran exactly where each case says |
 | 3 | NumPy's test suite gives the same outcome | Met. 47,234 tests, none differs. The tests that compile Fortran (`f2py`) are left out |
 | 4 | A fallback costs at most 2 ns more | Met for the calls where 2 ns can be measured: `x[3]`, `x[1:5]` and `x[3] = 1.0` cost 0.3 to 1.5 ns more. On calls of 130 ns and up the difference is inside the noise of the measurement, a percent or two either way |
 | 5 | No installed entry point is slower than NumPy at any size | Met. The lowest figure is `np.clip` at 16 elements, 1.00x. The type slot needed a minimum size to get there; see below |
-| 6 | Every kernel has a verdict | Met. 18 installed, 2 installed only with `inexact=True` (`cumsum_f32`, `cumsum_f64`), 2 not bound (`searchsorted_f64`, `interp_f64`: one length for two inputs) |
+| 6 | Every kernel has a verdict | Met. 20 installed, 2 installed only with `inexact=True` (`cumsum_f32`, `cumsum_f64`). `searchsorted_f64` and `interp_f64` were not bound at first (one length for two inputs) and are now |
 
 The timings were taken on a machine in use (load average about 3). Every statement, at three sizes, is in [`delivery/results/apple-m1-pro.md`](../delivery/results/apple-m1-pro.md). At a million elements, from Python:
 
@@ -75,7 +75,6 @@ Not built, and recorded as issues:
 | Left for later | Issue |
 |---|---|
 | The function forms of the mask operations: `np.compress`, `np.extract`, `np.putmask`, `np.copyto`, `np.where(mask)` | [15](https://github.com/sofeikov/kernel-arena/issues/15) |
-| A second size for `searchsorted_f64` and `interp_f64`, without which they cannot be bound | [16](https://github.com/sofeikov/kernel-arena/issues/16) |
 | Skipping NumPy's wrapper for `np.clip` and for methods on small arrays | [17](https://github.com/sofeikov/kernel-arena/issues/17) |
 | `delivery check` against the oldest and newest NumPy 2 releases | [18](https://github.com/sofeikov/kernel-arena/issues/18) |
 | Wheels, a build that needs no checkout, `python -m hotkernels` | [19](https://github.com/sofeikov/kernel-arena/issues/19) |
@@ -225,12 +224,12 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 | `x[mask]` | 2 | Indexing | Both 1-D, contiguous, the same length; a plain `ndarray` indexed by a boolean `ndarray` |
 | `x[mask] = v` | 1 | Indexing | As above, and `v` is a Python float |
 | `nonzero` | 1 | Method | 1-D contiguous boolean array |
-| `searchsorted` | 1 | Method | Both float64 and contiguous, `side='left'`, no `sorter`. Needs a kernel change first |
+| `searchsorted` | 1 | Method | The array one-dimensional, contiguous float64; the needles a contiguous float64 array of any shape or a Python number; `side='left'`, no `sorter` |
 | `cumsum` | 3 | Method | Contiguous, no `axis`, `dtype` or `out`. The two float kernels only with `inexact=True` |
 | `astype` | 1 | Method | Contiguous `uint8` to `float32`, other arguments at their defaults |
 | `sum` | 1 | Method and function | Contiguous `uint8`, no other arguments |
 | `count_nonzero` | 2 | Function | Contiguous, no `axis` |
-| `interp` | 1 | Function | Three contiguous float64 arrays, no `left`, `right` or `period`. Needs a kernel change first |
+| `interp` | 1 | Function | Three contiguous float64 arrays, `xp` and `fp` one-dimensional and the same length; no `left`, `right` or `period`; no NaN in `xp`; at most 64 sample points per query |
 | `histogram` | 1 | Function | Contiguous float64, an integer bin count, no weights or density |
 | `bincount` | 1 | Function | Contiguous `uint8`, no weights |
 | `isin` | 1 | Function | Contiguous int64, at most eight test values, flags at their defaults |
@@ -271,6 +270,8 @@ Review of the ARM64 kernels found inputs where a kernel is wrong, or unsafe, and
 | Another thread writes the array during `argmax` ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Reads it twice and may read past the end | The type-slot hook holds the interpreter lock while the kernel runs. That stops Python threads, and does not stop code that writes without the lock. Bounding the kernels' scans stays open in the issue |
 | A histogram range whose bin edges are not strictly increasing ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Returns counts where NumPy raises | Builds the edges first, as NumPy does, and sends the call to NumPy if they are not strictly increasing |
 | `clip` with array bounds ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Matches only NumPy's scalar-bound loop | Takes the kernel for scalar bounds only |
+| A NaN among `np.interp`'s sample points ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | At `xp[0]` it reads before the start of `xp` and `fp`; elsewhere it returns something other than NumPy | Reads `xp` once before the kernel. Any NaN sends the call to NumPy. The pass costs about 0.13 ns per sample point, so the kernel is taken only with at most 64 sample points per query |
+| Input to `searchsorted` or `interp` that is not sorted | Stays inside its buffers and returns a meaningless result, not the same one as NumPy's | Nothing: NumPy does not check either. See [two-sizes-design.md](two-sizes-design.md#inputs-outside-the-kernels-contracts) |
 | Floating-point status flags ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | `clip` leaves the invalid flag set; float `cumsum` raises overflow and invalid where NumPy's sequential sum does not. NumPy turns flags into warnings | `clip`: clears the flags after the kernel, which is what NumPy's own loop does. `cumsum`: clears them before, and if any is set afterwards discards the kernel's output and lets NumPy compute and warn |
 
 ### Results and memory
@@ -348,7 +349,7 @@ Binding the kernels to real calls shows where a kernel is narrower than the NumP
 
 | Kernel | Limit | Consequence | Proposed |
 |---|---|---|---|
-| `searchsorted_f64`, `interp_f64` | One `n` is the length of the sorted array and of the needles | Only a call where the two lengths happen to be equal can use the kernel | Give the judge a second size, then the specs and the assembly. Not bound until then |
+| `searchsorted_f64`, `interp_f64` | One `n` was the length of the sorted array and of the needles | Only a call where the two lengths happened to be equal could use the kernel | Done: the number of needles is its own argument ([two-sizes-design.md](two-sizes-design.md)), and both are bound |
 | `clip_f32`, `clip_f64` | Input and output must not overlap: in place they are wrong on some data ([issue 7](https://github.com/sofeikov/kernel-arena/issues/7)) | `np.clip(x, 0, 1, out=x)` goes to NumPy. The loop hook sees it as an output pointer equal to the input pointer | Decided in the issue: harden the kernels, or have the binding use a temporary |
 | `isin_i64` | Exactly eight test values | Fewer than eight can be padded by repeating one, which does not change membership. More than eight go to NumPy | Add a case with repeated test values to the spec, since padding makes them the normal case |
 | `histogram_f64` | A range must be given | For `range=None` the binding calls NumPy's `min` and `max` first, as NumPy does | Nothing |
@@ -364,7 +365,7 @@ Binding the kernels to real calls shows where a kernel is narrower than the NumP
 | 4 | Indexing hook: `x[mask]`, `x[mask] = v` | Last, because it touches every index operation in the process. It can be left out without affecting the rest |
 | 5 | The exit measurements; README updated | |
 
-In parallel, as kernel work: the second size for `searchsorted_f64` and `interp_f64`, then their hooks; in-place `clip`. Also still open from [kernel-findings.md](kernel-findings.md#what-is-next): the locked re-run of every kernel and the leaderboard.
+In parallel, as kernel work: the second size for `searchsorted_f64` and `interp_f64`, then their hooks (done since); in-place `clip`. Also still open from [kernel-findings.md](kernel-findings.md#what-is-next): the locked re-run of every kernel and the leaderboard.
 
 ## Exit criterion
 

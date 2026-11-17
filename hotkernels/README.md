@@ -19,7 +19,7 @@ Wheels are for macOS on Apple Silicon, CPython 3.11 to 3.14, with NumPy 2. Anoth
 
 ## What gets faster
 
-`np.argmax`, `np.argmin`, `np.clip`, `x[mask]`, `x[mask] = v`, `np.nonzero`, `np.cumsum`, `x.astype(np.float32)` from `uint8`, `np.sum` on `uint8`, `np.count_nonzero`, `np.histogram`, `np.bincount` and `np.isin`, for the element types each kernel covers. At a million elements, from Python, `x[mask]` on `float32` is about 31x faster and `np.histogram` about 9x.
+`np.argmax`, `np.argmin`, `np.clip`, `x[mask]`, `x[mask] = v`, `np.nonzero`, `np.cumsum`, `x.astype(np.float32)` from `uint8`, `np.sum` on `uint8`, `np.count_nonzero`, `np.histogram`, `np.bincount`, `np.isin`, `np.searchsorted` and `np.interp`, for the element types each kernel covers. At a million elements, from Python, `x[mask]` on `float32` is about 31x faster and `np.histogram` about 9x.
 
 ## Using it
 

@@ -14,7 +14,7 @@
 #include "binding.h"
 
 // The methods that are hooked, as indices into `methods`.
-enum { M_ASTYPE, M_SUM, M_NONZERO, M_CUMSUM, M_COUNT };
+enum { M_ASTYPE, M_SUM, M_NONZERO, M_CUMSUM, M_SEARCHSORTED, M_COUNT };
 
 // A method called with an argument array and keyword names
 // (METH_FASTCALL | METH_KEYWORDS). CPython names this type differently
@@ -245,6 +245,73 @@ static PyObject *method_cumsum(PyObject *self, PyObject *args, PyObject *kwargs)
     return ((PyCFunctionWithKeywords)(void (*)(void))methods[M_CUMSUM].original)(self, args, kwargs);
 }
 
+// ------------------------------------------------------------ searchsorted
+
+// Run the search for one Python number, as `a.searchsorted(2.5)`: NumPy
+// returns the position as an np.intp scalar. Returns NULL with no exception
+// set if `needle` is not a Python float, or a Python int a double holds
+// exactly.
+static PyObject *searchsorted_scalar(PyArrayObject *a, PyObject *needle) {
+    double value;
+    if (!hk_as_exact_double(needle, &value)) return NULL;
+    npy_intp position;
+    searchsorted_f64(PyArray_DATA(a), &value, (int64_t *)&position, (size_t)PyArray_SIZE(a), 1);
+    return hk_scalar(NPY_INTP, &position);
+}
+
+// a.searchsorted(v) for a one-dimensional contiguous float64 array `a` and
+// float64 needles: a contiguous array of any shape, whose shape the result
+// takes, or one Python number. `side` must be absent or 'left', which is the
+// only side the kernel implements, and there must be no `sorter`.
+// np.searchsorted(a, v) calls the method as
+// `a.searchsorted(v, side='left', sorter=None)`, and np.digitize calls
+// np.searchsorted.
+//
+// An array that is not sorted is not detected. NumPy does not detect it
+// either; both give a meaningless result, not the same one, and the kernel
+// stays inside its buffers whatever the data.
+static HK_NOINLINE PyObject *try_searchsorted(PyObject *self, PyObject *const *args, Py_ssize_t nargs,
+                                              PyObject *kwnames) {
+    enum { V, SIDE, SORTER, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"v", "side", "sorter"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[V] == NULL || !hk_is_absent(bound[SORTER])) return NULL;
+    if (bound[SIDE] != NULL && !(PyUnicode_CheckExact(bound[SIDE]) && hk_text_is(bound[SIDE], "left"))) return NULL;
+
+    PyArrayObject *a = (PyArrayObject *)self;
+    PyObject *result;
+    if (hk_is_flat(bound[V], NPY_DOUBLE)) {
+        PyArrayObject *v = (PyArrayObject *)bound[V];
+        result = PyArray_SimpleNew(PyArray_NDIM(v), PyArray_DIMS(v), NPY_INTP);
+        if (result == NULL) {
+            PyErr_Clear();
+            return NULL;
+        }
+        const npy_intp needles = PyArray_SIZE(v);
+        HK_BEGIN_NOGIL(needles)
+        searchsorted_f64(PyArray_DATA(a), PyArray_DATA(v), PyArray_DATA((PyArrayObject *)result),
+                         (size_t)PyArray_SIZE(a), (size_t)needles);
+        HK_END_NOGIL
+    } else {
+        result = searchsorted_scalar(a, bound[V]);
+        if (result == NULL) return NULL;
+    }
+    hk_take(HK_SEARCHSORTED_F64);
+    return result;
+}
+
+// The array's type is tested before the arguments are looked at: most calls
+// are for another element type, and rejecting those must cost almost nothing.
+static PyObject *method_searchsorted(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    if (hk_is_flat_1d(self, NPY_DOUBLE)) {
+        PyObject *result = try_searchsorted(self, args, nargs, kwnames);
+        if (result != NULL) return result;
+    }
+    hk_pass(HK_OP_SEARCHSORTED);
+    return ((hk_fast_keywords)(void (*)(void))methods[M_SEARCHSORTED].original)(self, args, nargs, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_method methods[M_COUNT] = {
@@ -252,6 +319,8 @@ static hk_method methods[M_COUNT] = {
     [M_SUM] = {"sum", METH_FASTCALL | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_sum, NULL, NULL},
     [M_NONZERO] = {"nonzero", METH_VARARGS, method_nonzero, NULL, NULL},
     [M_CUMSUM] = {"cumsum", METH_VARARGS | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_cumsum, NULL, NULL},
+    [M_SEARCHSORTED] = {"searchsorted", METH_FASTCALL | METH_KEYWORDS,
+                        (PyCFunction)(void (*)(void))method_searchsorted, NULL, NULL},
 };
 
 // Point the method at the binding. See hk_hook.apply.
@@ -295,5 +364,6 @@ hk_hook hk_method_hooks[] = {
     {"method.sum", method_apply, method_remove, M_SUM, false},
     {"method.nonzero", method_apply, method_remove, M_NONZERO, false},
     {"method.cumsum", method_apply, method_remove, M_CUMSUM, false},
+    {"method.searchsorted", method_apply, method_remove, M_SEARCHSORTED, false},
     {NULL, NULL, NULL, 0, false},
 };

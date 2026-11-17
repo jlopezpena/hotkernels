@@ -52,6 +52,9 @@ RANGE = (-3.0, 3.0)
 # Largest value of the "narrow" isin data, and its eight test values.
 ISIN_SPAN = 1000
 ISIN_TEST = [1, 50, 999, 0, 7, 500, 501, 2]
+# Length of the sorted array in the search statements that hold it fixed while
+# the number of needles grows: the shape of a lookup in a small table.
+SMALL_TABLE = 1000
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,35 @@ def _narrow_ints(n: int) -> tuple:
     return (_rng(n).integers(0, ISIN_SPAN, n),)
 
 
+def _search(table: int | None, n: int) -> tuple:
+    """Build a sorted array and `n` needles for `np.searchsorted`.
+
+    Args:
+        table: Length of the sorted array, or None for as many elements as needles.
+        n: Number of needles.
+
+    Returns:
+        (sorted array, needles), both float64.
+    """
+    rng = _rng(n)
+    return (np.sort(rng.standard_normal(table or n)), rng.standard_normal(n))
+
+
+def _interp(points: int | None, n: int) -> tuple:
+    """Build `n` queries and the sample points for `np.interp`.
+
+    Args:
+        points: Number of sample points, or None for as many as queries.
+        n: Number of queries.
+
+    Returns:
+        (x, xp, fp), all float64, with xp sorted.
+    """
+    rng = _rng(n)
+    count = points or n
+    return (rng.standard_normal(n), np.sort(rng.standard_normal(count)), rng.standard_normal(count))
+
+
 def _assign(value: float, x: np.ndarray, mask: np.ndarray) -> None:
     """Run `x[mask] = value`. Running it twice changes nothing more."""
     x[mask] = value
@@ -185,6 +217,10 @@ TAKEN: tuple[Timed, ...] = (
     Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0))", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE), "histogram_f64"),
     Timed("bincount", "np.bincount(x)", "uint8", _bytes, np.bincount, "bincount_u8"),
     Timed("isin", "np.isin(x, eight_values)", "int64, values close together", _narrow_ints, lambda x: np.isin(x, ISIN_TEST), "isin_i64"),
+    Timed("searchsorted", "np.searchsorted(a, v)", "float64, as many needles as elements", partial(_search, None), np.searchsorted, "searchsorted_f64"),
+    Timed("searchsorted", "np.searchsorted(a, v)", "float64, 1,000 elements", partial(_search, SMALL_TABLE), np.searchsorted, "searchsorted_f64"),
+    Timed("interp", "np.interp(x, xp, fp)", "float64, as many queries as points", partial(_interp, None), np.interp, "interp_f64"),
+    Timed("interp", "np.interp(x, xp, fp)", "float64, 1,000 points", partial(_interp, SMALL_TABLE), np.interp, "interp_f64"),
 )
 
 # Statements that reach a hook and are left to NumPy: what a hook costs a
@@ -200,6 +236,8 @@ LEFT: tuple[Timed, ...] = (
     Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0), density=False)", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE, density=False), None),
     Timed("bincount", "np.bincount(x)", "int64", partial(_ints, np.int64), np.bincount, None),
     Timed("isin", "np.isin(x, nine_values)", "int64", _narrow_ints, lambda x: np.isin(x, ISIN_TEST + [3]), None),
+    Timed("searchsorted", "np.searchsorted(a, v, side='right')", "float64", partial(_search, None), lambda a, v: np.searchsorted(a, v, side="right"), None),
+    Timed("interp", "np.interp(x, xp, fp, left=0.0)", "float64", partial(_interp, None), lambda x, xp, fp: np.interp(x, xp, fp, left=0.0), None),
     Timed("nonzero", "x.nonzero()", "int64", partial(_ints, np.int64), lambda x: x.nonzero(), None),
     Timed("compress", "x[3]", "float64", partial(_floats, np.float64), lambda x: x[3], None),
     Timed("compress", "x[1:5]", "float64", partial(_floats, np.float64), lambda x: x[1:5], None),

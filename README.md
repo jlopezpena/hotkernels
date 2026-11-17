@@ -53,7 +53,7 @@ What stands behind the numbers:
 What the numbers do not say:
 
 - **The table times the kernels as native functions.** From Python a call also pays for NumPy's call path and, for `x[mask]` and `np.nonzero`, for allocating the result. Those figures are under [From Python](#from-python).
-- **Two kernels are not installed.** `np.searchsorted` and `np.interp` take one length for both of their inputs and cannot serve a real call yet.
+- **`np.searchsorted` and `np.interp` are shown with as many needles as elements.** A real call rarely has that shape. With 1,000 needles against a million sorted elements the kernels are 6.5x and 19.6x faster than NumPy; [docs/kernel-findings.md](docs/kernel-findings.md#searchsorted-and-interp) has both shapes.
 - **Float `np.cumsum` is installed only on request.** It is not bit-identical to NumPy and its output is not monotonic for non-negative input, so it needs `hotkernels.install(inexact=True)`.
 - **Two results depend on the arguments.** `np.isin` is fast when the test values all lie between 0 and 65,534 or within 32,767 of the first one, and ties the C otherwise. `np.clip` with a lower bound of zero, as in `np.clip(x, 0, 1)`, is about 1.3x over the C in cache when the data holds no negative zeros and runs at the speed of the C when one occurs in the first few thousand elements; with an upper bound of `-0.0` it always runs at the speed of the C. Those cases are timed, and are the low ends of those rows.
 - **Scalar arguments are verified for the values each spec lists.** `np.clip` is checked with twelve pairs of bounds and `np.histogram` with sixteen bin counts and ranges, not with every possible one.
@@ -79,21 +79,24 @@ The same machine, timing one Python statement from call to result, on plain NumP
 | `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.27x | 9.40x |
 | `np.bincount(x)` | uint8 | 2.23x | 6.74x |
 | `np.isin(x, eight_values)` | int64 | 72.8x | 18.2x |
+| `np.searchsorted(a, v)` | float64 | 1.36x | 7.76x |
+| `np.interp(x, xp, fp)` | float64 | 5.44x | 30.5x |
 
 At 16 elements most of the gain is NumPy's own call path being skipped, not the kernel. `np.clip` gains nothing there: its kernel sits beneath NumPy's Python wrapper, which is nearly all of a small call.
 
 - **A call no kernel takes costs under a nanosecond more.** `x[3]` takes 60.3 ns on plain NumPy and 61.1 ns with hotkernels installed.
 - **An unmodified program.** [examples/workload.py](examples/workload.py) uses eleven of these operations on two million elements. It runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
-- **Checked from Python.** 70,031 NumPy calls give the same result, exceptions and warnings with hotkernels as without, and NumPy's own test suite gives the same outcome for each of its 47,234 tests.
+- **`np.searchsorted` and `np.interp` are timed with as many needles as elements.** Their two rows come from a later run on a busier machine (load average 3.9) and are not in the recorded table yet. With a sorted array of 1,000 elements and a million needles they are 27x and 19x faster.
+- **Checked from Python.** 75,307 NumPy calls give the same result, exceptions and warnings with hotkernels as without, and NumPy's own test suite gives the same outcome for each of its 47,234 tests.
 - **Taken on a machine in use.** The full table, with the load average of the run, is in [delivery/results/apple-m1-pro.md](delivery/results/apple-m1-pro.md).
 
 ## What is here
 
 - **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is. It runs on macOS ARM64 and on Linux x86-64.
-- **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32`, `compress_scratch_f32` and `tally_u8`, used to test the judge itself, each with an ARM64 and an x86-64 version.
+- **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32`, `compress_scratch_f32`, `tally_u8` and `rank_u8`, used to test the judge itself, each with an ARM64 and an x86-64 version.
 - **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. Recorded results are in `survey/results/`.
 - **Kernels** (`kernels/`): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an ARM64 version. x86-64 versions are not written yet. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
-- **The package** (`hotkernels/`): what a user installs. A C extension points NumPy at the kernels, and `install()`, `uninstall()`, `enabled()` and `report()` control it. Twenty of the 22 kernels are installed.
+- **The package** (`hotkernels/`): what a user installs. A C extension points NumPy at the kernels, and `install()`, `uninstall()`, `enabled()` and `report()` control it. `install()` installs the 20 kernels that return NumPy's result bit for bit, and `install(inexact=True)` the other two.
 - **The delivery tool** (`delivery/`): tests and times the package from Python. Recorded timings are in `delivery/results/`.
 - **An example** (`examples/workload.py`): a NumPy program written without hotkernels in mind, used to show the effect of the one line.
 - **Release tooling** (`release/`, `release-notes/`): the notes each pull request leaves, and the commands that turn them into a release. Publishing to PyPI runs in [`.github/workflows/release.yml`](.github/workflows/release.yml).

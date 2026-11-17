@@ -23,7 +23,7 @@ flowchart TD
   log["attempts.md<br/>every attempt, kept or not"]
   kernels["<b>22 kernels</b><br/>21 assembly, 1 plain C"]
   binding["<b>Binding</b><br/>five kinds of hook into NumPy"]
-  check["<b>Delivery check</b><br/>70,031 calls with and without,<br/>plus NumPy's own test suite"]
+  check["<b>Delivery check</b><br/>75,307 calls with and without,<br/>plus NumPy's own test suite"]
   user["<b>Your code</b><br/>import hotkernels; hotkernels.install()"]
 
   survey -->|"shortlist: where NumPy is behind"| spec

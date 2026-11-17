@@ -107,6 +107,7 @@ The first real kernels needed more than the two fixtures do. Each addition below
 | `Scalar("lo", "f64", -0.5)` | A scalar argument and its default value. Integers go in the integer argument registers and floats in the floating-point ones. The oracle receives the scalars after the arrays: `oracle(x, lo, hi)` | `clip` (bounds), `histogram` (bin count and range), masked assignment (the value) |
 | `Kernel(scalar_sets=[ScalarSet("zero_lo", {"lo": 0.0, "hi": 1.0})])` | Further combinations of scalar values to check, and optionally time. See [Scalar sets](#scalar-sets) | `clip`, `histogram`, masked assignment |
 | `In("test", "i64", len=8)` | An input whose length is fixed and does not follow `n` | `isin` (the set of test values) |
+| `In("v", "f64", len="needles")` | An input whose length is the value of an integer scalar, so a kernel can have two lengths that vary independently. See [A second length](#a-second-length) | `searchsorted` (the needles), `interp` (the queries) |
 | `Out("counts", "i64", capacity=256)` | An output whose size is fixed | `bincount` |
 | `Out("counts", "i64", capacity="nbins")` | An output whose size is the value of an integer scalar, so it changes with the scalar set | `histogram` |
 | `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs | `searchsorted` and `interp` (sorted data) |
@@ -120,6 +121,27 @@ Two limits follow from these and are deliberate:
 
 - **A scalar is tested with the values the spec lists and no others.** The judge has value classes for arrays and none for scalars. A kernel's behaviour for a combination that is not in the default set or in `scalar_sets` is not verified.
 - **An in-place buffer is timed on its own output.** After the first repeat the kernel sees the result of the previous one. That is only a fair timing for operations that give the same result when applied twice, which masked assignment is.
+
+### A second length
+
+`np.searchsorted(a, v)` has two lengths that have nothing to do with each other: the sorted array's and the number of needles. A spec has one `Size`. The second length is a scalar that sizes a buffer:
+
+```python
+args=[In("a", "f64", prepare=np.sort), In("v", "f64", len="needles"), Out("out", "i64", capacity="needles"),
+      Size("n"), Scalar("needles", "usize", 64)],
+scalar_sets=[ScalarSet("none", {"needles": 0}), ScalarSet("k17", {"needles": 17}),
+             ScalarSet("many", {"needles": 1000}, timed=True)],
+```
+
+- **The `Size` is the length that selects the kernel's code path**, here the sorted array's. It gets the whole sweep: every value up to 65, every power of two with its neighbours, and the timing sweep.
+- **The other length takes the values the scalar sets give it**, and is checked and timed like any scalar: the default set in full, each further set with the thinner sweep, `timed=True` sets with a timing table of their own. The spec lists the values that matter. For a kernel that handles 16, 64 or 128 needles at once those are the counts either side of each width.
+- **A buffer sized by a scalar is placed by that length.** Its guard page sits at its own end, a positional value class (`nan_at@p`) is tried at every index of its own length when that is 65 or fewer, and a case with a length of zero has an empty buffer.
+- **The pool of timing inputs is sized by the largest buffer of the call**, so that 1,000 needles against a 16-element array do not get 64 inputs that no longer fit the cache.
+- **The oracle receives the scalar** like any other, after the arrays, and can ignore it.
+
+This was chosen over a second `Size` because it adds nothing to the case description, the timing loop or the reports; [two-sizes-design.md](two-sizes-design.md#why-not-a-second-size) has the comparison. What it costs is the first limit above: the second length is verified for the values the spec lists.
+
+Prepared inputs are kept between cases of one size. `prepare=np.sort` used to run for every case, although most cases of a size differ in one argument and share the other's array. The fixed cases therefore come size by size, every scalar set of one size before the next size.
 
 ### Scalar sets
 
@@ -368,6 +390,8 @@ A third fixture, `compress_scratch_f32`, covers [scratch output](#scratch-output
 
 A fourth, `tally_u8`, covers [scalar sets](#scalar-sets). It counts elements by their remainder modulo a scalar bucket count, which also sizes its output. Both of its broken variants are correct for the default bucket count and wrong for another, so they are caught only if the other sets are really run and the output is really sized by the scalar of the case.
 
+A fifth, `rank_u8`, covers [a second length](#a-second-length). For each of a scalar number of needles it counts the elements of an array smaller than the needle. One broken variant reads a byte past the needles, which is caught only if that buffer is placed against the guard page by the scalar's value and not by `n`. The other handles the default number of needles whatever the scalar says.
+
 | Broken variant | Must be caught by |
 |---|---|
 | Skips the last element when the size is not a multiple of the vector width | Correctness |
@@ -380,6 +404,8 @@ A fourth, `tally_u8`, covers [scalar sets](#scalar-sets). It counts elements by 
 | Writes to an input buffer | Memory safety |
 | Hard-codes the default value of a scalar | Correctness, in a non-default scalar set |
 | Clears as many output elements as the default scalar value gives, when the case gives fewer | Memory safety, in a non-default scalar set |
+| Reads one byte past an input whose length is a scalar | Memory safety |
+| Handles the default number of elements of an input whose length is a scalar | Correctness, in a non-default scalar set |
 | Overwrites a register it must preserve | Calling convention |
 | Uses a register the platform reserves (`x18` on ARM64) | Lint |
 | Uses an instruction outside the level (x86-64) | Lint |

@@ -17,7 +17,7 @@ from typing import Callable, Iterator
 import numpy as np
 
 from .memory import ARRANGEMENTS
-from .spec import DEFAULT_SCALARS, In, InOut, Kernel, element_count, np_dtype
+from .spec import DEFAULT_SCALARS, SIZE_N, In, InOut, Kernel, element_count, np_dtype
 
 # --- Which sizes are tested -------------------------------------------------
 
@@ -432,16 +432,34 @@ class Case:
         return Case(n, arr, seed, tuple(picks), scalars)
 
 
+# Key under which `build_inputs` keeps an argument's last prepared array in its cache.
+_PREPARED = "prepared"
+
+
 def build_inputs(k: Kernel, case: Case, cache: dict | None = None) -> dict[str, np.ndarray]:
     """Build the input arrays for a case, keyed by argument name.
 
-    `cache` holds each argument's base random array, so the many cases that
-    share a size do not regenerate it.
+    Args:
+        k: The kernel's spec.
+        case: The case to build inputs for.
+        cache: Arrays kept between cases that share an element count, or None
+            to build everything afresh. It holds each argument's base random
+            array, and the last array each argument's `prepare` produced:
+            most cases of one size differ in one argument only, and preparing
+            the others again (sorting four million elements, for example)
+            would be most of the cost of the check. The caller empties it
+            when the element count changes.
+
+    Returns:
+        One contiguous array per In or InOut argument, by argument name. The
+        arrays may be shared with the cache and with other cases, so they
+        must not be modified.
     """
     picks = {arg: (cls, p) for arg, cls, p in case.picks}
+    scalars = k.scalar_values(case.scalars)
     inputs = {}
     for a in k.ins:
-        count = element_count(a, case.n)
+        count = element_count(a, case.n, scalars=scalars)
         key = (a.name, count, case.seed)
         if cache is not None and key in cache:
             base_arr = cache[key]
@@ -450,11 +468,21 @@ def build_inputs(k: Kernel, case: Case, cache: dict | None = None) -> dict[str, 
             if cache is not None:
                 cache[key] = base_arr
         cls, p = picks.get(a.name, (RANDOM, 0))
+        if cls in POSITIONAL and count == 0:
+            # There is no element to place: an empty buffer is empty in every class.
+            cls = RANDOM
         # A positional class picks its index from the case's element count; a
         # buffer of a fixed length may be shorter than that.
         p = p % count if count else 0
+        recipe = (cls, p, count, case.seed)
+        kept = cache.get((_PREPARED, a.name)) if cache is not None and a.prepare else None
+        if kept is not None and kept[0] == recipe:
+            inputs[a.name] = kept[1]
+            continue
         made = make(a.dtype, cls, p, count, case.seed, a.name, base_arr)
         inputs[a.name] = finish_input(a, made)
+        if cache is not None and a.prepare:
+            cache[(_PREPARED, a.name)] = (recipe, inputs[a.name])
     return inputs
 
 
@@ -475,18 +503,22 @@ def finish_input(arg: In | InOut, values: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(arg.prepare(array), np_dtype(arg.dtype))
 
 
-def default_input(arg: In | InOut, n: int, seed: int) -> np.ndarray:
+def default_input(arg: In | InOut, n: int, seed: int,
+                  scalars: dict[str, int | float] | None = None) -> np.ndarray:
     """Build the default random array for an argument, as used for timing.
 
     Args:
         arg: The argument the array is for.
         n: The value of the kernel's Size argument.
         seed: Seed of the random data.
+        scalars: The scalar values of the call, by argument name. Needed only
+            for an argument whose length is given by a Scalar.
 
     Returns:
         Random data of the argument's length, prepared as the spec asks.
     """
-    return finish_input(arg, base(arg.dtype, element_count(arg, n), seed, arg.name))
+    count = element_count(arg, n, scalars=scalars)
+    return finish_input(arg, base(arg.dtype, count, seed, arg.name))
 
 
 # --- Enumerating cases ------------------------------------------------------
@@ -544,6 +576,7 @@ def _single_argument_cases(k: Kernel, n: int, seed: int, scalars: str, thin: boo
     # Small sizes are tried in every arrangement; larger ones only flush
     # against each guard page.
     arrangements = ARRANGEMENTS if exhaustive else ARRANGEMENTS[:2]
+    scalar_values = k.scalar_values(scalars)
     emitted = 0
     for a in ins:
         plain, positional = classes(a.dtype)
@@ -558,8 +591,11 @@ def _single_argument_cases(k: Kernel, n: int, seed: int, scalars: str, thin: boo
             for arr in chosen:
                 yield _case(ins, n, arr, seed, scalars, {a.name: (cls, 0)})
                 emitted += 1
+        # The interesting element is placed by the buffer's own length, which
+        # is not `n` for a buffer sized by a scalar or by a fixed number.
+        count = element_count(a, n, scalars=scalar_values)
         for cls in positional:
-            for i, p in enumerate(_positions(n, thin)):
+            for i, p in enumerate(_positions(count, thin)):
                 # Rotate through arrangements so each index meets several.
                 arr = arrangements[(p + n) % len(arrangements)] if exhaustive \
                     else arrangements[i % len(arrangements)]
@@ -599,11 +635,14 @@ def fixed_cases(k: Kernel, seed: int = 1) -> Iterator[Case]:
     A scalar chooses a path through the kernel; what has to be shown is that
     each path handles every size and every kind of value, not that it does so
     at every index a second time.
+
+    The cases come size by size, every scalar set of one size before the next
+    size, so that the arrays of a size are generated once and shared.
     """
     ins = k.ins
-    for scalars in k.scalar_set_names:
-        thin = scalars != DEFAULT_SCALARS
-        for n in sizes(k.min_n, k.check_max_n):
+    for n in sizes(k.min_n, k.check_max_n):
+        for scalars in k.scalar_set_names:
+            thin = scalars != DEFAULT_SCALARS
             if thin and n > LARGE_MIN_N and n % 2 == 0:
                 # Large sizes come in threes: a power of two, one less and one
                 # more. Generating them is most of what a scalar set costs, so
@@ -618,6 +657,11 @@ def fixed_cases(k: Kernel, seed: int = 1) -> Iterator[Case]:
                                     {first.name: (c1, 0), second.name: (c2, 0)})
 
 
+def _sized_by_scalar(k: Kernel) -> bool:
+    """Return whether any input of the kernel takes its length from a Scalar."""
+    return any(isinstance(a.len, str) and a.len != SIZE_N for a in k.ins)
+
+
 def fresh_cases(k: Kernel, seed: int, count: int = FRESH_CASE_COUNT) -> Iterator[Case]:
     """Yield random cases from a seed that changes on every run.
 
@@ -626,19 +670,27 @@ def fresh_cases(k: Kernel, seed: int, count: int = FRESH_CASE_COUNT) -> Iterator
     """
     rng = np.random.default_rng(seed)
     scalar_sets = k.scalar_set_names
+    # An input sized by a scalar needs the scalar set before its value class
+    # can be drawn. Every other kernel draws the set last, as it always did,
+    # so its fresh cases are the ones the same seed always gave.
+    set_first = _sized_by_scalar(k)
     for _ in range(count):
         top = FRESH_LARGE_MAX_N if rng.random() < FRESH_LARGE_SHARE else FRESH_SMALL_MAX_N
         n = int(rng.integers(k.min_n, top))
+        scalars = str(rng.choice(scalar_sets)) if set_first else DEFAULT_SCALARS
+        scalar_values = k.scalar_values(scalars)
         picks = []
         for a in k.ins:
             plain, positional = classes(a.dtype)
+            elements = element_count(a, n, scalars=scalar_values) if set_first else n
             # Positional classes need at least one element to place.
-            pool = plain + (positional if n > 0 else [])
+            pool = plain + (positional if elements > 0 else [])
             cls = str(rng.choice(pool))
-            p = int(rng.integers(0, n)) if cls in POSITIONAL else 0
+            p = int(rng.integers(0, elements)) if cls in POSITIONAL else 0
             picks.append((a.name, cls, p))
         arr = str(rng.choice(ARRANGEMENTS))
         # A kernel with one scalar set draws nothing here, so its fresh cases
         # are the ones the same seed always gave.
-        scalars = str(rng.choice(scalar_sets)) if len(scalar_sets) > 1 else DEFAULT_SCALARS
+        if not set_first and len(scalar_sets) > 1:
+            scalars = str(rng.choice(scalar_sets))
         yield Case(n, arr, seed, tuple(picks), scalars)

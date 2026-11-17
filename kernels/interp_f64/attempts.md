@@ -99,7 +99,31 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
 - **Notes:** the same result as in `searchsorted_f64`: the doubled dependency
   chain per register costs more than the saved loads.
 
+## 8. A second length: the number of needles is its own argument
+
+This is not a tuning attempt. The spec changed ([issue 16](https://github.com/sofeikov/hotkernels/issues/16),
+[docs/two-sizes-design.md](../../docs/two-sizes-design.md)): `n` is now the length of the
+sorted array only, and the number of queries arrives separately. The kernel was
+changed to match and nothing else.
+
+- **Idea:** the path is still chosen by `n`; "the last full group", which
+  leftovers are covered by, is computed from the new count. A path needs one
+  full group, so the entry also tests the count and sends a call with too few
+  to a narrower path.
+- **check:** pass, 155,063 cases (`--unlocked`: the spec and the judge differ from `main`)
+- **compare:** not applicable: the previous kernel has another signature
+- **Kept:** yes
+- **Notes:** no instruction in either stage changed. With fewer than 16 queries, or
+  fewer than 64 against 64 or more sample points, queries go one at a time
+  through `Lslow`. One sample point now writes `fp[0]` for every query, where
+  it used to write one. Indicative timing (unlocked, machine in use), 1,000
+  queries: 6.25x over naive C and 19.6x over NumPy at 1,048,576 sample points;
+  64 queries: 7.46x and 15.7x.
+
 ## Final numbers
+
+These were measured before attempt 8, with as many queries as elements. The search
+loops are the same code now.
 
 `uv run judge run interp_f64 --unlocked` on the kernel of attempt 6 (check:
 pass, 53,227 cases), Apple M1 Pro, NumPy 2.5.5, 30 samples per point, with
