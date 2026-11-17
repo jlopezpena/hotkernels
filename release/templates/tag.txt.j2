@@ -1,0 +1,6 @@
+{# What `release tag` says when it is done. #}
+{% if pushed %}
+Pushed {{ tag }}. The release workflow is building it; approve the `pypi` deployment in GitHub Actions to publish.
+{% else %}
+Created {{ tag }} here only. `git push origin refs/tags/{{ tag }}` starts the release.
+{% endif %}

@@ -1,0 +1,24 @@
+{# One release's notes, rendered by towncrier from the notes in release-notes/upcoming/.
+   towncrier passes `versiondata` (the version), `sections` (here one unnamed section:
+   note type -> note text -> the pull request links) and `definitions` (note type ->
+   its section heading, in the order of pyproject.toml). #}
+# hotkernels {{ versiondata.version }}
+
+## Highlights
+
+<!-- HIGHLIGHTS: write a few paragraphs on what this release means for a user,
+     spanning every change below, with the headline numbers re-measured on native
+     hardware. Name every fix to a wrong result. Then delete this comment;
+     `uv run release tag` refuses while it is here. -->
+
+Measured on <machine>, NumPy <version>, Python <version>.
+{% for section, by_type in sections.items() %}
+{% for note_type, definition in definitions.items() if note_type in by_type %}
+
+## {{ definition.name }}
+
+{% for text, pull_requests in by_type[note_type].items() %}
+- {{ text }} ({{ pull_requests | join(", ") }})
+{% endfor %}
+{% endfor %}
+{% endfor %}

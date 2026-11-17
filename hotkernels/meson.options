@@ -1,0 +1,7 @@
+# The CPU that kernels shipped as C are compiled for. `native` matches the
+# judge, which compiles with -mcpu=native, so a build on the machine that judged
+# a kernel ships exactly the code that was judged. A wheel is built once and
+# runs on every Apple Silicon Mac, so the release workflow sets the oldest one,
+# `apple-m1`, which every later chip can run.
+option('kernel_cpu', type: 'string', value: 'native',
+       description: 'CPU the C kernels are compiled for: native, or a -mcpu value such as apple-m1')

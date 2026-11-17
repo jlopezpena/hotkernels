@@ -1,8 +1,29 @@
 # Releases: how `hotkernels` gets to PyPI
 
-This is a proposal. It answers the core design's note under [Later](core-design.md#later) that "the release pipeline and its GitHub setup get their own design document", and [issue 24](https://github.com/sofeikov/hotkernels/issues/24).
+This began as a proposal and is now implemented: the commands in [`release/`](../release), the workflows [`release.yml`](../.github/workflows/release.yml) and [`release-notes.yml`](../.github/workflows/release-notes.yml), and the instructions in [AGENTS.md](../AGENTS.md#release-notes). Where the building departed from the proposal, [What changed in the building](#what-changed-in-the-building) says so. The rest of the text stands as proposed.
 
-It covers when a release happens, how its notes are written, how the version is set, and what runs on GitHub to build and publish it. What goes into a wheel and how it is built for every supported machine is [issue 19](https://github.com/sofeikov/hotkernels/issues/19); this document needs its answer before the first upload to PyPI, and says where.
+It answers the core design's note under [Later](core-design.md#later) that "the release pipeline and its GitHub setup get their own design document", and [issue 24](https://github.com/sofeikov/hotkernels/issues/24). It covers when a release happens, how its notes are written, how the version is set, and what runs on GitHub to build and publish it. What goes into a wheel is [issue 19](https://github.com/sofeikov/hotkernels/issues/19); the building settled part of it, below.
+
+## What changed in the building
+
+| Proposed | Built | Why |
+|---|---|---|
+| A wheel's contents and flags left to issue 19 | Wheels only, no source distribution. C kernels in a wheel are compiled for `apple-m1` through a new build option, `kernel_cpu` in `hotkernels/meson.options`; a build from a checkout still uses `-mcpu=native`, as the judge does | A wheel built on a CI runner with `-mcpu=native` would carry whatever that runner's chip allows, and could crash on an M1. Every later Apple chip runs M1 code. The judge still times `-mcpu=native`, which on an M1 is the same code. A source distribution still cannot build outside the checkout, so `pip` on another platform finds nothing to install; that stays in issue 19 |
+| Each wheel installed into a clean environment outside the checkout, then `delivery check` | Two tests. cibuildwheel installs each wheel alone into a fresh environment and checks `install()` puts kernels in place with no hook failing. Then, per Python, the wheel replaces the package in the workspace environment and `delivery check` runs against it | `delivery check` needs the repository's `delivery/` package, so it runs in the workspace; the fresh-environment test is the one that proves the wheel needs nothing from the checkout |
+| `release.yml` runs on tags | Also on pull requests that touch the package, kernels, the judge's build code or the release tooling, building and testing the wheels without publishing | A change that breaks a wheel is caught before it merges rather than at release time |
+| The release-note check part of CI | Its own workflow, `release-notes.yml`, rerun when a label is added or removed | Adding `no release note` clears the failure without a new push. A skipped job counts as passing |
+| `report()` prints the version | It does, on its first line: `hotkernels 0.1.0: installed, ...`. `hotkernels.__version__` reads the installed package's metadata | |
+| Notes may come from `kernels/<name>/arm64/kernel.s` or `naive.c` | Also `spec.py` | A spec generates the C prototypes and decides whether a kernel is exact, so it changes the package |
+
+### Who can publish
+
+Three things have to line up for an upload to PyPI, and only the maintainer can make each happen:
+
+1. **PyPI accepts uploads for `hotkernels` only through trusted publishing**, from repository `sofeikov/hotkernels`, workflow `release.yml`, environment `pypi`. No API token is stored in the repository or its settings.
+2. **The `pypi` environment needs the maintainer's approval on every run** and accepts only deployments from tags matching `v*`. A job that names the environment from a branch is refused; one from a tag waits for the click.
+3. **Only an administrator, which is the maintainer alone, can create, move or delete a `v*` tag**: the repository ruleset "release tags".
+
+A pull request from a fork runs `release.yml` with no write permission and no access to the environment, and its `pypi` job is skipped since it is not a tag. Someone who edited `release.yml` on a branch would still need the environment, and so the approval.
 
 ## Summary
 
@@ -161,9 +182,9 @@ Done once by the maintainer:
 
 | Where | What |
 |---|---|
-| PyPI | The name `hotkernels` is held already, by a placeholder `0.0.1` whose repository link still uses the old name `kernel-arena`; the first release replaces that metadata. Add a trusted publisher to the project: repository `sofeikov/hotkernels`, workflow `release.yml`, environment `pypi` |
-| TestPyPI | The same, for rehearsals |
-| GitHub, environments | Create `pypi` with the maintainer as required reviewer, limited to tags matching `v*` |
+| PyPI | The name `hotkernels` is held already, by a placeholder `0.0.1` whose repository link still uses the old name `kernel-arena`; the first release replaces that metadata. Add a trusted publisher to the project: owner `sofeikov`, repository `hotkernels`, workflow `release.yml`, environment `pypi`. Revoke any API token made for the placeholder upload |
+| TestPyPI | A pending trusted publisher for project `hotkernels`: the same, with environment `testpypi` |
+| GitHub, environments | `pypi` with the maintainer as required reviewer, limited to tags matching `v*`; `testpypi` limited to `main`, without a reviewer |
 | GitHub, tag ruleset | Only the maintainer may create, move or delete tags matching `v*`, so no one else can start a release |
 | GitHub, labels | Create `no release note` |
 | GitHub, branch protection | Require `ci` and the release-note check on `main` |

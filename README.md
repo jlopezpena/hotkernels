@@ -94,6 +94,7 @@ At 16 elements most of the gain is NumPy's own call path being skipped, not the 
 - **The package** (`hotkernels/`): what a user installs. A C extension points NumPy at the kernels, and `install()`, `uninstall()`, `enabled()` and `report()` control it. Twenty of the 22 kernels are installed.
 - **The delivery tool** (`delivery/`): tests and times the package from Python. Recorded timings are in `delivery/results/`.
 - **An example** (`examples/workload.py`): a NumPy program written without hotkernels in mind, used to show the effect of the one line.
+- **Release tooling** (`release/`, `release-notes/`): the notes each pull request leaves, and the commands that turn them into a release. Publishing to PyPI runs in [`.github/workflows/release.yml`](.github/workflows/release.yml).
 - **The documentation site** (`docsite/`): the pages published at [sofeikov.github.io/hotkernels](https://sofeikov.github.io/hotkernels/), with a technical report on how all of this works. Its figures are read from the files above when it is built.
 
 Supported platform: macOS on Apple Silicon (ARM64).
@@ -158,6 +159,22 @@ uv run docsite build   # build it into build/site
 
 Pages are Markdown under `docsite/pages/` and are listed in `docsite/site.toml`.
 
+## Making a release
+
+Each pull request that changes the package leaves a note in `release-notes/upcoming/` (see [AGENTS.md](AGENTS.md#release-notes)). To release:
+
+```bash
+uv run release prepare 0.2.0   # set the version and compile the notes into release-notes/0.2.0.md
+```
+
+Write the highlights at the top of that file, re-measure on native hardware, and merge it as a pull request. Then, on an up-to-date `main`:
+
+```bash
+uv run release tag             # tag the merged commit v0.2.0 and push the tag
+```
+
+The tag starts the release workflow, which builds and tests the wheels and waits for the maintainer to approve the `pypi` deployment before uploading. [docs/release-design.md](docs/release-design.md) has the details.
+
 ## Documentation
 
 - [sofeikov.github.io/hotkernels](https://sofeikov.github.io/hotkernels/): getting started, and the technical report with interactive figures
@@ -166,6 +183,7 @@ Pages are Markdown under `docsite/pages/` and are listed in `docsite/site.toml`.
 - [docs/survey-design.md](docs/survey-design.md): where NumPy is slow, and which kernels to build in what order
 - [docs/kernel-findings.md](docs/kernel-findings.md): what each kernel achieves, how, and where assembly could not win
 - [docs/delivery-design.md](docs/delivery-design.md): how the kernels reach unmodified NumPy code: the binding, `install()` and `report()`, and how they are tested
+- [docs/release-design.md](docs/release-design.md): how a release is made and published, and who can publish
 - [AGENTS.md](AGENTS.md): rules for coding agents working in this repository
 - [kernels/README.md](kernels/README.md): how to add a kernel
 

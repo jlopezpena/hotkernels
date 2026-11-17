@@ -32,7 +32,7 @@ These apply to all Python in this repository.
 
 A release gathers short notes left by the pull requests since the last one. You write the note for your pull request.
 
-**When a note is needed.** Your pull request changes `hotkernels/`, or a kernel the package installs (its `kernels/<name>/arm64/kernel.s` or `naive.c`), and a user of the package would notice: a call served by a new kernel, a faster kernel, a fixed result or crash, a supported Python or NumPy version gained or lost, different `report()` output. Changes that touch only `judge/`, `survey/`, `delivery/`, `docsite/`, `docs/` or a README need no note.
+**When a note is needed.** Your pull request changes `hotkernels/`, or a kernel the package installs (its `kernels/<name>/arm64/kernel.s`, `naive.c` or `spec.py`), and a user of the package would notice: a call served by a new kernel, a faster kernel, a fixed result or crash, a supported Python or NumPy version gained or lost, different `report()` output. Changes that touch only `judge/`, `survey/`, `delivery/`, `docsite/`, `release/`, `docs/` or a README need no note. CI checks this with `uv run release check-note`; run it yourself before pushing.
 
 **When it is not.** A change in those paths that no user would notice, such as a comment, a rename or a refactor with identical behaviour, gets the `no release note` label instead. Say in the pull request description why.
 

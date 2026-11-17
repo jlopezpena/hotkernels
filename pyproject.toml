@@ -11,7 +11,9 @@ dependencies = [
     "markdown-it-py>=3.0",
     "mdit-py-plugins>=0.4",
     "numpy>=2.0",
+    "packaging>=24.0",
     "pygments>=2.17",
+    "towncrier>=24.8",
     "typer>=0.29.1",
 ]
 
@@ -19,6 +21,7 @@ dependencies = [
 judge = "judge.cli:app"
 survey = "survey.cli:app"
 delivery = "delivery.cli:app"
+release = "release.cli:app"
 docsite = "docsite.cli:app"
 
 [dependency-groups]
@@ -40,3 +43,43 @@ members = ["hotkernels"]
 
 [tool.uv.sources]
 hotkernels = { workspace = true, editable = false }
+
+# Release notes: one note per pull request in release-notes/upcoming/, compiled
+# into release-notes/<version>.md by `uv run release prepare`. The types below
+# are also what `uv run release check-note` accepts; their order is the order
+# of the sections in the notes. See docs/release-design.md.
+[tool.towncrier]
+name = "hotkernels"
+directory = "release-notes/upcoming"
+filename = "release-notes/{version}.md"
+single_file = false
+template = "release/templates/notes.md.j2"
+# The template writes the title itself.
+title_format = false
+issue_format = "[#{issue}](https://github.com/sofeikov/hotkernels/pull/{issue})"
+wrap = false
+
+[[tool.towncrier.type]]
+directory = "kernel"
+name = "New kernels"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "speed"
+name = "Faster"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fix"
+name = "Fixes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "compat"
+name = "Compatibility"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "change"
+name = "Other changes"
+showcontent = true

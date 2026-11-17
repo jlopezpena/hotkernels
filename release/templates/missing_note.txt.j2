@@ -1,0 +1,7 @@
+{# Why `release check-note` failed: the pull request changes the package and leaves no note. #}
+release: this pull request changes what users of the package get and leaves no release note:
+{% for path in changes %}
+  {{ path }}
+{% endfor %}
+Add {{ upcoming }}{{ pull_request if pull_request is not none else "<PR number>" }}.<type>.md (see "Release notes" in AGENTS.md),
+or, if no user would notice the change, add the `no release note` label and say why in the description.

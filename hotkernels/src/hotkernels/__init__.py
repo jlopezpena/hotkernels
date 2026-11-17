@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.metadata
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -28,7 +29,10 @@ from .environment import BINDING_MODULE, unsupported_reason
 from .hooks import HOOKS, Hook, Probe
 from .report import Report
 
-__all__ = ["install", "uninstall", "enabled", "report", "Report"]
+__all__ = ["install", "uninstall", "enabled", "report", "Report", "__version__"]
+
+# The installed release, from the package metadata; meson.build is its source.
+__version__ = importlib.metadata.version(__name__)
 
 log = logging.getLogger(__name__)
 
@@ -212,5 +216,5 @@ def report() -> Report:
             binding = _load_binding()
             taken, passed = binding.counters()
             applied = frozenset(hook.name for hook in HOOKS if binding.applied(hook.name))
-        return _report.build(_state.installed, _state.unsupported, _state.inexact, np.__version__,
+        return _report.build(__version__, _state.installed, _state.unsupported, _state.inexact, np.__version__,
                              applied, taken, passed, tuple(_state.problems))

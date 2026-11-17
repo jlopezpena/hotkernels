@@ -5,11 +5,11 @@
 {% set result_width = 17 %}
 {% set count_width = 13 %}
 {% if report.unsupported %}
-hotkernels: not installed: {{ report.unsupported }}
+hotkernels {{ report.version }}: not installed: {{ report.unsupported }}
 {% elif not report.installed %}
-hotkernels: not installed (NumPy {{ report.numpy_version }}). Call hotkernels.install().
+hotkernels {{ report.version }}: not installed (NumPy {{ report.numpy_version }}). Call hotkernels.install().
 {% else %}
-hotkernels: installed, {{ report.installed_count }} of {{ report.kernels | length }} kernels (NumPy {{ report.numpy_version }})
+hotkernels {{ report.version }}: installed, {{ report.installed_count }} of {{ report.kernels | length }} kernels (NumPy {{ report.numpy_version }})
 {% endif %}
 {% if report.installed %}
 

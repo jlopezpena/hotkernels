@@ -1,5 +1,7 @@
 # Build of the hotkernels package: the Python sources, and the extension
 # module that binds the kernels in ../kernels to NumPy.
+# The package's version, and the only place it is written. `uv run release prepare`
+# changes it; the release workflow refuses a tag that disagrees with it.
 project('hotkernels', 'c', version: '0.1.0',
         default_options: ['c_std=c11', 'buildtype=release', 'warning_level=2'])
 
@@ -22,7 +24,7 @@ if host_machine.system() == 'darwin' and host_machine.cpu_family() == 'aarch64'
   run_command(py, [generate, 'write', generated], check: true)
   asm_sources = run_command(py, [generate, 'list', 'assembly-sources'], check: true).stdout().strip().split('\n')
   c_sources = run_command(py, [generate, 'list', 'c-sources'], check: true).stdout().strip().split('\n')
-  judge_c_flags = run_command(py, [generate, 'list', 'c-flags'], check: true).stdout().strip().split('\n')
+  judge_c_flags = run_command(py, [generate, 'list', 'c-flags', '--cpu', get_option('kernel_cpu')], check: true).stdout().strip().split('\n')
 
   # A kernel that ships as C is its naive reference, compiled with the flags
   # the judge timed it with. The generated header is force-included, as the
