@@ -53,6 +53,26 @@ wrong comparison when elements equal to the needle lie on both sides of
 `a[p - 1]`, which is what the repeated value is for. The same two mutations of
 `searchsorted_f64`, in the other direction, are caught by the same cases.
 
+### The two again, after the judge drew needles from the array
+
+[Issue 48](https://github.com/sofeikov/kernel-arena/issues/48) gave the judge a
+value class drawn from another argument: the spec now declares
+`In("v", ..., draws_from="a")`, and the judge searches, at every size and in
+every scalar set, for needles drawn from `a`, with `a` holding repeated values
+(`ties`) and, above 65,536 elements, random. The two mutations above were made
+again on a copy of the kernel and checked with `uv run judge check
+searchsorted_right_f64 --unlocked`, once with the spec on `main` and once with
+the new one. The kernel was restored after each.
+
+| Changed back | Spec on `main` | With needles drawn from `a` |
+|---|---|---|
+| `Lbig_init` (`fcmge` to `fcmgt`, two instructions) | Passes, 141,872 cases | **Fails**: `n=1048577 arr=mid1 seed=1 scalars=k128 a=ties v=from_a`, `out[2]` 1,048,576 for 1,048,577 |
+| `Lbig_probe` (`fcmge` to `fcmgt`, two instructions) | Passes, 141,872 cases | **Fails**: the same case |
+
+Both are found at the first long size in a set with 128 needles or more, which
+is the first case that reaches `Lbig` with a needle equal to `a[p - 1]` and
+equal elements on both sides of it. The unmutated kernel passes 145,599 cases.
+
 ## Numbers
 
 `uv run judge run searchsorted_right_f64 --unlocked` (check: pass, 141,872

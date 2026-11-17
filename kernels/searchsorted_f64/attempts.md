@@ -233,10 +233,33 @@ attempt 11 with every `a[i] < key` turned into `a[i] <= key`; see
 [its log](../searchsorted_right_f64/attempts.md). An improvement kept here is
 worth trying there, and the other way round.
 
-That log also records a gap in what the judge checks, which holds for this
-kernel too: no generated input above 5,000 elements has a needle equal to an
+That log also records a gap in what the judge checked, which held for this
+kernel too: no generated input above 5,000 elements had a needle equal to an
 element, so a wrong comparison on the path for arrays of 1,048,576 elements or
-more passes `judge check`. `uv run delivery check` has the cases that catch it.
+more passed `judge check`. `uv run delivery check` has the cases that catch it.
+
+### The gap closed: needles drawn from the array
+
+[Issue 48](https://github.com/sofeikov/kernel-arena/issues/48) gave the judge a
+value class drawn from another argument. The spec declares
+`In("v", ..., draws_from="a")`, and the judge searches, at every size and in
+every scalar set, for needles drawn from `a`, with `a` holding repeated values
+(`ties`) and, above 65,536 elements, random. The two mutations of the
+long-array path were made on a copy of this kernel, each comparison turned to
+the right side's, and checked with `uv run judge check searchsorted_f64
+--unlocked`, once with the spec on `main` and once with the new one. The kernel
+was restored after each.
+
+| Changed | Spec on `main` | With needles drawn from `a` |
+|---|---|---|
+| `Lbig_init` (`fcmgt` to `fcmge`, two instructions) | Passes, 141,872 cases | **Fails**: `n=2097151 arr=start seed=1 scalars=k128 a=ties v=from_a` |
+| `Lbig_probe` (`fcmgt` to `fcmge`, two instructions) | Passes, 141,872 cases | **Fails**: `n=1048577 arr=mid1 seed=1 scalars=k128 a=ties v=from_a` |
+
+The first step needs a longer array on this side than on the right: taking the
+upper window by mistake only shows when elements equal to the needle lie before
+`n - p`, which at 1,048,577 elements is index 1. At 2,097,151 the windows meet
+in the middle of the array, inside a run of `ties`. The unmutated kernel passes
+145,599 cases.
 
 ## Ten-run means, locked
 

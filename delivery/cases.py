@@ -1257,9 +1257,9 @@ def _search_grid_cases(text: str, search: Callable, kernel: str) -> Iterator[Cas
             yield Case("searchsorted", f"{text} a={table_class} n={n} v={needle_class} needles={count}",
                        partial(_search_arguments, n, table_class, count, needle_class), search, kernel)
     # The long arrays get needles with NaNs among them, and needles that are
-    # elements: the judge has no case above 5,000 elements in which a needle
-    # equals an element, so these are what check that the path for long arrays
-    # compares the right way. An array of one repeated value is there for the
+    # elements, so that the path for long arrays is seen to compare the right
+    # way through the binding as well as in the judge, which draws needles
+    # from the array at every size. An array of one repeated value is there for the
     # first step of the search, which only shows a wrong comparison when
     # elements equal to the needle lie on both sides of a[p - 1], p being the
     # largest power of two not above the length.

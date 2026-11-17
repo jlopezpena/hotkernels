@@ -17,7 +17,7 @@ from typing import Callable, Iterator
 import numpy as np
 
 from .memory import ARRANGEMENTS
-from .spec import DEFAULT_SCALARS, SIZE_N, In, InOut, Kernel, element_count, np_dtype
+from .spec import DEFAULT_SCALARS, SIZE_N, In, InOut, Kernel, drawn_class, element_count, np_dtype
 
 # --- Which sizes are tested -------------------------------------------------
 
@@ -60,6 +60,11 @@ BOOL_DENSE_SHARE = 0.95      # share of True in "dense"
 EVEN_SHARE = 0.5             # a fair coin
 
 RANDOM = "random"
+# The class of each kind of data whose elements repeat one another, against
+# which a class drawn from that data is tried at every size: a needle equal to
+# an element inside a run of equal ones shows which side of the run a search
+# answers, wherever the search cuts the run. Random booleans repeat already.
+REPEATED_CLASS = {"f": "ties", "i": "small", "b": RANDOM}
 
 
 @dataclass
@@ -369,7 +374,8 @@ def arg_classes(arg: In | InOut) -> tuple[list[str], list[str]]:
 
     Returns:
         The classes of the argument's type, with the classes the spec gives
-        this argument alone after the plain ones.
+        this argument alone after the plain ones, and last the class drawn
+        from another argument when it has `draws_from`.
 
     Raises:
         ValueError: If one of the argument's own classes has the name of a
@@ -377,10 +383,24 @@ def arg_classes(arg: In | InOut) -> tuple[list[str], list[str]]:
     """
     plain, positional = classes(arg.dtype)
     own = list(arg.classes or {})
+    if drawn_class(arg):
+        own.append(drawn_class(arg))
     clash = sorted(set(own) & set(plain + positional))
     if clash:
         raise ValueError(f"argument {arg.name!r}: value class {clash[0]!r} already exists for {arg.dtype}")
     return plain + own, positional
+
+
+def repeated_class(dtype_name: str) -> str:
+    """Return the value class of a spec type whose elements repeat one another.
+
+    Args:
+        dtype_name: A spec type name such as `f64`.
+
+    Returns:
+        The name of the class, from REPEATED_CLASS.
+    """
+    return REPEATED_CLASS[_kind(np_dtype(dtype_name))]
 
 
 def _crc(text: str) -> int:
@@ -454,8 +474,41 @@ class Case:
         return Case(n, arr, seed, tuple(picks), scalars)
 
 
-# Key under which `build_inputs` keeps an argument's last prepared array in its cache.
+# First element of the key under which `build_inputs` keeps a prepared array in its cache.
 _PREPARED = "prepared"
+
+
+def _build_order(ins: list) -> list:
+    """Return the input arguments in the order their arrays are built.
+
+    Args:
+        ins: The kernel's input arguments, in argument order.
+
+    Returns:
+        The same arguments, every one that draws from another after all
+        those that do not, so a source is always built before the arguments
+        drawn from it. Otherwise in argument order.
+    """
+    return [a for a in ins if not a.draws_from] + [a for a in ins if a.draws_from]
+
+
+def _draw(source: np.ndarray, count: int, rng: np.random.Generator,
+          base_arr: np.ndarray) -> np.ndarray:
+    """Build an array of elements of another argument, at random indices.
+
+    Args:
+        source: The other argument's array, as the kernel receives it.
+        count: Element count of the array to build.
+        rng: Random generator seeded from the case description.
+        base_arr: The drawing argument's default random array, returned when
+            the source has no element to draw.
+
+    Returns:
+        `count` elements of `source`, drawn with replacement.
+    """
+    if source.size == 0:
+        return base_arr
+    return source[rng.integers(0, source.size, count)]
 
 
 def build_inputs(k: Kernel, case: Case, cache: dict | None = None) -> dict[str, np.ndarray]:
@@ -466,11 +519,11 @@ def build_inputs(k: Kernel, case: Case, cache: dict | None = None) -> dict[str, 
         case: The case to build inputs for.
         cache: Arrays kept between cases that share an element count, or None
             to build everything afresh. It holds each argument's base random
-            array, and the last array each argument's `prepare` produced:
-            most cases of one size differ in one argument only, and preparing
-            the others again (sorting four million elements, for example)
-            would be most of the cost of the check. The caller empties it
-            when the element count changes.
+            array, and every array each argument's `prepare` produced at this
+            size, by value class: most cases of one size differ in one
+            argument only, and preparing the others again (sorting four
+            million elements, for example) would be most of the cost of the
+            check. The caller empties it when the element count changes.
 
     Returns:
         One contiguous array per In or InOut argument, by argument name. The
@@ -480,7 +533,7 @@ def build_inputs(k: Kernel, case: Case, cache: dict | None = None) -> dict[str, 
     picks = {arg: (cls, p) for arg, cls, p in case.picks}
     scalars = k.scalar_values(case.scalars)
     inputs = {}
-    for a in k.ins:
+    for a in _build_order(k.ins):
         count = element_count(a, case.n, scalars=scalars)
         key = (a.name, count, case.seed)
         if cache is not None and key in cache:
@@ -496,21 +549,26 @@ def build_inputs(k: Kernel, case: Case, cache: dict | None = None) -> dict[str, 
         # A positional class picks its index from the case's element count; a
         # buffer of a fixed length may be shorter than that.
         p = p % count if count else 0
-        recipe = (cls, p, count, case.seed)
-        kept = cache.get((_PREPARED, a.name)) if cache is not None and a.prepare else None
-        if kept is not None and kept[0] == recipe:
-            inputs[a.name] = kept[1]
+        # A drawn argument depends on its source's class too, so only the
+        # arrays of the others are kept.
+        keep = cache is not None and a.prepare is not None and not a.draws_from
+        kept_key = (_PREPARED, a.name, cls, p, count, case.seed)
+        if keep and kept_key in cache:
+            inputs[a.name] = cache[kept_key]
             continue
-        if a.classes and cls in a.classes:
+        if cls == drawn_class(a):
+            rng = np.random.default_rng([case.seed, count, _crc(a.name), _crc(cls)])
+            made = _draw(inputs[a.draws_from], count, rng, base_arr)
+        elif a.classes and cls in a.classes:
             # A class the spec gives this argument alone: built from the
             # argument's default random array by the spec's own function.
             made = a.classes[cls](base_arr)
         else:
             made = make(a.dtype, cls, p, count, case.seed, a.name, base_arr)
         inputs[a.name] = finish_input(a, made)
-        if cache is not None and a.prepare:
-            cache[(_PREPARED, a.name)] = (recipe, inputs[a.name])
-    return inputs
+        if keep:
+            cache[kept_key] = inputs[a.name]
+    return {a.name: inputs[a.name] for a in k.ins}
 
 
 def finish_input(arg: In | InOut, values: np.ndarray) -> np.ndarray:
@@ -648,6 +706,42 @@ def _case(ins: list, n: int, arr: str, seed: int, scalars: str, chosen: dict) ->
     return Case(n, arr, seed, picks, scalars)
 
 
+def _drawn_cases(k: Kernel, n: int, seed: int, scalars: str, thin: bool) -> Iterator[Case]:
+    """Yield the cases of one size that the other sweeps leave out for a drawn class.
+
+    A class drawn from another argument is in its argument's list of classes,
+    so the single-argument sweep tries it with the source random, and the
+    pairings with every class of the source. These cases add the source's
+    class of repeated values at every size and in every scalar set, and the
+    random source above LARGE_MIN_N, where the single-argument sweep keeps
+    only the first class of each argument.
+
+    Args:
+        k: The kernel's spec.
+        n: Element count.
+        seed: Seed of the cases' random data.
+        scalars: Name of the scalar set the cases use.
+        thin: Whether this is the thinner sweep of a further scalar set.
+
+    Returns:
+        An iterator over the cases, one memory arrangement each.
+    """
+    ins = k.ins
+    paired = not thin and n <= CROSS_PRODUCT_MAX_N and len(ins) == 2
+    by_name = {a.name: a for a in ins}
+    for a in ins:
+        if not a.draws_from:
+            continue
+        source = by_name[a.draws_from]
+        sources = [] if paired else [repeated_class(source.dtype)]
+        if n > LARGE_MIN_N:
+            sources.append(RANDOM)
+        for i, cls in enumerate(dict.fromkeys(sources)):
+            arr = ARRANGEMENTS[(i + n) % len(ARRANGEMENTS)]
+            yield _case(ins, n, arr, seed, scalars,
+                        {source.name: (cls, 0), a.name: (drawn_class(a), 0)})
+
+
 def fixed_cases(k: Kernel, seed: int = 1) -> Iterator[Case]:
     """Yield the fixed set of cases, identical on every run.
 
@@ -659,6 +753,8 @@ def fixed_cases(k: Kernel, seed: int = 1) -> Iterator[Case]:
     set gets a thinner one: the same value classes at the same sizes (less the
     exact powers of two above 65,536), but one memory arrangement per case,
     three indices per positional class, and no pairings.
+    An argument drawn from another is also tried, at every size and in every
+    scalar set, against the source's class of repeated values.
     A scalar chooses a path through the kernel; what has to be shown is that
     each path handles every size and every kind of value, not that it does so
     at every index a second time.
@@ -676,6 +772,7 @@ def fixed_cases(k: Kernel, seed: int = 1) -> Iterator[Case]:
                 # the thin sweep keeps the two odd ones, which leave a tail.
                 continue
             yield from _single_argument_cases(k, n, seed, scalars, thin)
+            yield from _drawn_cases(k, n, seed, scalars, thin)
             if len(ins) == 2 and n <= CROSS_PRODUCT_MAX_N and not thin:
                 first, second = ins
                 for c1 in arg_classes(first)[0]:

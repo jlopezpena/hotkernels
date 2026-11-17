@@ -41,7 +41,10 @@ KERNEL = Kernel(
     name="interp_f64",
     returns="void",
     args=[
-        In("x", "f64", len="queries"),
+        # Drawn from `xp` as well as random: a query on a sample point, and
+        # on a repeated one, is where the search's comparison decides which
+        # value is returned, and random data never gives one.
+        In("x", "f64", len="queries", draws_from="xp"),
         In("xp", "f64", prepare=_sample_points),
         In("fp", "f64"),
         Out("out", "f64", capacity="queries"),

@@ -147,6 +147,7 @@ Only the first failure is shown. The case line says how the input was built:
   - `start`: the buffer starts exactly after one.
   - `mid1` to `mid3`: deliberately misaligned.
 - `x=nan_at@1` means argument `x` is random data with a NaN at index 1. Other value classes are named the same way (`max_at`, `neg_zero_at`, `ties`, `denormal`, `all_true`, and so on); see `judge/cases.py`.
+- `v=from_a` means the elements of `v` were drawn from `a` as the kernel received it, so some of them equal elements of `a`: the needles of a search, where a tie decides the answer. The spec declares which argument may be drawn from which.
 - `scalars=zero_lo`, when present, names the set of scalar arguments the call was made with. The sets and their values are listed in the kernel's `spec.py`; without the field the scalars had their default values. A kernel must be right for every set, and `compare` times every set marked `timed`.
 
 The failure categories:

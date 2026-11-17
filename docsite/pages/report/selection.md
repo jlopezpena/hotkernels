@@ -183,5 +183,5 @@ These kernels were first written with one length for the sorted array and the ne
 :::
 
 ::: note The right side
-`np.searchsorted(a, v, side='right')`, which `np.digitize` asks for by default, is a second kernel, `searchsorted_right_f64`. It is the same search with the comparison turned round, `a[i] <= key` in place of `a[i] < key`, so the two differ only for a needle that equals an element, and for a NaN needle, whose answer is the length of the array. The judge checks it like any other kernel, with one gap: above 5,000 elements none of its inputs has a needle equal to an element, so the path for the longest arrays is checked on such needles from Python instead.
+`np.searchsorted(a, v, side='right')`, which `np.digitize` asks for by default, is a second kernel, `searchsorted_right_f64`. It is the same search with the comparison turned round, `a[i] <= key` in place of `a[i] < key`, so the two differ only for a needle that equals an element, and for a NaN needle, whose answer is the length of the array. The judge checks it like any other kernel, with needles drawn from the array at every size, so that some equal its elements.
 :::
