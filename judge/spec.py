@@ -38,6 +38,11 @@ RETURNS: dict[str, str] = {name: c for name, (_, c) in DTYPES.items()} | {
 }
 
 EXACT = "exact"
+# Keys of a tolerance mode: the allowed error in units in the last place, and
+# an optional function giving the magnitude that unit is taken at.
+TOLERANCE_ULP = "tolerance_ulp"
+TOLERANCE_SCALE = "scale"
+_MODE_KEYS = {TOLERANCE_ULP, TOLERANCE_SCALE}
 USED_RETURN = "return"
 USED_CAPACITY = "capacity"
 
@@ -175,7 +180,12 @@ class Kernel:
     # returns the correct answer.
     oracle: Callable
     # How output is compared with the oracle: EXACT for byte equality, or
-    # {"tolerance_ulp": k} to allow k units in the last place on floats.
+    # {"tolerance_ulp": k} to allow k units in the last place on floats. The
+    # unit is taken at the size of the value itself, unless the dict also has
+    # "scale": a function over the same inputs as the oracle that returns, per
+    # output element, the magnitude the unit is taken at. A running sum needs
+    # that: its rounding error is bounded by the sizes of the terms, not by
+    # the size of a result that may have cancelled to almost nothing.
     mode: str | dict = EXACT
     # Smallest element count the kernel is ever called with.
     min_n: int = 0
@@ -208,7 +218,10 @@ class Kernel:
             raise ValueError(f"{self.name}: scratch=True needs used='return'; a buffer "
                              "that is filled completely has no unreported part")
         if self.mode != EXACT and self.tolerance_ulp is None:
-            raise ValueError(f"{self.name}: mode must be 'exact' or {{'tolerance_ulp': k}}")
+            raise ValueError(f"{self.name}: mode must be 'exact' or {{'tolerance_ulp': k}}, "
+                             "optionally with 'scale': fn")
+        if isinstance(self.mode, dict) and set(self.mode) - _MODE_KEYS:
+            raise ValueError(f"{self.name}: unknown keys in mode: {sorted(set(self.mode) - _MODE_KEYS)}")
 
     @property
     def ins(self) -> list[In | InOut]:
@@ -235,7 +248,20 @@ class Kernel:
     def tolerance_ulp(self) -> int | None:
         """Allowed error in units in the last place, or None in exact mode."""
         if isinstance(self.mode, dict):
-            return self.mode.get("tolerance_ulp")
+            return self.mode.get(TOLERANCE_ULP)
+        return None
+
+    @property
+    def tolerance_scale(self) -> Callable | None:
+        """The function giving the magnitude each output element's error is measured at.
+
+        Returns:
+            The spec's scale function, which takes the oracle's arguments and
+            returns one magnitude per output element, or None when the unit in
+            the last place is taken at the size of the value itself.
+        """
+        if isinstance(self.mode, dict):
+            return self.mode.get(TOLERANCE_SCALE)
         return None
 
 

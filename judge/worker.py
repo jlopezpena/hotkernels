@@ -79,16 +79,28 @@ def _show(value) -> str:
     return repr(value.item() if isinstance(value, np.generic) else value)
 
 
-def _matches(got: np.ndarray, expected: np.ndarray, ulp: int | None) -> np.ndarray:
+def _matches(got: np.ndarray, expected: np.ndarray, ulp: int | None,
+             scale: np.ndarray | None = None) -> np.ndarray:
     """Return an elementwise mask of where `got` matches `expected`.
 
-    In exact mode (ulp is None), and always for non-float data, elements match
-    when their bytes are equal. That distinguishes +0.0 from -0.0 and treats
-    two NaNs with the same bits as equal.
+    In exact mode, and always for non-float data, elements match when their
+    bytes are equal. That distinguishes +0.0 from -0.0 and treats two NaNs
+    with the same bits as equal.
 
     In tolerance mode, finite floats match when they differ by at most `ulp`
     units in the last place. NaN and infinity must still appear in exactly the
     same positions.
+
+    Args:
+        got: What the kernel produced.
+        expected: The oracle's answer, same shape and dtype as `got`.
+        ulp: Allowed error in units in the last place, or None for exact mode.
+        scale: Per element, the magnitude at which the unit in the last place
+            is taken, or None to take it at the larger of the two values
+            compared. Only used in tolerance mode.
+
+    Returns:
+        A boolean array, True where the element is accepted.
     """
     if ulp is None or got.dtype.kind != "f":
         unsigned = f"u{got.dtype.itemsize}"
@@ -96,7 +108,13 @@ def _matches(got: np.ndarray, expected: np.ndarray, ulp: int | None) -> np.ndarr
     special = ~np.isfinite(expected) | ~np.isfinite(got)
     identical = (got == expected) | (np.isnan(got) & np.isnan(expected))
     with np.errstate(invalid="ignore", over="ignore"):
-        magnitude = np.maximum(np.abs(got), np.abs(expected))
+        if scale is None:
+            magnitude = np.maximum(np.abs(got), np.abs(expected))
+        else:
+            # A scale beyond the largest finite value would have no unit in the
+            # last place, so it is capped there. A NaN scale accepts nothing.
+            largest = np.finfo(got.dtype).max
+            magnitude = np.minimum(np.abs(np.asarray(scale, dtype=np.float64)), largest).astype(got.dtype)
         close = np.abs(got - expected) <= ulp * np.spacing(magnitude)
     return np.where(special, identical, close)
 
@@ -143,7 +161,9 @@ class Runner:
         if case.n != self.cache_n:
             self.cache, self.cache_n = {}, case.n
         inputs = build_inputs(k, case, self.cache)
-        expected = k.oracle(*[inputs[a.name] for a in k.ins])
+        oracle_args = [inputs[a.name] for a in k.ins]
+        expected = k.oracle(*oracle_args)
+        scale = k.tolerance_scale(*oracle_args) if k.tolerance_scale else None
 
         int_args, float_args, out_addr, out_bytes, read_only = self._place_arguments(case, inputs)
         result = WrapperResult()
@@ -161,8 +181,8 @@ class Runner:
 
         returned = self._decode_return(result)
         if k.out is None:
-            return self._check_return_value(case, returned, expected)
-        return self._check_output(case, returned, expected, out_addr, out_bytes)
+            return self._check_return_value(case, returned, expected, scale)
+        return self._check_output(case, returned, expected, scale, out_addr, out_bytes)
 
     def _place_arguments(self, case: Case, inputs: dict) -> tuple:
         """Copy inputs into guarded memory and build the kernel's argument list.
@@ -225,12 +245,22 @@ class Runner:
             return np.float64(struct.unpack("<d", raw)[0])
         return None  # void
 
-    def _check_return_value(self, case: Case, returned, expected) -> dict | None:
-        """Compare the return value of a kernel that has no output buffer."""
+    def _check_return_value(self, case: Case, returned, expected, scale) -> dict | None:
+        """Compare the return value of a kernel that has no output buffer.
+
+        Args:
+            case: The case that was run, for the failure message.
+            returned: The decoded return value.
+            expected: The oracle's answer.
+            scale: The spec's tolerance scale for this case, or None.
+
+        Returns:
+            None when the value is accepted, otherwise a failure description.
+        """
         k = self.k
         if k.returns in _FLOAT_RETURNS:
             want = np.asarray(expected, dtype=returned.dtype)
-            ok = bool(_matches(np.asarray(returned), want, k.tolerance_ulp).all())
+            ok = bool(_matches(np.asarray(returned), want, k.tolerance_ulp, scale).all())
         else:
             want = bool(expected) if k.returns == "bool" else int(expected)
             ok = returned == want
@@ -239,7 +269,8 @@ class Runner:
         return self._failure(WRONG_RESULT, "wrong return value", case,
                              expected=_show(want), got=_show(returned))
 
-    def _check_output(self, case: Case, returned, expected, out_addr: int, out_bytes: int) -> dict | None:
+    def _check_output(self, case: Case, returned, expected, scale,
+                      out_addr: int, out_bytes: int) -> dict | None:
         """Compare what the kernel wrote to its output buffer with the oracle.
 
         Checks, in order: the reported element count, the elements themselves,
@@ -247,6 +278,19 @@ class Runner:
         is skipped for a scratch buffer, where the kernel may leave anything
         between the reported elements and the capacity. A write past the
         capacity never reaches this function: it faults on the guard page.
+
+        Args:
+            case: The case that was run, for the failure message.
+            returned: The decoded return value, which is the element count
+                when the output reports how much of it was used.
+            expected: The oracle's answer.
+            scale: The spec's tolerance scale for this case, one magnitude per
+                expected element, or None.
+            out_addr: Address of the output buffer.
+            out_bytes: Size of the output buffer in bytes.
+
+        Returns:
+            None when the output is accepted, otherwise a failure description.
         """
         k, out = self.k, self.k.out
         dt = np_dtype(out.dtype)
@@ -263,7 +307,9 @@ class Runner:
 
         raw = ctypes.string_at(out_addr, out_bytes) if out_bytes else b""
         got = np.frombuffer(raw, dtype=dt)
-        matches = _matches(got[:used], want, k.tolerance_ulp)
+        if scale is not None:
+            scale = np.asarray(scale).ravel()
+        matches = _matches(got[:used], want, k.tolerance_ulp, scale)
         if not matches.all():
             i = int(np.argmin(matches))  # first mismatch
             return self._failure(WRONG_RESULT, f"wrong value in {out.name}[{i}]", case,
