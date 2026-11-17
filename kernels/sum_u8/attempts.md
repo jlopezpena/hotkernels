@@ -1,6 +1,8 @@
 # sum_u8 attempts
 
-**Verdict: assembly kept.** Final `judge run`: 5.83x [5.82 – 5.84] faster than naive C overall
+This log holds two architectures. ARM64 (Apple M1 Pro) comes first and runs to "Where it stands". x86-64 (Intel Core i5-14600KF) follows under [x86-64](#x86-64), with its own numbering.
+
+**Verdict on ARM64: assembly kept.** Final `judge run`: 5.83x [5.82 – 5.84] faster than naive C overall
 (3.3x at 16 bytes, 8.2–9.0x from 1,024 to 65,536, 5.0x from 262,144 to 4,194,304, 4.4x at 16,777,216).
 
 All runs on an Apple M1 Pro with `--unlocked` (the spec was not on `main` yet), while other
@@ -106,3 +108,23 @@ Not exercised by the judge's timing: sizes below 16 and sizes that are not a mul
 the general-register path and the masked last vector are checked for correctness but never
 timed. Not exercised by the judge at all: worst-case all-0xFF data (checked privately, see
 attempt 2; rerun on the final version).
+
+# x86-64
+
+All runs on an Intel Core i5-14600KF (Raptor Lake, performance core, 2 MB second-level cache per
+core, 24 MB third-level cache shared), Linux, locked, pinned to one performance core by the judge.
+A desktop session was running throughout.
+
+What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8): it widens every
+byte to 64 bits before adding. One `vpmovzxbq` spreads four bytes over a 256-bit register and one
+`vpaddq` adds them to one of four accumulators, so a 16-byte step is four loads, four widenings
+and four additions. That is 0.047 ns per byte (about 21 GB/s) at every size from 1,024 bytes up,
+far below what the caches deliver.
+
+## x86-64 1. Baseline: `vpsadbw` per 32 bytes, one accumulator, byte loop for the rest
+
+- **Idea:** the candidate from the design. `vpsadbw` against a register of zeros adds the 32 bytes of a vector into four 64-bit lanes in one instruction, so a vector costs one instruction with its load folded in, plus one `vpaddq`. No widening schedule and no overflow bookkeeping: a lane grows by at most 2,040 per step. Fewer than 32 bytes, and the bytes left over, go one at a time.
+- **check:** pass
+- **compare:** n/a (first version). `run`: 3.16x [3.14 – 3.19] vs naive C overall; 0.32x at 16, 1.89x at 64, 5.4x to 6.1x from 1,024 to 16,384, 4.4x to 4.5x at 65,536 and 262,144, 3.3x to 3.5x above.
+- **Kept:** yes
+- **Notes:** 0.0083 ns per byte at 4,096 (120 GB/s), 0.0105 at 65,536 and 262,144, 0.014 from 1,048,576 up. At 16 bytes the byte loop takes 5.8 ns against the compiler's 1.8.
