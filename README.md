@@ -168,7 +168,7 @@ Pages are Markdown under `docsite/pages/` and are listed in `docsite/site.toml`.
 
 ## Using the self-hosted runners
 
-The macOS jobs of a pull request run on the maintainer's own Mac when it is online, and on GitHub's runners otherwise. GitHub's macOS runners are often not assigned for a quarter of an hour, after which a job fails. A pull request from a fork, a tag and the job that builds the wheels always use GitHub's runners.
+The macOS jobs of a pull request run on the maintainer's own Mac when it is online, and on GitHub's runners otherwise. GitHub's macOS runners are often not assigned for a quarter of an hour, after which a job fails. A pull request from a fork and a tag always use GitHub's runners, so a published wheel never comes from that Mac.
 
 To set the runners up on a Mac with Apple Silicon:
 

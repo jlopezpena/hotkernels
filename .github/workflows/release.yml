@@ -62,7 +62,8 @@ jobs:
           fi
 
   build:
-    runs-on: macos-15
+    needs: runner
+    runs-on: ${{ needs.runner.outputs.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,10 +77,26 @@ jobs:
           echo "path=$(ls dist/hotkernels-*.tar.gz)" >> "$GITHUB_OUTPUT"
       # The wheels are built from the source distribution, which proves it builds.
       # Settings are in [tool.cibuildwheel] in hotkernels/pyproject.toml.
+      # cibuildwheel installs each Python system-wide, which only a hosted runner
+      # allows. Every wheel that is published is built this way: a tag always
+      # runs hosted.
       - uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
+        if: needs.runner.outputs.runner == 'macos-15'
         with:
           package-dir: ${{ steps.sdist.outputs.path }}
           output-dir: dist
+      # On the maintainer's Mac the same wheels are built by uv, with the
+      # settings [tool.cibuildwheel] gives: one wheel per Python, C kernels
+      # compiled for the first Apple Silicon Mac, macOS 11 as the oldest target.
+      # The test jobs then check them as they check cibuildwheel's.
+      - if: needs.runner.outputs.runner != 'macos-15'
+        env:
+          SDIST: ${{ steps.sdist.outputs.path }}
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          for python in 3.11 3.12 3.13 3.14; do
+            uv build --wheel --python "$python" -C setup-args=-Dkernel_cpu=apple-m1 --out-dir dist "$SDIST"
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
@@ -108,8 +125,8 @@ jobs:
 
   # Every hooked NumPy call, with and without hotkernels, against each wheel
   # as built for release rather than the package built from the checkout.
-  # Where the tests run: the maintainer's Mac when it is online, except for a
-  # tag. The wheels themselves are always built on a hosted runner.
+  # Where the macOS jobs run: the maintainer's Mac when it is online, except
+  # for a tag, whose wheels are published and are built and tested hosted.
   runner:
     uses: ./.github/workflows/pick-runner.yml
     secrets: inherit
