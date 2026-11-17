@@ -1,10 +1,26 @@
-"""Binary search: `np.searchsorted(a, v)` with n sorted values and n needles."""
+"""Binary search: `np.searchsorted(a, v)` for n sorted values and any number of needles."""
 import numpy as np
 
-from judge.spec import In, Kernel, Out, Size
+from judge.spec import In, Kernel, Out, Scalar, ScalarSet, Size
+
+# Needles in the default scalar set: one full group of the widest path that
+# works inside the cache. This set gets the full sweep and is timed.
+NEEDLES = 64
+# Needles in the second timed set: several groups and a leftover in every
+# path (1,000 leaves 8 over groups of 16, 40 over 64 and 104 over 128).
+MANY_NEEDLES = 1000
+# The kernel searches for 16, 64 or 128 needles at once and handles leftovers
+# by redoing the last full group, so the counts either side of each width are
+# the ones that matter. Set name -> number of needles.
+BOUNDARY_NEEDLES = {
+    "none": 0, "one": 1,
+    "k15": 15, "k16": 16, "k17": 17,
+    "k63": 63, "k65": 65,
+    "k127": 127, "k128": 128, "k129": 129,
+}
 
 
-def oracle(a, v):
+def oracle(a, v, needles):
     """For each needle, the first index at which it could be inserted to keep `a` sorted."""
     return np.searchsorted(a, v)
 
@@ -16,9 +32,14 @@ KERNEL = Kernel(
         # NumPy sorts NaN last and searches with the same ordering, so a sorted
         # array may end in NaNs and the answer is still unique.
         In("a", "f64", prepare=np.sort),
-        In("v", "f64"),
-        Out("out", "i64"),
+        In("v", "f64", len="needles"),
+        Out("out", "i64", capacity="needles"),
+        # The length of a. It selects the kernel's code path and the depth of
+        # the search, so it is the size that is swept.
         Size("n"),
+        Scalar("needles", "usize", NEEDLES),
     ],
     oracle=oracle,
+    scalar_sets=[ScalarSet(name, {"needles": count}) for name, count in BOUNDARY_NEEDLES.items()]
+    + [ScalarSet("many", {"needles": MANY_NEEDLES}, timed=True)],
 )

@@ -1,6 +1,8 @@
-// void searchsorted_f64(const double *a, const double *v, int64_t *out, size_t n);
+// void searchsorted_f64(const double *a, const double *v, int64_t *out, size_t n,
+//                       size_t needles);
 //
-// For each needle v[j], out[j] = first index i with !less(a[i], v[j]), where
+// a holds n sorted values; v holds `needles` values to search for. For each
+// needle v[j], out[j] = first index i with !less(a[i], v[j]), where
 // less(x, y) = x < y || (y is NaN && x is not NaN).
 //
 // Many needles are searched at once with a branchless lower bound. Let p be
@@ -15,13 +17,18 @@
 // A NaN needle makes every compare false; its answer (the index of the first
 // NaN in a, or n) is produced by a separate, rare path.
 //
-// There are four code paths, by n:
+// There are four code paths. The length of a chooses one, and each needs at
+// least one full group of needles:
 //   n < 16            one needle at a time (Lscalar)
 //   16 <= n < 64      sixteen needles at once, bases in x0-x15 (below)
 //   64 <= n < 1,048,576   64 needles at once, bases in vector registers (Lv64)
 //   n >= 1,048,576        128 needles at once, bases kept in out (Lbig)
 // Leftover needles are covered by one more group that ends exactly at the last
-// needle and recomputes a few results.
+// needle and recomputes a few results. That needs a full group to redo, so a
+// call with fewer needles than its path's group takes a narrower path:
+//   n >= 1,048,576, 64 to 127 needles   Lv64, whose 32-bit bases reach any
+//                                       n below 2^32
+//   otherwise                           Lscalar
 //
 // ---- The sixteen-needle path
 //
@@ -60,7 +67,10 @@
 .globl _searchsorted_f64
 .p2align 2
 _searchsorted_f64:
+    mov     x14, x4                 // needles; x4 becomes k below
     cmp     x3, #16
+    b.lo    Lsmall
+    cmp     x14, #16
     b.lo    Lsmall
     clz     x4, x3
     mov     x5, #63
@@ -70,11 +80,21 @@ _searchsorted_f64:
     sub     x6, x3, x5              // n - p
     add     x7, x0, x5, lsl #3
     ldur    d27, [x7, #-8]          // a[p - 1]
-    mov     x9, #1048576
-    cmp     x3, x9
-    b.hs    Lbig
     cmp     x3, #64
-    b.hs    Lv64
+    b.lo    Lsixteen
+    cmp     x14, #64
+    b.lo    Lsmall                  // too few needles for a group of 64
+    lsr     x9, x3, #32
+    cmp     x14, #128
+    b.lo    Lfew
+    mov     x10, #1048576
+    cmp     x3, x10
+    b.hs    Lbig
+    b       Lv64
+Lfew:                               // 64 to 127 needles: Lv64 if its bases can hold n
+    cbnz    x9, Lsmall
+    b       Lv64
+Lsixteen:
     add     x7, x0, x5, lsl #2
     sub     x7, x7, #8              // &a[p/2 - 1]
     fmov    d28, x7
@@ -83,7 +103,7 @@ _searchsorted_f64:
     mov     v26.d[1], x3
     fmov    d25, x1
     mov     v25.d[1], x2
-    sub     x9, x3, #16
+    sub     x9, x14, #16            // first needle of the last full group
     add     x10, x1, x9, lsl #3
     add     x11, x2, x9, lsl #3
     fmov    d31, x10
@@ -582,14 +602,15 @@ Ldone:
     // code, with h in a register, so there is one loop over the steps. The
     // needles are reloaded from v at each step; a group that held a NaN (found
     // with fmax during its first step) is fixed up afterwards at Lnanfix.
-    // x0 a, x3 n, x4 k, x6 n - p, x9 group's needles, x11 last group's needles,
+    // x0 a, x3 n, x4 k, x6 n - p, x14 needles (on entry), x9 group's needles,
+    // x11 last group's needles,
     // x12 out - v, x13 p/2, x10 h, x17 &a[h - 1],
     // x16 passes left, x5-x8 scratch, v24-v26 scratch, v27 a[p - 1] (both
     // lanes), v28 n - p (four lanes), v29/v30 NaN check, v31 h (four lanes)
 Lv64:
     dup     v27.2d, v27.d[0]
     dup     v28.4s, w6
-    sub     x9, x3, #64
+    sub     x9, x14, #64
     add     x11, x1, x9, lsl #3
     sub     x12, x2, x1
     mov     x9, x1
@@ -1345,7 +1366,7 @@ Lv64_nanfix:
 Lbig:
     dup     v27.2d, v27.d[0]
     dup     v28.2d, x6
-    sub     x9, x3, #128
+    sub     x9, x14, #128
     add     x11, x1, x9, lsl #3
     sub     x12, x2, x1
     mov     x9, x1
@@ -1455,9 +1476,9 @@ Lnan_group:
     mov     x4, #16
     mov     x8, #1                  // come back to Lnext afterwards
     b       Lscalar
-Lsmall:
-    cbz     x3, Ldone
-    mov     x4, x3
+Lsmall:                             // x14 needles, one at a time
+    cbz     x14, Ldone
+    mov     x4, x14
     mov     x8, #0
     // Plain binary search for x4 needles of any value. Rare path.
     // x0 a, x1 needle, x2 out, x3 n; x5 lo, x6 hi, x7 mid.

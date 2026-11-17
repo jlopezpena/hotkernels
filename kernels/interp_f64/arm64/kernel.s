@@ -1,9 +1,12 @@
-// void interp_f64(const double *x, const double *xp, const double *fp, double *out, size_t n);
+// void interp_f64(const double *x, const double *xp, const double *fp, double *out, size_t n,
+//                 size_t queries);
 //
-// np.interp(x, xp, fp) with n queries and n sample points; bit-identical to
-// naive.c, which follows NumPy case by case.
+// np.interp(x, xp, fp) with `queries` values in x and n sample points in xp
+// and fp; bit-identical to naive.c, which follows NumPy case by case.
 //
-// Queries are handled in groups of 64 (16 when n < 64), in two stages.
+// Queries are handled in groups of 64 (16 when n < 64), in two stages. A call
+// with fewer queries than one group, or fewer than 16 sample points, is done
+// one query at a time by Lslow.
 //
 // Stage 1, the search. For each query v it finds
 //     jc = number of i in [1, n-2] with xp[i] <= v
@@ -35,11 +38,13 @@
 // From 1,048,576 points the fp loads are cache misses, so they are prefetched
 // for the whole group as soon as stage 1 has produced the indices.
 //
-// Leftover queries (n not a multiple of the group size) are covered by one
-// more group that ends exactly at the last query and recomputes a few results.
+// Leftover queries (their number is not a multiple of the group size) are
+// covered by one more group that ends exactly at the last query and
+// recomputes a few results.
 //
 // Registers:
-//   x1 xp, x2 fp, x4 n, x3 group size in bytes, x9 group's queries,
+//   x1 xp, x2 fp, x4 n, x5 queries (on entry), x3 group size in bytes,
+//   x9 group's queries,
 //   x11 last group's queries, x12 out - x, x13 p/2, x14 a = xp + 1, x15 k,
 //   x10 h, x17 &a[h - 1], x16 passes left, x0 and x5-x8 scratch
 //   v0-v7, v16-v23 bases (stage 1), v24-v26 scratch,
@@ -48,12 +53,21 @@
 .globl _interp_f64
 .p2align 2
 _interp_f64:
+    cbz     x5, Ldone               // no queries
     cmp     x4, #1
     b.eq    Lone
     cmp     x4, #16
     b.lo    Lall_slow
-    lsr     x5, x4, #32
-    cbnz    x5, Lall_slow           // bases are 32-bit
+    cmp     x5, #16
+    b.lo    Lall_slow               // too few queries for a group
+    lsr     x6, x4, #32
+    cbnz    x6, Lall_slow           // bases are 32-bit
+    cmp     x4, #64
+    b.lo    Lgroups
+    cmp     x5, #64
+    b.lo    Lall_slow               // too few queries for a group of 64
+Lgroups:
+    mov     x11, x5                 // queries; x5 is scratch from here
     sub     x5, x4, #2              // m
     clz     x15, x5
     mov     x6, #63
@@ -72,13 +86,13 @@ _interp_f64:
     cmp     x4, #64
     b.lo    Lsetup16
     mov     x3, #512
-    sub     x8, x4, #64
-    add     x11, x0, x8, lsl #3
+    sub     x8, x11, #64
+    add     x11, x0, x8, lsl #3     // first query of the last full group
     b       Lg64
 Lsetup16:
     mov     x3, #128
-    sub     x8, x4, #16
-    add     x11, x0, x8, lsl #3
+    sub     x8, x11, #16
+    add     x11, x0, x8, lsl #3     // first query of the last full group
     b       Lg16
 
 Lg64:                               // stage 1 for 64 queries at x9
@@ -630,15 +644,18 @@ Lagain:
 Ldone:
     ret
 
-Lone:                               // one sample point: left = right = fp[0]
+Lone:                               // one sample point: every query gets fp[0]
     ldr     d0, [x2]
-    str     d0, [x3]
+Lone_query:
+    str     d0, [x3], #8
+    subs    x5, x5, #1
+    b.ne    Lone_query
     ret
 
-Lall_slow:
+Lall_slow:                          // x5 queries, one at a time
+    mov     x8, x5
     mov     x5, x0
     mov     x6, x3
-    mov     x8, x4
     mov     x7, #0                  // return when done
     b       Lslow
 Lp2_redo:

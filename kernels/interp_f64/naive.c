@@ -1,21 +1,23 @@
-// np.interp(x, xp, fp) for n query points and n sample points, with the default
-// left and right values (fp[0] and fp[n-1]). xp is ascending and has no NaN.
+// np.interp(x, xp, fp) for `queries` query points in x and n sample points in
+// xp and fp, with the default left and right values (fp[0] and fp[n-1]). xp is
+// ascending and has no NaN.
 //
 // This follows NumPy's arr_interp case by case, so the result is bit-identical:
 //   - a NaN query gives that NaN (except with a single sample point);
 //   - j is the largest index with xp[j] <= x;
 //   - the interpolated value is one fused multiply-add, as in NumPy's build for
 //     this platform, with NumPy's two fallbacks when it comes out as NaN.
-void interp_f64(const double *x, const double *xp, const double *fp, double *out, size_t n) {
+void interp_f64(const double *x, const double *xp, const double *fp, double *out, size_t n,
+                size_t queries) {
     double left = fp[0], right = fp[n - 1];
     if (n == 1) {
-        for (size_t i = 0; i < n; i++) {
+        for (size_t i = 0; i < queries; i++) {
             double v = x[i];
             out[i] = v < xp[0] ? left : (v > xp[0] ? right : fp[0]);
         }
         return;
     }
-    for (size_t i = 0; i < n; i++) {
+    for (size_t i = 0; i < queries; i++) {
         double v = x[i];
         if (v != v) { out[i] = v; continue; }
         if (v > xp[n - 1]) { out[i] = right; continue; }
