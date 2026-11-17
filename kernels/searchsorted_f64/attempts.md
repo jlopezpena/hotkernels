@@ -163,7 +163,32 @@ All judge commands in this log were run with `--unlocked` (the spec is not on
   mildly limited by how many searches are in flight; doubling them again
   would need 16-bit bases (n <= 65,536 only) and was not tried.
 
+## 11. A second length: the number of needles is its own argument
+
+This is not a tuning attempt. The spec changed ([issue 16](https://github.com/sofeikov/hotkernels/issues/16),
+[docs/two-sizes-design.md](../../docs/two-sizes-design.md)): `n` is now the length of the
+sorted array only, and the number of needles arrives separately. The kernel was
+changed to match and nothing else.
+
+- **Idea:** the path is still chosen by `n`; "the last full group", which
+  leftovers are covered by, is computed from the new count. A path needs one
+  full group, so the entry also tests the count and sends a call with too few
+  to a narrower path.
+- **check:** pass, 141,872 cases (`--unlocked`: the spec and the judge differ from `main`)
+- **compare:** not applicable: the previous kernel has another signature
+- **Kept:** yes
+- **Notes:** no instruction inside a search loop changed. With fewer than 64 needles
+  against an array of 64 or more, needles go one at a time through `Lscalar`:
+  correct, and the obvious thing for a tuning run to improve. With 64 to 127
+  needles against an array of 1,048,576 or more the 64-needle path is used; its
+  32-bit bases reach any array below 2^32 elements. Indicative timing (unlocked,
+  machine in use), 1,000 needles: 8.94x over naive C and 6.53x over NumPy at
+  1,048,576 elements; 64 needles: 10.1x and 2.38x.
+
 ## Final numbers
+
+These were measured before attempt 11, with as many needles as elements. The search
+loops are the same code now.
 
 `uv run judge run searchsorted_f64 --unlocked` on the kernel of attempt 6
 (check: pass, 45,915 cases), Apple M1 Pro, NumPy 2.5.5, 30 samples per point,

@@ -23,6 +23,10 @@ A kernel without `arm64/kernel.s` is a C kernel: `uv run judge check <name>` ver
 
 A `Scalar` has a default value, and the oracle receives the scalars after the arrays: `oracle(x, lo, hi)`. A kernel is verified only for the combinations of scalar values its spec lists, so list the ones that matter in `scalar_sets`: values that select a different path through the kernel, zeros of both signs, infinities, the smallest and largest sizes. Keep every combination inside the kernel's domain, and say in the spec's docstring what that domain is. Mark a set `timed=True` when its speed can differ from the default's. `kernels/clip_f64/spec.py` and `kernels/histogram_f64/spec.py` are working examples; the design is in [docs/judge-design.md](../docs/judge-design.md#scalar-sets).
 
+## A second length
+
+A kernel with two lengths that vary independently, such as a sorted array and the needles searched for in it, declares one of them as its `Size` and the other as an integer `Scalar` that sizes a buffer: `In("v", "f64", len="needles")`, `Out("out", "i64", capacity="needles")`, `Scalar("needles", "usize", 64)`. Make the `Size` the length that selects the kernel's code path, because it is the one swept exhaustively and timed across sizes. List in `scalar_sets` every value of the other length that matters: zero, one, and the counts either side of each group width the kernel works in. `kernels/searchsorted_f64/spec.py` is a working example; the design is in [docs/judge-design.md](../docs/judge-design.md#a-second-length).
+
 ## Scratch output
 
 By default a kernel may write only the output elements it reports. Declaring an output as `Out(..., used=USED_RETURN, scratch=True)` lets the kernel and `naive.c` write anywhere inside the buffer's capacity; only the reported elements are compared with NumPy. Use it when the fast way to produce variable-length output stores more than it keeps, as mask selection does. `judge/fixtures/compress_scratch_f32/` is a working example.

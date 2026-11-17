@@ -88,7 +88,7 @@ At 16 elements most of the gain is NumPy's own call path being skipped, not the 
 ## What is here
 
 - **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is.
-- **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32`, `compress_scratch_f32` and `tally_u8`, used to test the judge itself.
+- **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32`, `compress_scratch_f32`, `tally_u8` and `rank_u8`, used to test the judge itself.
 - **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. Recorded results are in `survey/results/`.
 - **Kernels** (`kernels/`): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an ARM64 version. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
 - **The package** (`hotkernels/`): what a user installs. A C extension points NumPy at the kernels, and `install()`, `uninstall()`, `enabled()` and `report()` control it. Twenty of the 22 kernels are installed.

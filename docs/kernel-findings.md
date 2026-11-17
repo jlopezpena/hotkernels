@@ -173,10 +173,23 @@ Not written yet. A compare of four 64-bit elements at once exists there, so the 
 
 #### On ARM64
 
-- **Technique.** Every step loads one probe per needle, compares, and moves each needle's base by the compare mask. Sixteen needles at a time below 64 elements, 64 at a time up to 1,048,576, and blocks of 128 beyond.
+- **Two lengths.** `searchsorted_f64(a, v, out, n, needles)` and `interp_f64(x, xp, fp, out, n, queries)`: `n` is the length of the sorted array (of `xp` and `fp`), and the number of needles or queries is separate. The first selects the code path and the depth of the search; the second is how many times the loop runs.
+- **Technique.** Every step loads one probe per needle, compares, and moves each needle's base by the compare mask. Sixteen needles at a time when the array has fewer than 64 elements, 64 at a time up to 1,048,576, and blocks of 128 beyond.
+- **A path needs one full group of needles.** Leftover needles are covered by redoing the last full group, so a call with fewer needles than its path's group takes a narrower one: 64 to 127 needles against an array of 1,048,576 or more use the 64-needle path, and anything smaller is searched one needle at a time. That last case is correct and untuned: a handful of needles against a large array is mostly the cost of the call.
 - **`interp`** runs the same search over `xp`, then the interpolation for two queries per vector with a real `fdiv` and a fused multiply-add, which is what NumPy's build uses. Any group whose result contains a NaN is redone by a line-by-line copy of the reference, which keeps the output bit-identical.
 - **What limits it.** In cache, which elements are probed, not the instruction count: making every search probe the same elements ran 1.25x to 1.33x faster with identical instructions. Beyond the cache, the number of cache and TLB misses, which the kernel overlaps but cannot reduce.
-- **Not verified by the judge:** `interp_f64` is checked up to 65,537 elements (the NumPy oracle is too slow beyond), so its path from 1,048,576 elements was compared with the reference outside the judge, without guard pages.
+- **The number of needles is verified for the values the specs list:** 0, 1, and the counts either side of 16, 64 and 128 (15, 16, 17, 63, 64, 65, 127, 128, 129), and 1,000. Fresh random cases draw from the same list.
+- **The figures in the table above were taken with as many needles as elements**, before the kernels had a second length; the search loops have not changed since. The judge now times each kernel with 64 and with 1,000 needles per call across the sweep of array lengths. From a run with the judge unlocked on a machine in use, so indicative only:
+
+  | Kernel | Needles | vs naive C | at 16 | at 4,096 | at 1,048,576 | at 16,777,216 | vs NumPy | at 1,048,576 |
+  |---|---|---|---|---|---|---|---|---|
+  | `searchsorted_f64` | 64 | 8.77x [8.74 – 8.80] | 5.27x | 9.60x | 10.1x | 10.2x | 5.30x | 2.38x |
+  | `searchsorted_f64` | 1,000 | 9.05x [9.02 – 9.08] | 5.43x | 9.47x | 8.94x | 15.8x | 9.44x | 6.53x |
+  | `interp_f64` | 64 | 5.17x [5.16 – 5.19] | 1.82x | 5.00x | 7.46x | 9.32x | 16.9x | 15.7x |
+  | `interp_f64` | 1,000 | 4.97x [4.96 – 4.99] | 1.80x | 4.91x | 6.25x | 10.6x | 16.3x | 19.6x |
+
+  The sizes are lengths of the sorted array. With 64 needles a call is short enough that NumPy's fixed cost per call is part of its figure.
+- **Not verified by the judge:** `interp_f64` is checked up to 65,537 sample points (the NumPy oracle is too slow beyond), so its path from 1,048,576 was compared with the reference outside the judge, without guard pages. Neither kernel is run on unsorted input, where the result is as meaningless as NumPy's and the kernel is required only to stay inside its buffers; that holds by construction and is not tested.
 
 #### On x86-64
 
