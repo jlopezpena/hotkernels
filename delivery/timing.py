@@ -164,6 +164,45 @@ def _search(table: int | None, n: int) -> tuple:
     return (np.sort(rng.standard_normal(table or n)), rng.standard_normal(n))
 
 
+def _search_float32_needles(n: int) -> tuple:
+    """Build a sorted float64 array and `n` float32 needles, which no search kernel takes.
+
+    Args:
+        n: Number of elements, and of needles.
+
+    Returns:
+        (sorted float64 array, float32 needles).
+    """
+    table, needles = _search(None, n)
+    return (table, needles.astype(np.float32))
+
+
+def _search_right(a: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Call `np.searchsorted(a, v, side='right')`.
+
+    Args:
+        a: The sorted array.
+        v: The needles.
+
+    Returns:
+        The index after the last element not greater than each needle.
+    """
+    return np.searchsorted(a, v, side="right")
+
+
+def _digitize(bins: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """Call `np.digitize(x, bins)`, which takes the values first and the bins second.
+
+    Args:
+        bins: The increasing bin edges.
+        x: The values to place.
+
+    Returns:
+        The bin index of each value.
+    """
+    return np.digitize(x, bins)
+
+
 def _interp(points: int | None, n: int) -> tuple:
     """Build `n` queries and the sample points for `np.interp`.
 
@@ -219,6 +258,9 @@ TAKEN: tuple[Timed, ...] = (
     Timed("isin", "np.isin(x, eight_values)", "int64, values close together", _narrow_ints, lambda x: np.isin(x, ISIN_TEST), "isin_i64"),
     Timed("searchsorted", "np.searchsorted(a, v)", "float64, as many needles as elements", partial(_search, None), np.searchsorted, "searchsorted_f64"),
     Timed("searchsorted", "np.searchsorted(a, v)", "float64, 1,000 elements", partial(_search, SMALL_TABLE), np.searchsorted, "searchsorted_f64"),
+    Timed("searchsorted", "np.searchsorted(a, v, side='right')", "float64, as many needles as elements", partial(_search, None), _search_right, "searchsorted_right_f64"),
+    Timed("searchsorted", "np.searchsorted(a, v, side='right')", "float64, 1,000 elements", partial(_search, SMALL_TABLE), _search_right, "searchsorted_right_f64"),
+    Timed("searchsorted", "np.digitize(x, bins)", "float64, 1,000 bin edges", partial(_search, SMALL_TABLE), _digitize, "searchsorted_right_f64"),
     Timed("interp", "np.interp(x, xp, fp)", "float64, as many queries as points", partial(_interp, None), np.interp, "interp_f64"),
     Timed("interp", "np.interp(x, xp, fp)", "float64, 1,000 points", partial(_interp, SMALL_TABLE), np.interp, "interp_f64"),
 )
@@ -236,7 +278,7 @@ LEFT: tuple[Timed, ...] = (
     Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0), density=False)", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE, density=False), None),
     Timed("bincount", "np.bincount(x)", "int64", partial(_ints, np.int64), np.bincount, None),
     Timed("isin", "np.isin(x, nine_values)", "int64", _narrow_ints, lambda x: np.isin(x, ISIN_TEST + [3]), None),
-    Timed("searchsorted", "np.searchsorted(a, v, side='right')", "float64", partial(_search, None), lambda a, v: np.searchsorted(a, v, side="right"), None),
+    Timed("searchsorted", "np.searchsorted(a, v)", "float64 array, float32 needles", _search_float32_needles, np.searchsorted, None),
     Timed("interp", "np.interp(x, xp, fp, left=0.0)", "float64", partial(_interp, None), lambda x, xp, fp: np.interp(x, xp, fp, left=0.0), None),
     Timed("nonzero", "x.nonzero()", "int64", partial(_ints, np.int64), lambda x: x.nonzero(), None),
     Timed("compress", "x[3]", "float64", partial(_floats, np.float64), lambda x: x[3], None),

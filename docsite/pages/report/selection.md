@@ -179,3 +179,7 @@ These are the only kernels whose advantage *grows* at the largest sizes, because
 ::: note Two lengths
 The figures above were taken with as many needles as elements, which is how these kernels were first written: one length for the sorted array and the needles. That was enough to develop and judge them and not enough to serve a real call, where the two lengths differ, so for a while they were complete and not installed. They now take the two lengths separately. The length of the sorted array chooses the path; a call with fewer needles than a path handles at once takes a narrower one, down to one needle at a time. `interp_f64` is only checked by the judge up to 65,537 sample points, because NumPy's `interp` is too slow to act as an oracle beyond that; its large-array path was compared with the reference separately.
 :::
+
+::: note The right side
+`np.searchsorted(a, v, side='right')`, which `np.digitize` asks for by default, is a second kernel, `searchsorted_right_f64`. It is the same search with the comparison turned round, `a[i] <= key` in place of `a[i] < key`, so the two differ only for a needle that equals an element, and for a NaN needle, whose answer is the length of the array. The judge checks it like any other kernel, with one gap: above 5,000 elements none of its inputs has a needle equal to an element, so the path for the longest arrays is checked on such needles from Python instead.
+:::

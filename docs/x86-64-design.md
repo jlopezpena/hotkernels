@@ -228,7 +228,7 @@ Steps 3 to 6 each take their own pull request or several. Step 5 follows AGENTS.
 
 ## Exit criterion
 
-- Every one of the 22 kernels has a recorded verdict on x86-64.
+- Every one of the 23 kernels has a recorded verdict on x86-64.
 - An unmodified NumPy script runs faster on this machine after `hotkernels.install()`, with output that meets each kernel's correctness mode.
 - [kernel-findings.md](kernel-findings.md) explains, per family, what was done on x86-64 and why it differs from ARM64.
 - Every candidate in open issue 1 is marked kept, rejected or not tried, with the reason.

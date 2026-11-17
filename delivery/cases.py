@@ -946,6 +946,9 @@ BEYOND_LARGE_TABLE_N = LARGE_TABLE_N + 3
 # Numbers of needles tried against the two long arrays: one, and either side
 # of the group of 128 that the path for long arrays works in.
 LARGE_TABLE_NEEDLES = (1, 64, 127, 128, 129, 1000)
+# (value class of the array, value class of the needles) tried against the
+# two long arrays.
+LARGE_TABLE_PAIRS = (("random", "nan_some"), ("random", "hits"), ("equal", "hits"))
 # Number of needles in the cases that vary the spelling or the layout of a
 # search: more than one group of 64, with a leftover.
 SPELLING_NEEDLES = 100
@@ -1028,21 +1031,64 @@ def _search_layout_expectation(kernel: str, variant: Variant, n: int, any_shape:
     return ANY if n == 0 else None
 
 
-def searchsorted_cases() -> Iterator[Case]:
-    """Yield the cases of `searchsorted` on float64."""
-    kernel = "searchsorted_f64"
-    search = np.searchsorted
+def _search_right(a, v):
+    """Call `np.searchsorted(a, v, side='right')`.
+
+    Args:
+        a: The sorted array.
+        v: The needles.
+
+    Returns:
+        What NumPy, or the kernel in its place, returns.
+    """
+    return np.searchsorted(a, v, side="right")
+
+
+# The two sides of a search: (the call as a case names it, the call, the kernel
+# that takes it). The sides differ only for a needle that equals an element
+# and for a NaN needle, so the "hits" class is what tells them apart.
+SEARCH_SIDES = (
+    ("np.searchsorted(a, v)", np.searchsorted, "searchsorted_f64"),
+    ("np.searchsorted(a, v, side='right')", _search_right, "searchsorted_right_f64"),
+)
+
+
+def _search_grid_cases(text: str, search: Callable, kernel: str) -> Iterator[Case]:
+    """Yield the cases of one side of a search over sizes and value classes.
+
+    Args:
+        text: The call, as the cases name it.
+        search: Makes the call from (sorted array, needles).
+        kernel: The kernel expected to take every case.
+
+    Returns:
+        An iterator over the cases.
+    """
     for n, count in itertools.product(TABLE_SIZES, NEEDLE_COUNTS):
         # Every class of needle on an ordinary array, then every class of array.
         pairs = [("random", needle_class) for needle_class in (*NEEDLE_CLASSES, "hits")]
         pairs += [(table_class, needle_class) for table_class in TABLE_CLASSES[1:] for needle_class in ("random", "hits")]
         for table_class, needle_class in pairs:
-            yield Case("searchsorted", f"np.searchsorted(a, v) a={table_class} n={n} v={needle_class} needles={count}",
+            yield Case("searchsorted", f"{text} a={table_class} n={n} v={needle_class} needles={count}",
                        partial(_search_arguments, n, table_class, count, needle_class), search, kernel)
+    # The long arrays get needles with NaNs among them, and needles that are
+    # elements: the judge has no case above 5,000 elements in which a needle
+    # equals an element, so these are what check that the path for long arrays
+    # compares the right way. An array of one repeated value is there for the
+    # first step of the search, which only shows a wrong comparison when
+    # elements equal to the needle lie on both sides of a[p - 1], p being the
+    # largest power of two not above the length.
     for n in (LARGE_TABLE_N, BEYOND_LARGE_TABLE_N):
-        for count in LARGE_TABLE_NEEDLES:
-            yield Case("searchsorted", f"np.searchsorted(a, v) a=random n={n} v=nan_some needles={count}",
-                       partial(_search_arguments, n, "random", count, "nan_some"), search, kernel)
+        for count, (table_class, needle_class) in itertools.product(LARGE_TABLE_NEEDLES, LARGE_TABLE_PAIRS):
+            yield Case("searchsorted", f"{text} a={table_class} n={n} v={needle_class} needles={count}",
+                       partial(_search_arguments, n, table_class, count, needle_class), search, kernel)
+
+
+def searchsorted_cases() -> Iterator[Case]:
+    """Yield the cases of `searchsorted` on float64, for both sides."""
+    kernel, right = "searchsorted_f64", "searchsorted_right_f64"
+    for side in SEARCH_SIDES:
+        yield from _search_grid_cases(*side)
 
     n, count = ORDINARY_N, SPELLING_NEEDLES
     arguments = partial(_search_arguments, n, "random", count, "random")
@@ -1051,10 +1097,30 @@ def searchsorted_cases() -> Iterator[Case]:
         ("np.searchsorted(a, v, 'left')", lambda a, v: np.searchsorted(a, v, "left"), kernel),
         ("np.searchsorted(a, v, side='left', sorter=None)", lambda a, v: np.searchsorted(a, v, side="left", sorter=None), kernel),
         ("a.searchsorted(v=v)", lambda a, v: a.searchsorted(v=v), kernel),
-        ("np.searchsorted(a, v, side='right')", lambda a, v: np.searchsorted(a, v, side="right"), None),
+        ("np.searchsorted(a, v, side='right')", lambda a, v: np.searchsorted(a, v, side="right"), right),
+        ("np.searchsorted(a, v, 'right')", lambda a, v: np.searchsorted(a, v, "right"), right),
+        ("a.searchsorted(v, 'right')", lambda a, v: a.searchsorted(v, "right"), right),
+        ("a.searchsorted(v=v, side='right')", lambda a, v: a.searchsorted(v=v, side="right"), right),
+        ("np.searchsorted(a, v, side='right', sorter=None)", lambda a, v: np.searchsorted(a, v, side="right", sorter=None), right),
         ("np.searchsorted(a, v, sorter=np.arange(len(a)))", lambda a, v: np.searchsorted(a, v, sorter=np.arange(len(a))), None),
-        ("np.digitize(v, a)", lambda a, v: np.digitize(v, a), None),
+        ("np.searchsorted(a, v, side='right', sorter=np.arange(len(a)))", lambda a, v: np.searchsorted(a, v, side="right", sorter=np.arange(len(a))), None),
+        ("np.digitize(v, a)", lambda a, v: np.digitize(v, a), right),
         ("np.digitize(v, a, right=True)", lambda a, v: np.digitize(v, a, right=True), kernel),
+        # Needles that are bin edges: the two sides of digitize differ at every one.
+        ("np.digitize(a, a)", lambda a, v: np.digitize(a, a), right),
+        ("np.digitize(a, a, right=True)", lambda a, v: np.digitize(a, a, right=True), kernel),
+        # Decreasing bins: digitize searches them reversed, which is a view
+        # that is not contiguous...
+        ("np.digitize(v, a[::-1].copy())", lambda a, v: np.digitize(v, a[::-1].copy()), None),
+        ("np.digitize(v, a[::-1].copy(), right=True)", lambda a, v: np.digitize(v, a[::-1].copy(), right=True), None),
+        # ...unless the bins were a reversed view to begin with: reversed
+        # again they are the contiguous array.
+        ("np.digitize(v, a[::-1])", lambda a, v: np.digitize(v, a[::-1]), right),
+        ("np.digitize(v, a[::-1], right=True)", lambda a, v: np.digitize(v, a[::-1], right=True), kernel),
+        ("np.searchsorted(a, 0.25, side='right')", lambda a, v: np.searchsorted(a, 0.25, side="right"), right),
+        ("np.searchsorted(a, a[3], side='right')", lambda a, v: np.searchsorted(a, float(a[3]), side="right"), right),
+        ("np.searchsorted(a, float('nan'), side='right')", lambda a, v: np.searchsorted(a, float("nan"), side="right"), right),
+        ("np.searchsorted(a, a, side='right')", lambda a, v: np.searchsorted(a, a, side="right"), right),
         ("np.searchsorted(a, 0.25)", lambda a, v: np.searchsorted(a, 0.25), kernel),
         ("np.searchsorted(a, float('nan'))", lambda a, v: np.searchsorted(a, float("nan")), kernel),
         ("np.searchsorted(a, 1)", lambda a, v: np.searchsorted(a, 1), kernel),
@@ -1069,20 +1135,21 @@ def searchsorted_cases() -> Iterator[Case]:
         ("np.searchsorted(a.astype(np.int64), v)", lambda a, v: np.searchsorted(a.astype(np.int64), v), None),
         ("np.searchsorted(a, a)", lambda a, v: np.searchsorted(a, a), kernel),
         ("np.searchsorted(a, v, side='up')", lambda a, v: np.searchsorted(a, v, side="up"), None),
+        ("np.searchsorted(a, v, side=None)", lambda a, v: np.searchsorted(a, v, side=None), None),
     )
     for text, call, expect in spellings:
         yield Case("searchsorted", f"{text} n={n} needles={count}", arguments, call, expect)
 
-    for size in (0, *LAYOUT_SIZES):
+    for (text, search, kernel), size in itertools.product(SEARCH_SIDES, (0, *LAYOUT_SIZES)):
         for variant in variants_for("f64", size):
             # A list has no method of its own: NumPy converts it and calls the
             # method of the array it made.
             expect = ANY if variant.name == "list" else _search_layout_expectation(kernel, variant, size, any_shape=False)
-            yield Case("searchsorted", f"np.searchsorted(a, v) n={size} needles={count} a layout={variant.name}",
+            yield Case("searchsorted", f"{text} n={size} needles={count} a layout={variant.name}",
                        lambda size=size, variant=variant: (variant.build(_table(size)), values("f64", count, arg="v")),
                        search, expect)
             expect = None if variant.name == "list" else _search_layout_expectation(kernel, variant, size, any_shape=True)
-            yield Case("searchsorted", f"np.searchsorted(a, v) n={n} needles={size} v layout={variant.name}",
+            yield Case("searchsorted", f"{text} n={n} needles={size} v layout={variant.name}",
                        lambda size=size, variant=variant: (_table(n), variant.build(values("f64", size, arg="v"))),
                        search, expect)
 

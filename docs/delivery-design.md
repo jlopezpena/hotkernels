@@ -24,11 +24,11 @@ Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with NumPy 2.5
 | # | Criterion | Result |
 |---|---|---|
 | 1 | An unmodified script runs faster with the one line, and `report()` shows the kernels hit | Met. [`examples/workload.py`](../examples/workload.py) uses eleven operations on two million elements: 45 ms on plain NumPy, 8.4 ms installed, identical results. `uv run delivery demo` |
-| 2 | `delivery check` passes | Met. 75,307 calls over the 15 hooked operations agree in result, exception, warnings and the state of their arguments, and the kernel ran exactly where each case says |
+| 2 | `delivery check` passes | Met. 77,481 calls over the 15 hooked operations agree in result, exception, warnings and the state of their arguments, and the kernel ran exactly where each case says |
 | 3 | NumPy's test suite gives the same outcome | Met. 47,234 tests, none differs. The tests that compile Fortran (`f2py`) are left out |
 | 4 | A fallback costs at most 2 ns more | Met for the calls where 2 ns can be measured: `x[3]`, `x[1:5]` and `x[3] = 1.0` cost 0.3 to 1.5 ns more. On calls of 130 ns and up the difference is inside the noise of the measurement, a percent or two either way |
 | 5 | No installed entry point is slower than NumPy at any size | Met. The lowest figure is `np.clip` at 16 elements, 1.00x. The type slot needed a minimum size to get there; see below |
-| 6 | Every kernel has a verdict | Met. 20 installed, 2 installed only with `inexact=True` (`cumsum_f32`, `cumsum_f64`). `searchsorted_f64` and `interp_f64` were not bound at first (one length for two inputs) and are now |
+| 6 | Every kernel has a verdict | Met. 21 installed, 2 installed only with `inexact=True` (`cumsum_f32`, `cumsum_f64`). `searchsorted_f64` and `interp_f64` were not bound at first (one length for two inputs) and are now |
 
 The timings were taken on a machine in use (load average about 3). Every statement, at three sizes, is in [`delivery/results/apple-m1-pro.md`](../delivery/results/apple-m1-pro.md). At a million elements, from Python:
 
@@ -111,7 +111,7 @@ Rules:
 `print(hotkernels.report())` after running a script, as an illustration of the layout:
 
 ```
-hotkernels: installed, 20 of 22 kernels (ARM64, NumPy 2.5.5)
+hotkernels: installed, 21 of 23 kernels (ARM64, NumPy 2.5.5)
 
 NumPy call          Elements   Kernel       Result   Kernel calls   Left to NumPy
 np.argmax           float32    assembly     exact          10,412               0
@@ -224,7 +224,7 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 | `x[mask]` | 2 | Indexing | Both 1-D, contiguous, the same length; a plain `ndarray` indexed by a boolean `ndarray` |
 | `x[mask] = v` | 1 | Indexing | As above, and `v` is a Python float |
 | `nonzero` | 1 | Method | 1-D contiguous boolean array |
-| `searchsorted` | 1 | Method | The array one-dimensional, contiguous float64; the needles a contiguous float64 array of any shape or a Python number; `side='left'`, no `sorter` |
+| `searchsorted` | 2 | Method | The array one-dimensional, contiguous float64; the needles a contiguous float64 array of any shape or a Python number; `side` absent, `'left'` or `'right'`, each side with its own kernel ([searchsorted-right-design.md](searchsorted-right-design.md)); no `sorter` |
 | `cumsum` | 3 | Method | Contiguous, no `axis`, `dtype` or `out`. The two float kernels only with `inexact=True` |
 | `astype` | 1 | Method | Contiguous `uint8` to `float32`, other arguments at their defaults |
 | `sum` | 1 | Method and function | Contiguous `uint8`, no other arguments |

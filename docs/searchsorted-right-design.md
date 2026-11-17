@@ -1,6 +1,8 @@
 # The right side: `np.searchsorted(a, v, side='right')` and `np.digitize`'s default
 
-This is a proposal. It closes [issue 41](https://github.com/sofeikov/kernel-arena/issues/41), which [two-sizes-design.md](two-sizes-design.md#out-of-scope) left out of scope.
+This began as a proposal and is now implemented. Where the building departed from it, [What changed in the building](#what-changed-in-the-building) says so, and [Status](#status) holds the result against the exit criterion. The rest of the text stands as proposed.
+
+It closes [issue 41](https://github.com/sofeikov/kernel-arena/issues/41), which [two-sizes-design.md](two-sizes-design.md#out-of-scope) left out of scope.
 
 The kernel and every figure here are ARM64's, measured on an Apple M1 Pro.
 
@@ -12,7 +14,58 @@ The kernel and every figure here are ARM64's, measured on an Apple M1 Pro.
 - **One more condition in the binding.** The method hook for `ndarray.searchsorted` sends `side='right'` to the new kernel. `np.searchsorted` and `np.digitize` reach it through the method, as they do today.
 - **No change to the judge.** One gap in what it checks is recorded below and covered from Python.
 
+## Status
+
+Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with NumPy 2.5.5:
+
+| Criterion | Result |
+|---|---|
+| `judge check searchsorted_right_f64` passes | Met, with `--unlocked`: 141,872 cases |
+| `judge run` reports it faster than naive C and than NumPy at every size | Met. With 1,000 needles, 13.3x to 24.7x over naive C and 4.26x to 20.7x over NumPy; with 64 needles, 3.92x to 23.7x and 2.09x to 27.7x. Load average 3.8, so indicative |
+| Each mutation of the comparison is caught | Met. Ten by the judge, and the two in the long-array path by `delivery check`, once a case was added for the first step. The table is in `kernels/searchsorted_right_f64/attempts.md` |
+| `delivery check` passes with the new cases | Met. 4,306 cases for `searchsorted`, up from 2,132; 77,481 in all, none failing |
+| NumPy's test suite gives the same outcome | Met. 47,234 tests, none differs |
+| `report()` shows the kernel installed and counting | Met: 21 of 23 kernels, 23 with `inexact=True` |
+| From Python, both statements are faster than NumPy by a factor in the range of the left side's | Met, in the table below |
+| `docsite build` succeeds | Met |
+
+From Python, in one run on a machine in use (load average 5.1), so rough:
+
+| Statement | Sorted array | Needles | NumPy | hotkernels | Faster by |
+|---|---|---|---|---|---|
+| `np.searchsorted(a, v)` | 1,048,576 | 1,048,576 | 145 ms | 21.5 ms | 6.73x |
+| `np.searchsorted(a, v, side='right')` | 16 | 16 | 636 ns | 439 ns | 1.45x |
+| `np.searchsorted(a, v, side='right')` | 4,096 | 4,096 | 253 µs | 13.4 µs | 18.9x |
+| `np.searchsorted(a, v, side='right')` | 1,048,576 | 1,048,576 | 145 ms | 19.0 ms | 7.66x |
+| `np.searchsorted(a, v)` | 1,000 | 1,048,576 | 61.0 ms | 2.26 ms | 27.0x |
+| `np.searchsorted(a, v, side='right')` | 1,000 | 4,096 | 208 µs | 8.81 µs | 23.6x |
+| `np.searchsorted(a, v, side='right')` | 1,000 | 1,048,576 | 61.3 ms | 2.27 ms | 27.1x |
+| `np.digitize(x, bins)` | 1,000 | 16 | 1.64 µs | 1.49 µs | 1.10x |
+| `np.digitize(x, bins)` | 1,000 | 4,096 | 210 µs | 9.75 µs | 21.5x |
+| `np.digitize(x, bins)` | 1,000 | 1,048,576 | 61.4 ms | 2.31 ms | 26.5x |
+
+Not done, and owed: the judge runs were made with `--unlocked`, because the kernel is not on `main`, and on a machine in use. A locked run on a quiet machine, a recorded `delivery time` and a row in the README's table and chart follow with the left side's ([issue 38](https://github.com/sofeikov/kernel-arena/issues/38)).
+
+## What changed in the building
+
+| Proposed | Built | Why |
+|---|---|---|
+| `delivery check` already has needles drawn from the array against the two long arrays; add them for the right side | It had them only up to 4,097 elements; the long arrays were searched for needles with NaNs. Needles drawn from the array were added there for both sides | The proposal misread `delivery/cases.py`. Without them the long-array path was unchecked on ties from Python as well, for the left side too |
+| Needles drawn from the array catch a wrong comparison anywhere in the long-array path | They catch every step but the first. An array of one repeated value was added for that | The first step picks between two starting points that both reach the answer unless elements equal to the needle lie on both sides of `a[p - 1]`. The mutation run showed it |
+| `np.digitize` with decreasing bins always goes to NumPy | It does when the bins are a contiguous array. Bins that are themselves a reversed view, `np.digitize(x, a[::-1])`, are contiguous again once `np.digitize` reverses them, and take the kernel | Found by the first run of the new cases. The result is NumPy's either way |
+| The kernel's row in `report()` | Shown as `side='right'`, indented under `np.searchsorted` | The report's first column is 19 characters wide |
+| The timing row for a call that gains nothing was `side='right'` | It is now float32 needles | The old row is served |
+| Nothing about the naive C | The two sides' references are not comparable baselines | clang compiles the right side's with a branch per probe and the left side's without one. The kernel's own times are the same; its factor over naive C is not |
+
+| Left for later | Issue |
+|---|---|
+| A value class in the judge that draws needles from the array | [48](https://github.com/sofeikov/kernel-arena/issues/48) |
+| A locked re-run on a quiet machine, a recorded `delivery time`, and the README's table and chart | [38](https://github.com/sofeikov/kernel-arena/issues/38) |
+| A path for fewer than 64 needles against a long array, on both sides | [39](https://github.com/sofeikov/kernel-arena/issues/39) |
+
 ## What is wrong today
+
+(This section and the ones after it describe the state before the work, as proposed.)
 
 | Call | Asks the method for | Today |
 |---|---|---|
@@ -97,7 +150,7 @@ This proposal does not change the judge. It covers the gap twice:
 - `delivery check` already has needles drawn from the array itself (`_hits` in `delivery/cases.py`) against arrays of 1,048,576 and 1,048,579 elements. Those cases are added for the right side, and they run in CI.
 - Before the kernel is proposed it is mutated: in each path in turn, one comparison is put back to the left side's, and the judge or `delivery check` must fail. The pull request reports which caught each.
 
-Closing it in the judge (a value class that draws one argument from another) is filed as an issue.
+Closing it in the judge (a value class that draws one argument from another) is [issue 48](https://github.com/sofeikov/kernel-arena/issues/48).
 
 ## The assembly
 

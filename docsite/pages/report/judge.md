@@ -111,7 +111,7 @@ The judge calls every kernel through a small wrapper that fills every register t
 
 Each kernel declares how its output is compared with NumPy's.
 
-**Exact** is the default: the output bytes must equal NumPy's bytes. Not "close", and not "equal as numbers": `-0.0` and `+0.0` compare equal as numbers and are different bytes, and two NaNs with different payloads are different bytes. Twenty of the 22 kernels are exact. For anything that selects, searches, counts, copies or compares, exactness costs nothing and a tolerance would only hide bugs.
+**Exact** is the default: the output bytes must equal NumPy's bytes. Not "close", and not "equal as numbers": `-0.0` and `+0.0` compare equal as numbers and are different bytes, and two NaNs with different payloads are different bytes. Twenty-one of the 23 kernels are exact. For anything that selects, searches, counts, copies or compares, exactness costs nothing and a tolerance would only hide bugs.
 
 **Tolerance** exists for the two float `cumsum` kernels, which regroup additions and so cannot be bit-identical. The natural unit is the **ulp** (unit in the last place): the gap between adjacent floating-point numbers at a given magnitude. Stating the bound in ulps makes one rule work for float32 and float64 alike.
 

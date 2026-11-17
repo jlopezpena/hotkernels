@@ -1,6 +1,6 @@
 # The first kernels: results and findings
 
-This records the first pass over the shortlist in [survey-design.md](survey-design.md): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and an attempt at beating that C in ARM64 assembly. Twenty-one ship as assembly and one as C. It covers the kernel half of phase 3 in [core-design.md](core-design.md). The other half, the binding and `install()`, is in [delivery-design.md](delivery-design.md).
+This records the first pass over the shortlist in [survey-design.md](survey-design.md): 23 kernels for 15 NumPy operations, each with a spec, a naive C reference and an attempt at beating that C in ARM64 assembly. Twenty-two ship as assembly and one as C. It covers the kernel half of phase 3 in [core-design.md](core-design.md). The other half, the binding and `install()`, is in [delivery-design.md](delivery-design.md).
 
 The numbers are the judge's. What is open to review is the set of decisions at the end.
 
@@ -17,7 +17,7 @@ The results so far are ARM64's. The kernels are being carried over to x86-64 ([x
 
 ### ARM64
 
-- **Twenty-one of the 22 kernels have assembly that the judge reports as significantly faster than naive C.** The exception, `cast_u8_f32`, ties the compiler and ships as its C. Every kernel is faster than NumPy at every size measured. Twenty are bit-identical to NumPy. The two float `cumsum` kernels are within a declared tolerance, which is what makes them faster at all.
+- **Twenty-two of the 23 kernels have assembly that the judge reports as significantly faster than naive C.** The exception, `cast_u8_f32`, ties the compiler and ships as its C. Every kernel is faster than NumPy at every size measured. Twenty-one are bit-identical to NumPy. The two float `cumsum` kernels are within a declared tolerance, which is what makes them faster at all.
 - **The survey's prediction for the "C kernels" was wrong.** It expected assembly to tie the compiler on `clip`, `astype`, `np.sum` on `uint8` and `count_nonzero`, because clang vectorises those loops. Tried, assembly beat the C on five of the six: by 5.9x on `sum_u8`, by 1.3x to 1.4x on the counts, and by 1.35x to 1.38x on `clip` for bounds that allow its fast path. A vectorised loop is not necessarily a good one.
 - **Three results are narrower than their headline number.** `isin_i64` is fast only for test values that lie close together, and the two `clip` kernels only for some bounds and, with a lower bound of zero, only for data without negative zeros. Each is set out below.
 - **The judge has blind spots that mattered.** It tested one value per scalar argument and, from 4,096 elements up, repeats one input per size. Both hid things that were found by other means. The first is now closed: a spec lists several combinations of scalar values, and the `clip`, `histogram` and masked-assignment kernels are checked with them.
@@ -167,7 +167,7 @@ Not written yet. A compare of four 64-bit elements at once exists there, so the 
 
 #### The operation
 
-- **What NumPy requires.** For each needle, the first position in the sorted array whose element is not less than it, with NaN ordered after every number. `interp` runs the same search over `xp` and interpolates between the two neighbours. Its result is bit-identical only if the division and the multiply-add are done the way NumPy's build for that architecture does them.
+- **What NumPy requires.** For each needle, the first position in the sorted array whose element is not less than it, with NaN ordered after every number. That is `side='left'`. With `side='right'` it is the first position whose element is greater than the needle, which differs only for a needle that equals an element (the position after the last equal one) and for a NaN needle (the length of the array). Each side is a kernel of its own. `interp` runs the same search over `xp` and interpolates between the two neighbours. Its result is bit-identical only if the division and the multiply-add are done the way NumPy's build for that architecture does them.
 - **Why the simple loop is slow.** It runs one search at a time. Each probe waits for the compare before it, and on a large array each probe is a cache miss the next one queues behind.
 - **The idea.** A branch-free binary search run for many needles at once. The step size depends only on the array length, so all searches stay in step and their cache misses overlap instead of queueing.
 
@@ -185,10 +185,14 @@ Not written yet. A compare of four 64-bit elements at once exists there, so the 
   |---|---|---|---|---|---|---|---|---|
   | `searchsorted_f64` | 64 | 8.77x [8.74 – 8.80] | 5.27x | 9.60x | 10.1x | 10.2x | 5.30x | 2.38x |
   | `searchsorted_f64` | 1,000 | 9.05x [9.02 – 9.08] | 5.43x | 9.47x | 8.94x | 15.8x | 9.44x | 6.53x |
+  | `searchsorted_right_f64` | 64 | 6.30x [6.27 – 6.35] | 14.5x | 4.39x | 4.07x | 5.10x | 5.59x | 2.41x |
+  | `searchsorted_right_f64` | 1,000 | 17.2x [17.07 – 17.30] | 13.4x | 20.2x | 13.3x | 16.0x | 10.5x | 7.29x |
   | `interp_f64` | 64 | 5.17x [5.16 – 5.19] | 1.82x | 5.00x | 7.46x | 9.32x | 16.9x | 15.7x |
   | `interp_f64` | 1,000 | 4.97x [4.96 – 4.99] | 1.80x | 4.91x | 6.25x | 10.6x | 16.3x | 19.6x |
 
   The sizes are lengths of the sorted array. With 64 needles a call is short enough that NumPy's fixed cost per call is part of its figure.
+- **The right side** is `searchsorted_right_f64`: this kernel with every `a[i] < key` turned into `a[i] <= key`, and the length of the array stored for a NaN needle where the left side searches for the first NaN. Nothing else differs, and from Python the two sides take the same time (2.26 ms and 2.27 ms for a million needles against 1,000 elements). Its rows in the table above are from a later run than the left side's, on a busier machine (load average 3.8). They are not comparable with the left side's against naive C: clang compiles the right side's reference with a branch per probe and the left side's without one, so the two baselines differ, by most where the judge's inputs are unpredictable.
+- **Needles that equal an element are not generated above 5,000 elements.** They are the only input on which the two sides differ. The paths up to 1,048,576 elements are checked on them at small sizes; the path beyond is not, and a mutation run confirmed that a wrong comparison there passes the judge, for either side. `delivery check` searches arrays of 1,048,576 and 1,048,579 elements for needles drawn from the array and catches it ([searchsorted-right-design.md](searchsorted-right-design.md#what-the-judge-can-and-cannot-tell-apart)).
 - **Not verified by the judge:** `interp_f64` is checked up to 65,537 sample points (the NumPy oracle is too slow beyond), so its path from 1,048,576 was compared with the reference outside the judge, without guard pages. Neither kernel is run on unsorted input by the judge, where the result is as meaningless as NumPy's and the kernel is required only to stay inside its buffers. That holds by construction, and a one-off run of 2,952 calls against guard pages found no fault ([issue 40](https://github.com/sofeikov/hotkernels/issues/40) asks the judge to check it).
 
 #### On x86-64
@@ -286,9 +290,9 @@ These are constraints on the binding, collected from the kernels. The last colum
 | `clip_*` | `lo <= hi`, neither NaN, otherwise fall back | Every architecture: the reference is defined for ordered bounds only |
 | `clip_*` | `x` and `out` must not overlap; touches FPSR; with `lo = +0.0`, data with a negative zero in its first few thousand elements runs at the speed of the C | ARM64 |
 | `interp_f64` | The sample points must hold no NaN: with one at `xp[0]` the kernel and the reference read before the start of `xp` and `fp`, and with one anywhere the result is not NumPy's. The binding reads `xp` first | Every architecture: the spec and the reference exclude it |
-| `searchsorted_f64`, `interp_f64` | Sorted input is assumed and not checked. On unsorted input the result is meaningless, differs from NumPy's, and the kernel stays inside its buffers | Every architecture for the result; ARM64 for staying inside the buffers, which the judge does not test |
-| `searchsorted_f64` | `side='left'` only | Every architecture: the spec declares it |
-| `searchsorted_f64`, `interp_f64` | Fewer needles than a path handles at once take a narrower path; fewer than 64 against an array of 64 or more are searched one at a time | ARM64 |
+| `searchsorted_f64`, `searchsorted_right_f64`, `interp_f64` | Sorted input is assumed and not checked. On unsorted input the result is meaningless, differs from NumPy's, and the kernel stays inside its buffers | Every architecture for the result; ARM64 for staying inside the buffers, which the judge does not test |
+| `searchsorted_f64`, `searchsorted_right_f64` | One side each: `side='left'` and `side='right'`. The binding chooses by the `side` argument | Every architecture: the specs declare it |
+| `searchsorted_f64`, `searchsorted_right_f64`, `interp_f64` | Fewer needles than a path handles at once take a narrower path; fewer than 64 against an array of 64 or more are searched one at a time | ARM64 |
 | `interp_f64` | From 2^32 sample points it takes the scalar path | ARM64 |
 | `cumsum_f32`, `cumsum_f64` | Not bit-identical to NumPy; `report()` must mark them | Every architecture: the spec declares a tolerance |
 | `cumsum_f32`, `cumsum_f64` | Adjacent outputs come from separate running sums, so non-negative input does not give a non-decreasing output, and the steps back are not confined to the last bit: on uniform [0, 1) float32 data at a million elements about one adjacent pair in six decreases, by up to about 5, and after `2^24, 0.9, 0.2` a run of zeros alternates between 2^24 and 2^24 + 2 | ARM64. Any kernel that regroups the additions can do the same |

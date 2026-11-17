@@ -7,7 +7,7 @@ It is written for someone who has used NumPy for years, is comfortable with the 
 - **The opportunity is real but narrow.** Measured against the simplest correct C loop, NumPy on an Apple M1 Pro is behind by 1.5x to 7x on boolean masks, `cumsum`, `clip`, `histogram`, `bincount`, `searchsorted` and a few others, and level or ahead on almost everything else. [Chapter 1]([[ root ]]report/numpy/).
 - **The gains come from four ideas**, not from cleverness with instructions: do several elements per step, keep steps independent of each other, never let a branch depend on the data, and respect the caches. [Chapter 2]([[ root ]]report/machine/).
 - **Correctness is decided by a program.** A judge compares each kernel with NumPy on thousands of generated inputs (18,081 for `argmax`), with every buffer placed against memory the process may not touch, and decides with a bootstrap test whether a change made it faster. [Chapter 3]([[ root ]]report/judge/).
-- **The kernels were written by coding agents in a loop** against that judge: [[ data.attempts.total ]] logged attempts across 22 kernels, of which [[ data.attempts.kept ]] were kept and [[ data.attempts.reverted ]] thrown away. [Chapter 4]([[ root ]]report/loop/).
+- **The kernels were written by coding agents in a loop** against that judge: [[ data.attempts.total ]] logged attempts across 23 kernels, of which [[ data.attempts.kept ]] were kept and [[ data.attempts.reverted ]] thrown away. [Chapter 4]([[ root ]]report/loop/).
 - **Twenty-one of 22 beat the compiler**, by anything from 1.1x to 23x, and all 22 beat NumPy at every size measured. [Chapters 5]([[ root ]]report/selection/) and [6]([[ root ]]report/arithmetic/).
 - **They reach unmodified code** by changing a handful of function pointers inside NumPy. A call no kernel takes costs about a nanosecond more. [Chapter 7]([[ root ]]report/delivery/).
 - **Several results are narrower than their headline**, and the judge has blind spots. [Chapter 8]([[ root ]]report/results/).
@@ -21,9 +21,9 @@ flowchart TD
   agent["<b>Coding agent</b><br/>edits one file: kernel.s"]
   judge["<b>Judge</b><br/>lint, thousands of cases on guarded memory,<br/>calling convention, bootstrap timing"]
   log["attempts.md<br/>every attempt, kept or not"]
-  kernels["<b>22 kernels</b><br/>21 assembly, 1 plain C"]
+  kernels["<b>23 kernels</b><br/>22 assembly, 1 plain C"]
   binding["<b>Binding</b><br/>five kinds of hook into NumPy"]
-  check["<b>Delivery check</b><br/>75,307 calls with and without,<br/>plus NumPy's own test suite"]
+  check["<b>Delivery check</b><br/>77,481 calls with and without,<br/>plus NumPy's own test suite"]
   user["<b>Your code</b><br/>import hotkernels; hotkernels.install()"]
 
   survey -->|"shortlist: where NumPy is behind"| spec
