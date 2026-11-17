@@ -19,8 +19,36 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       # Shared runners are too noisy to time anything, so the speed fixture is skipped.
       - run: uv run judge selftest --no-speed
-      # Every hooked NumPy call, with and without hotkernels installed.
+      # Every hooked NumPy call, with and without hotkernels installed, on the
+      # NumPy in uv.lock.
       - run: uv run delivery check
+
+  # The same check at both ends of the NumPy range hotkernels claims: exactly
+  # the floor of `numpy` in hotkernels/pyproject.toml, and the newest release
+  # on PyPI. hotkernels is built against the newest NumPy in both, as a wheel
+  # is, so the first step also shows that such a build runs on the oldest.
+  numpy-range:
+    needs: runner
+    runs-on: ${{ needs.runner.outputs.runner }} # Apple Silicon either way
+    env:
+      VERSIONS: 'import sys, numpy; print(f"Python {sys.version.split()[0]}, NumPy {numpy.__version__}")'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # `--with` lays the old NumPy over the locked one when the check runs.
+      # Python 3.13 is the newest that NumPy 2.3.0 has wheels for, so it is the
+      # last to lose a newer NumPy to build against.
+      - name: delivery check on the oldest NumPy hotkernels claims
+        run: |
+          oldest=$(sed -nE 's/^ *"numpy>=([0-9.]+)",$/\1/p' hotkernels/pyproject.toml)
+          uv run --python 3.13 --with "numpy==$oldest" python -c "$VERSIONS"
+          uv run --python 3.13 --with "numpy==$oldest" delivery check
+      # Relocks NumPy to its newest release, on the newest Python the wheels
+      # are built for, which a new NumPy supports first.
+      - name: delivery check on the newest NumPy
+        run: |
+          uv run --python 3.14 --upgrade-package numpy python -c "$VERSIONS"
+          uv run --python 3.14 --upgrade-package numpy delivery check
 
   # The judge on its second platform. No kernel is installed there yet, so
   # there is no delivery check to run.
