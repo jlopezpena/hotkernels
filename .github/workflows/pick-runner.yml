@@ -1,7 +1,11 @@
 # Chooses where a macOS job runs: on the maintainer's own Mac when it is
-# online and idle, and on a GitHub-hosted runner otherwise. Hosted macOS
-# runners are often not assigned for a quarter of an hour; the Mac starts at
-# once.
+# online, and on a GitHub-hosted runner otherwise. Hosted macOS runners are
+# often not assigned for a quarter of an hour, after which the job fails.
+#
+# The Mac is chosen even while it is busy. It runs one job at a time, and the
+# workflows of one push all ask at the same moment: if a busy Mac were passed
+# over, the first job to start would send every other one to a hosted runner.
+# Waiting a few minutes in the Mac's queue is the better of the two waits.
 #
 # A job uses it like this:
 #
@@ -14,7 +18,7 @@
 #
 # The Mac is never chosen for a pull request from a fork, whose code is not
 # the maintainer's, or for a tag, whose wheels are published. Whether the Mac
-# is free is read from the list of the repository's runners, which needs a
+# is online is read from the list of the repository's runners, which needs a
 # token the workflow's own does not have: the RUNNER_STATUS_TOKEN secret, a
 # fine-grained token with read access to the repository's administration.
 # Without it, or when it has expired, every job goes to a hosted runner.
@@ -50,11 +54,11 @@ jobs:
           runner="$HOSTED"
           if [ "$OWN_CODE" = "true" ] && [ "$GITHUB_REF_TYPE" != "tag" ] && [ -n "$TOKEN" ]; then
             # Any failure here (an expired token, the API down) leaves the hosted runner chosen.
-            free=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            online=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
                      "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners" \
-                   | jq --arg label "$OWN" '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == $label))] | length' \
+                   | jq --arg label "$OWN" '[.runners[] | select(.status == "online" and any(.labels[]; .name == $label))] | length' \
                    || echo 0)
-            if [ "${free:-0}" -gt 0 ]; then runner="$OWN"; fi
+            if [ "${online:-0}" -gt 0 ]; then runner="$OWN"; fi
           fi
           echo "runner=$runner" >> "$GITHUB_OUTPUT"
           echo "macOS jobs of this run go to: $runner" >> "$GITHUB_STEP_SUMMARY"
