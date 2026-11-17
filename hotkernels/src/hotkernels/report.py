@@ -58,6 +58,8 @@ class KernelReport:
 class Report:
     """The state of hotkernels in this process."""
 
+    # The hotkernels release in use, so a pasted report says which one it is.
+    version: str
     # Whether install() is in effect.
     installed: bool
     # Why install() did nothing, when it did nothing; None otherwise.
@@ -118,12 +120,13 @@ def _note(info: KernelInfo, exact: bool, installed: bool, inexact: bool, hooks_a
     return ""
 
 
-def build(installed: bool, unsupported: str | None, inexact: bool, numpy_version: str,
+def build(version: str, installed: bool, unsupported: str | None, inexact: bool, numpy_version: str,
           applied_hooks: frozenset[str], taken: dict[str, int], passed: dict[str, int],
           problems: tuple[str, ...]) -> Report:
     """Assemble a report from the installation's state and the binding's counters.
 
     Args:
+        version: The hotkernels release in use.
         installed: Whether install() is in effect.
         unsupported: Why install() did nothing, or None.
         inexact: Whether inexact kernels were asked for.
@@ -156,7 +159,7 @@ def build(installed: bool, unsupported: str | None, inexact: bool, numpy_version
             calls=taken.get(info.name, 0),
             left_to_numpy=passed.get(info.operation, 0) if first_of_operation else None,
         ))
-    return Report(installed, unsupported, inexact, numpy_version, tuple(rows), problems)
+    return Report(version, installed, unsupported, inexact, numpy_version, tuple(rows), problems)
 
 
 def _thousands(value: int) -> str:

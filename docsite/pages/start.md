@@ -66,7 +66,7 @@ Importing the package changes nothing; only `install()` does. Calling it twice i
 `print(hotkernels.report())` after your code has run:
 
 ```text
-hotkernels: installed, 18 of 22 kernels (NumPy 2.5.5)
+hotkernels 0.1.0: installed, 18 of 22 kernels (NumPy 2.5.5)
 
 NumPy call         Elements Kernel    Result            Kernel calls  Left to NumPy
 np.argmax          float32  assembly  exact                        0              0

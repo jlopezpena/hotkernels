@@ -1,6 +1,7 @@
 [project]
 name = "hotkernels"
-version = "0.1.0"
+# The version is written once, in meson.build, and meson-python reads it from there.
+dynamic = ["version"]
 description = "Faster kernels for NumPy operations, installed with one line."
 license = "MIT"
 requires-python = ">=3.11"
@@ -19,9 +20,28 @@ build-backend = "mesonpy"
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "meson.build" },
+    { file = "meson.options" },
     { file = "tools/**" },
     { file = "src/**" },
     { file = "../kernels/*/spec.py" },
     { file = "../kernels/*/naive.c" },
     { file = "../kernels/*/*/kernel.s" },
 ]
+
+# Wheels, built by cibuildwheel in .github/workflows/release.yml from a checkout
+# of the repository: the build reads ../kernels and the judge's spec code.
+[tool.cibuildwheel]
+build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
+# Free-threaded Python is not supported: install() does nothing there (issue 21).
+skip = ["cp3??t-*"]
+# A wheel runs on every Apple Silicon Mac, so C kernels are compiled for the
+# first one, not for the machine that builds the wheel. See meson.options.
+config-settings = { setup-args = "-Dkernel_cpu=apple-m1" }
+# Run in a fresh environment with only the wheel and its dependencies: the
+# extension loads, the self-test of every hook passes, and kernels are installed.
+test-command = "python -c \"import hotkernels; hotkernels.install(); r = hotkernels.report(); assert r.installed_count > 0 and not r.problems, r\""
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+# The oldest macOS the wheels claim to run on; Apple Silicon starts at 11.
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }

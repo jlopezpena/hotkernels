@@ -10,7 +10,8 @@ Run by `meson.build` when the package is configured. It reads every
 - `list WHAT` logs one item per line for the build to read: the source file
   of every assembly kernel, of every C kernel, or the compiler flags the judge
   builds a naive reference with, so a C kernel is built exactly as it was
-  judged.
+  judged. A wheel, built once for every machine, swaps the judge's
+  `-mcpu=native` for a named CPU (`--cpu`).
 
 The specs and the prototype code belong to the judge, so the repository root
 is put on the import path. The package is built from a checkout; a build from
@@ -44,6 +45,11 @@ C = "C"
 LIST_ASSEMBLY = "assembly-sources"
 LIST_C = "c-sources"
 LIST_FLAGS = "c-flags"
+
+# The judge compiles for the machine it runs on. `--cpu native` keeps that flag
+# as it is; any other value replaces it with -mcpu=<value>.
+NATIVE_CPU = "native"
+CPU_FLAG_PREFIX = "-mcpu="
 
 log = logging.getLogger(__name__)
 app = typer.Typer(add_completion=False)
@@ -98,16 +104,32 @@ def write(out_dir: Path) -> None:
     (out_dir / "kernels.json").write_text(json.dumps(table, indent=2, sort_keys=True) + "\n")
 
 
+def _c_flags(cpu: str) -> list[str]:
+    """Return the judge's C flags, compiled for `cpu`.
+
+    Args:
+        cpu: NATIVE_CPU to keep the judge's flags unchanged, or a value for
+            clang's -mcpu (such as `apple-m1`) to target that CPU instead.
+
+    Returns:
+        The flags, in the judge's order.
+    """
+    if cpu == NATIVE_CPU:
+        return list(C_FLAGS)
+    return [CPU_FLAG_PREFIX + cpu if flag.startswith(CPU_FLAG_PREFIX) else flag for flag in C_FLAGS]
+
+
 @app.command(name="list")
-def list_items(what: str) -> None:
+def list_items(what: str, cpu: str = typer.Option(NATIVE_CPU, help="CPU for the C flags.")) -> None:
     """Log one item per line: the sources of a kind of kernel, or the C flags.
 
     Args:
         what: LIST_ASSEMBLY or LIST_C for the source files of the kernels
             implemented that way, LIST_FLAGS for the judge's compiler flags.
+        cpu: For LIST_FLAGS, the CPU to compile for; see `_c_flags`.
     """
     if what == LIST_FLAGS:
-        items = C_FLAGS
+        items = _c_flags(cpu)
     else:
         wanted = {LIST_ASSEMBLY: ASSEMBLY, LIST_C: C}[what]
         items = [str(source) for kind, source in _implementations().values() if kind == wanted]
