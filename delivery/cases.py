@@ -943,6 +943,14 @@ NEEDLE_COUNTS = (0, 1, 2, 15, 16, 17, 63, 64, 65, 127, 128, 129, 1000)
 # cache, and a length above it.
 LARGE_TABLE_N = 1_048_576
 BEYOND_LARGE_TABLE_N = LARGE_TABLE_N + 3
+# Numbers of needles tried against the two long arrays: one, and either side
+# of the group of 128 that the path for long arrays works in.
+LARGE_TABLE_NEEDLES = (1, 64, 127, 128, 129, 1000)
+# Number of needles in the cases that vary the spelling or the layout of a
+# search: more than one group of 64, with a leftover.
+SPELLING_NEEDLES = 100
+# (sample points, queries) of the interp cases whose sample points hold a NaN.
+NAN_POINT_SHAPES = ((1, SPELLING_NEEDLES), (2, SPELLING_NEEDLES), (ORDINARY_N, SPELLING_NEEDLES), (ORDINARY_N, ORDINARY_N))
 # Value classes for the sorted array of a search: ordinary values, repeated
 # values, infinities at both ends, and NaNs, which NumPy sorts last.
 TABLE_CLASSES = ("random", "ties", "inf_mix", "nan_some")
@@ -1032,11 +1040,11 @@ def searchsorted_cases() -> Iterator[Case]:
             yield Case("searchsorted", f"np.searchsorted(a, v) a={table_class} n={n} v={needle_class} needles={count}",
                        partial(_search_arguments, n, table_class, count, needle_class), search, kernel)
     for n in (LARGE_TABLE_N, BEYOND_LARGE_TABLE_N):
-        for count in (1, 64, 127, 128, 129, 1000):
+        for count in LARGE_TABLE_NEEDLES:
             yield Case("searchsorted", f"np.searchsorted(a, v) a=random n={n} v=nan_some needles={count}",
                        partial(_search_arguments, n, "random", count, "nan_some"), search, kernel)
 
-    n, count = ORDINARY_N, 100
+    n, count = ORDINARY_N, SPELLING_NEEDLES
     arguments = partial(_search_arguments, n, "random", count, "random")
     spellings = (
         ("a.searchsorted(v)", lambda a, v: a.searchsorted(v), kernel),
@@ -1131,12 +1139,12 @@ def interp_cases() -> Iterator[Case]:
         for x_class, xp_class, fp_class in triples:
             yield Case("interp", f"np.interp(x, xp, fp) n={n} queries={count} x={x_class} xp={xp_class} fp={fp_class}",
                        partial(_interp_arguments, n, count, x_class, xp_class, fp_class), np.interp, expect)
-    for n, count in ((1, 100), (2, 100), (ORDINARY_N, 100), (ORDINARY_N, ORDINARY_N)):
+    for n, count in NAN_POINT_SHAPES:
         for position in sorted({0, n // 2, n - 1}):
             yield Case("interp", f"np.interp(x, xp, fp) n={n} queries={count} xp has a NaN at {position}",
                        partial(_interp_with_nan, n, count, position), np.interp, None)
 
-    n, count = ORDINARY_N, 100
+    n, count = ORDINARY_N, SPELLING_NEEDLES
     arguments = partial(_interp_arguments, n, count, "random", "random", "random")
     spellings = (
         ("np.interp(x, xp, fp, None, None, None)", lambda x, xp, fp: np.interp(x, xp, fp, None, None, None), kernel),

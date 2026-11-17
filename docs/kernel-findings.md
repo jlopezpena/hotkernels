@@ -189,7 +189,7 @@ Not written yet. A compare of four 64-bit elements at once exists there, so the 
   | `interp_f64` | 1,000 | 4.97x [4.96 – 4.99] | 1.80x | 4.91x | 6.25x | 10.6x | 16.3x | 19.6x |
 
   The sizes are lengths of the sorted array. With 64 needles a call is short enough that NumPy's fixed cost per call is part of its figure.
-- **Not verified by the judge:** `interp_f64` is checked up to 65,537 sample points (the NumPy oracle is too slow beyond), so its path from 1,048,576 was compared with the reference outside the judge, without guard pages. Neither kernel is run on unsorted input, where the result is as meaningless as NumPy's and the kernel is required only to stay inside its buffers; that holds by construction and is not tested.
+- **Not verified by the judge:** `interp_f64` is checked up to 65,537 sample points (the NumPy oracle is too slow beyond), so its path from 1,048,576 was compared with the reference outside the judge, without guard pages. Neither kernel is run on unsorted input by the judge, where the result is as meaningless as NumPy's and the kernel is required only to stay inside its buffers. That holds by construction, and a one-off run of 2,952 calls against guard pages found no fault ([issue 40](https://github.com/sofeikov/hotkernels/issues/40) asks the judge to check it).
 
 #### On x86-64
 

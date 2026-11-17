@@ -23,7 +23,7 @@ Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with NumPy 2.5
 | `judge selftest` passes, including the new fixture | Met. `rank_u8` passes, and both of its broken variants are caught for the reason they were built to trigger |
 | `judge check` passes for both kernels with the new specs | Met, with `--unlocked`: `searchsorted_f64` 141,872 cases, `interp_f64` 155,063. All 22 kernels pass under the changed judge |
 | `delivery check` passes with the new cases | Met. 2,132 cases for `searchsorted` and 3,144 for `interp`; 75,307 in all, none failing |
-| NumPy's test suite gives the same outcome | STATUS_NUMPY_TESTS |
+| NumPy's test suite gives the same outcome | Met. 47,234 tests, none differs, with both hooks installed |
 | `report()` shows both kernels installed and counting | Met: 20 of 22 kernels, 22 with `inexact=True` |
 | From Python, at a million needles against a million elements, both are faster than NumPy by a factor in the judge's range | Met: `np.searchsorted` 7.76x, `np.interp` 30.5x. The judge's earlier figures in that shape were 8.84x and 22.7x |
 
@@ -42,7 +42,7 @@ From Python, on a machine in use (load average 3.9), so rough:
 | `np.interp(x, xp, fp)` | 1,000 | 4,096 | 216 µs | 11.2 µs | 19.3x |
 | `np.interp(x, xp, fp)` | 1,000 | 1,048,576 | 55.6 ms | 2.91 ms | 19.2x |
 
-Not done, and owed: every judge run here was made with `--unlocked`, because the work changes locked files, and on a machine in use. The published figures for these two kernels have not been replaced. A locked run on a quiet machine, a recorded `delivery time`, and the README's chart follow once this is in `main` ([issue ISSUE_RERUN](https://github.com/sofeikov/hotkernels/issues/ISSUE_RERUN)).
+Not done, and owed: every judge run here was made with `--unlocked`, because the work changes locked files, and on a machine in use. The published figures for these two kernels have not been replaced. A locked run on a quiet machine, a recorded `delivery time`, and the README's chart follow once this is in `main` ([issue 38](https://github.com/sofeikov/hotkernels/issues/38)).
 
 ## What changed in the building
 
@@ -56,10 +56,10 @@ Not done, and owed: every judge run here was made with `--unlocked`, because the
 
 | Left for later | Issue |
 |---|---|
-| A locked re-run of both kernels on a quiet machine, a recorded `delivery time`, and the README's chart | [ISSUE_RERUN](https://github.com/sofeikov/hotkernels/issues/ISSUE_RERUN) |
-| A path for fewer than 64 needles against an array of 64 or more, which go one at a time | [ISSUE_SHORT](https://github.com/sofeikov/hotkernels/issues/ISSUE_SHORT) |
-| A judge check that the search kernels stay inside their buffers on unsorted input | [ISSUE_UNSORTED](https://github.com/sofeikov/hotkernels/issues/ISSUE_UNSORTED) |
-| `side='right'` for `np.searchsorted`, which `np.digitize` asks for by default | [ISSUE_RIGHT](https://github.com/sofeikov/hotkernels/issues/ISSUE_RIGHT) |
+| A locked re-run of both kernels on a quiet machine, a recorded `delivery time`, and the README's chart | [38](https://github.com/sofeikov/hotkernels/issues/38) |
+| A path for fewer than 64 needles against an array of 64 or more, which go one at a time | [39](https://github.com/sofeikov/hotkernels/issues/39) |
+| A judge check that the search kernels stay inside their buffers on unsorted input | [40](https://github.com/sofeikov/hotkernels/issues/40) |
+| `side='right'` for `np.searchsorted`, which `np.digitize` asks for by default | [41](https://github.com/sofeikov/hotkernels/issues/41) |
 
 ## What is wrong today
 
@@ -221,7 +221,7 @@ A function hook on `np.interp`. The kernel takes `np.interp(x, xp, fp)` when:
 
 `searchsorted` needs no pass: a NaN in `a` is ordered last by NumPy and by the kernel, and the judge checks it.
 
-**The last row is not verified by the judge.** The specs sort their input, so the judge never runs these kernels on unsorted data. The bound is by construction (the search adds to an index only amounts that keep it inside `[0, n]`). A value class that skips `prepare` and checks memory safety only would close this; it is filed as its own issue and is not part of this work.
+**The last row is not verified by the judge.** The specs sort their input, so the judge never runs these kernels on unsorted data. The bound is by construction (the search adds to an index only amounts that keep it inside `[0, n]`). A value class that skips `prepare` and checks memory safety only would close this; it is filed as [issue 40](https://github.com/sofeikov/hotkernels/issues/40) and is not part of this work. Outside the judge, the built kernels were run 2,952 times on unsorted arrays (random, descending, with NaNs, with infinities; lengths from 0 to 1,048,577; 0 to 1,000 needles) with every buffer against a guard page at its end and at its start: no fault, and every index `searchsorted_f64` returned was inside `[0, n]`.
 
 ### Threads
 
