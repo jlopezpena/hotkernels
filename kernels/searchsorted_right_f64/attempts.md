@@ -109,3 +109,16 @@ the ones to read against naive C.
 
 Nothing beyond the first version. The ideas listed as untried at the end of the
 left kernel's log apply here unchanged.
+
+## Ten-run means, locked
+
+`uv run judge run searchsorted_right_f64`, locked, ten times, one run at a time, on a machine that was
+not fully quiet (one-minute load average between 2.2 and 9.1 when a run started,
+about 3 for most; a run the judge flagged as noisy was repeated). Check: pass,
+141,872 cases. Mean of the ten, with the lowest and highest run in brackets. These
+replace the indicative and single-pass figures above wherever they are quoted.
+
+| Case | vs naive C, all sizes | at 1,048,576 | vs NumPy, all sizes | at 1,048,576 |
+|---|---|---|---|---|
+| 64 needles | 6.16x [6.03 – 6.28] | 4.00x [3.25 – 4.29] | 5.37x [5.25 – 5.53] | 2.37x [1.98 – 2.68] |
+| 1,000 needles | 16.9x [16.8 – 17.1] | 12.8x [11.8 – 13.3] | 10.1x [9.84 – 10.2] | 6.89x [6.33 – 7.19] |

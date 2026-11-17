@@ -92,7 +92,7 @@ The indexing hook sits on *every* index operation on *every* array in the proces
 
 | Call that reaches a hook and is left to NumPy | Plain NumPy | With hotkernels | Difference |
 |---|---|---|---|
-| `x[3]` | 60.3 ns | 61.1 ns | +0.8 ns |
+| `x[3]` | 60.3 ns | 60.8 ns | +0.5 ns |
 | `x[1:5]` | 88.8 ns | 89.4 ns | +0.6 ns |
 | `x.astype(np.float64)`, uint8, 16 elements | 198 ns | 201 ns | +3 ns |
 | `np.clip(x[::2], -0.5, 0.5)`, 16 elements | 1.24 µs | 1.26 µs | within noise |

@@ -12,36 +12,36 @@ These are the figures that matter to someone running NumPy code: one Python stat
 
 | Statement | Elements | 16 elements | 1,048,576 elements |
 |---|---|---|---|
-| `np.argmax(x)` | float32 | 14.4x | 8.98x |
-| `np.clip(x, -0.5, 0.5)` | float32 | 1.01x | 11.2x |
-| `np.clip(x, -0.5, 0.5)` | float64 | 1.00x | 5.01x |
-| `x[mask]`, half selected | float32 | 2.49x | 31.0x |
-| `x[mask]`, half selected | float64 | 2.52x | 15.8x |
-| `x[mask] = 0.0`, half selected | float64 | 5.28x | 20.3x |
-| `np.nonzero(mask)`, few selected | bool | 1.27x | 13.9x |
-| `np.cumsum(x)` | int64 | 1.93x | 13.6x |
-| `x.astype(np.float32)` | uint8 | 1.90x | 5.29x |
-| `np.sum(x)` | uint8 | 32.9x | 15.6x |
-| `np.count_nonzero(x)` | float64 | 3.56x | 3.46x |
-| `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.27x | 9.40x |
-| `np.bincount(x)` | uint8 | 2.23x | 6.74x |
-| `np.isin(x, eight_values)` | int64 | 72.8x | 18.2x |
-| `np.searchsorted(a, v)` | float64 | 1.36x | 7.76x |
-| `np.searchsorted(a, v, side='right')` | float64 | 1.45x | 7.66x |
-| `np.digitize(x, bins)`, 1,000 bin edges | float64 | 1.10x | 26.5x |
-| `np.interp(x, xp, fp)` | float64 | 5.44x | 30.5x |
+| `np.argmax(x)` | float32 | 14.1x | 8.98x |
+| `np.clip(x, -0.5, 0.5)` | float32 | 1.02x | 10.9x |
+| `np.clip(x, -0.5, 0.5)` | float64 | 1.00x | 4.80x |
+| `x[mask]`, half selected | float32 | 2.50x | 31.0x |
+| `x[mask]`, half selected | float64 | 2.55x | 16.2x |
+| `x[mask] = 0.0`, half selected | float64 | 5.27x | 20.4x |
+| `np.nonzero(mask)`, few selected | bool | 1.25x | 13.7x |
+| `np.cumsum(x)` | int64 | 1.98x | 13.8x |
+| `x.astype(np.float32)` | uint8 | 1.88x | 5.21x |
+| `np.sum(x)` | uint8 | 31.8x | 15.6x |
+| `np.count_nonzero(x)` | float64 | 3.54x | 3.57x |
+| `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.25x | 9.33x |
+| `np.bincount(x)` | uint8 | 2.26x | 6.85x |
+| `np.isin(x, eight_values)` | int64 | 74.0x | 18.9x |
+| `np.searchsorted(a, v)` | float64 | 1.54x | 8.83x |
+| `np.searchsorted(a, v, side='right')` | float64 | 1.43x | 8.28x |
+| `np.digitize(x, bins)`, 1,000 bin edges | float64 | 1.10x | 26.7x |
+| `np.interp(x, xp, fp)` | float64 | 5.61x | 25.7x |
 
-The search and `np.interp` rows are timed with as many needles as elements, and `np.digitize` with 1,000 bin edges, in later runs on a busier machine; they are not in the recorded result the figure above reads.
+The search and `np.interp` rows are timed with as many needles as elements, and `np.digitize` with 1,000 bin edges. The run started at a load average of 3.8, on a machine in use.
 
 Read the two columns as two different stories. At a million elements the number is the kernel. At 16 elements it is mostly NumPy's own call path being skipped: `np.sum` on 16 bytes is 33x faster because a 1.2 µs wrapper was replaced by a 37 ns call, not because of how the bytes are added.
 
 **A whole program.** `examples/workload.py` in the repository is an ordinary NumPy script, written with no knowledge of hotkernels: it cleans a signal, summarises an 8-bit image and looks up some ids, using eleven of these operations on two million elements. It runs in **45 ms on plain NumPy and 8.4 ms with the one line added**, and every result is identical bit for bit.
 
-**The cost of being there.** A call that reaches a hook and is not served costs 0.3 to 1.5 ns more than on plain NumPy: `x[3]` goes from 60.3 ns to 61.1 ns.
+**The cost of being there.** A call that reaches a hook and is not served costs 0.3 to 1.5 ns more than on plain NumPy: `x[3]` goes from 60.3 ns to 60.8 ns.
 
 ## What the kernels do: timings as native functions
 
-These are the judge's figures: each kernel called from C, against the naive C reference compiled with `clang -O3`, and against the NumPy statement called from Python. "All sizes" is the geometric mean over eleven sizes from 16 to 16,777,216 elements with its 95% interval; the four columns after it are single sizes.
+These are the judge's figures: each kernel called from C, against the naive C reference compiled with `clang -O3`, and against the NumPy statement called from Python. "All sizes" is the geometric mean over eleven sizes from 16 to 16,777,216 elements with its 95% interval; the four columns after it are single sizes. A row whose input is marked † is the mean of ten runs, and its brackets hold the lowest and highest of the ten instead.
 
 | Kernel | Input | vs naive C, all sizes | at 16 | at 4,096 | at 1M | at 16M | vs NumPy at 1M |
 |---|---|---|---|---|---|---|---|
@@ -61,8 +61,8 @@ Three patterns are worth reading out of that table:
 
 - **Machine.** Apple M1 Pro, macOS, NumPy 2.5.5, Apple clang 21. Native, one core.
 - **Method.** 30 interleaved samples per contender per size; ratio of medians; paired bootstrap interval, as in [chapter 3]([[ root ]]report/judge/#deciding-what-faster-means).
-- **Passes.** Most rows come from one pass on an idle machine. The `clip` rows were taken later, while the machine was in use, and their large sizes are noisier: on the idle machine `clip` with bounds (−0.5, 0.5) read 11.1x over NumPy for float32 and 4.88x for float64 at a million elements, where this table shows 8.67x and 3.65x.
-- **Unlocked.** The judge normally refuses to time a kernel whose spec differs from the main branch. These runs were made in the same change that introduced the specs, with that refusal overridden, and the judge marks such results as untrusted. Nothing has been recorded as an official result for that reason.
+- **Passes.** Most rows come from one pass on an idle machine. The `clip` and search rows, marked †, were taken later on a machine that could not be made quiet (load average about 3 for most runs), so each is the mean of ten locked runs. Up to about 65,536 elements those runs agree within 1%; from a million elements up single runs differ by 10 to 15%.
+- **Unlocked.** The judge normally refuses to time a kernel whose spec differs from the main branch. The single-pass runs were made in the same change that introduced the specs, with that refusal overridden, and the judge marks such results as untrusted. Nothing has been recorded as an official result for that reason.
 
 ## Where a result is narrower than its number
 

@@ -169,15 +169,17 @@ The kernel picks its batch by the size of the array: sixteen needles at a time b
 
 | Kernel | Over naive C, all sizes | at 1,048,576 | at 16,777,216 | Over NumPy at 1M |
 |---|---|---|---|---|
-| `searchsorted_f64` | 8.82x [8.80 – 8.86] | 8.42x | 12.6x | 8.84x |
-| `interp_f64` | 4.95x [4.92 – 4.96] | 6.02x | 8.69x | 22.7x |
+| `searchsorted_f64` | 9.08x [8.98 – 9.14] | 8.83x | 15.5x | 6.40x |
+| `interp_f64` | 5.00x [4.93 – 5.03] | 6.40x | 10.2x | 16.8x |
+
+Timed with 1,000 needles per call; the sizes are lengths of the sorted array. Each figure is the mean of ten runs on a machine that was not fully quiet, with the lowest and highest of the ten in brackets.
 
 These are the only kernels whose advantage *grows* at the largest sizes, because overlapping cache misses matters most when every probe is a miss.
 
 **What limits it.** In cache, the instruction count is not the limit; *which elements get probed* is. A variant in which every search probed the same elements ran 1.25x to 1.33x faster with identical instructions. Beyond the cache, the limit is the number of cache and address-translation misses, which the kernel overlaps but cannot reduce.
 
 ::: note Two lengths
-The figures above were taken with as many needles as elements, which is how these kernels were first written: one length for the sorted array and the needles. That was enough to develop and judge them and not enough to serve a real call, where the two lengths differ, so for a while they were complete and not installed. They now take the two lengths separately. The length of the sorted array chooses the path; a call with fewer needles than a path handles at once takes a narrower one, down to one needle at a time. `interp_f64` is only checked by the judge up to 65,537 sample points, because NumPy's `interp` is too slow to act as an oracle beyond that; its large-array path was compared with the reference separately.
+These kernels were first written with one length for the sorted array and the needles. That was enough to develop and judge them and not enough to serve a real call, where the two lengths differ, so for a while they were complete and not installed. They now take the two lengths separately. The length of the sorted array chooses the path; a call with fewer needles than a path handles at once takes a narrower one, down to one needle at a time. `interp_f64` is only checked by the judge up to 65,537 sample points, because NumPy's `interp` is too slow to act as an oracle beyond that; its large-array path was compared with the reference separately.
 :::
 
 ::: note The right side
