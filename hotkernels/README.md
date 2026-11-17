@@ -15,7 +15,7 @@ hotkernels.install()
 pip install hotkernels
 ```
 
-Wheels are for macOS on Apple Silicon, Python 3.11 to 3.14, with NumPy 2.
+Wheels are for macOS on Apple Silicon, CPython 3.11 to 3.14, with NumPy 2. Another Python on an Apple Silicon Mac builds from source, which needs the Xcode command line tools. On any other machine the package installs without a compiler and `install()` does nothing, so code that calls it stays portable.
 
 ## What gets faster
 
@@ -37,5 +37,13 @@ hotkernels.uninstall()          # NumPy is exactly as it was
 
 - `hotkernels.install(inexact=True)` also installs `np.cumsum` on `float32` and `float64`, which are within a declared tolerance of NumPy rather than bit-identical.
 - `with hotkernels.enabled():` installs for the duration of a block.
+
+## Without changing your code
+
+```bash
+python -m hotkernels my_script.py --its --own --arguments
+python -m hotkernels -m pytest
+python -m hotkernels --report my_script.py   # print report() to standard error at the end
+```
 
 Documentation, the full results and how the kernels are made: [sofeikov.github.io/hotkernels](https://sofeikov.github.io/hotkernels/) and [github.com/sofeikov/hotkernels](https://github.com/sofeikov/hotkernels).

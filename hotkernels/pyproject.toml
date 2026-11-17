@@ -41,8 +41,8 @@ cache-keys = [
     { file = "../kernels/*/*/kernel.s" },
 ]
 
-# Wheels, built by cibuildwheel in .github/workflows/release.yml from a checkout
-# of the repository: the build reads ../kernels and the judge's spec code.
+# Wheels, built by cibuildwheel in .github/workflows/release.yml from the source
+# distribution, which carries its own kernel set.
 [tool.cibuildwheel]
 build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
 # Free-threaded Python is not supported: install() does nothing there (issue 21).
@@ -52,7 +52,10 @@ skip = ["cp3??t-*"]
 config-settings = { setup-args = "-Dkernel_cpu=apple-m1" }
 # Run in a fresh environment with only the wheel and its dependencies: the
 # extension loads, the self-test of every hook passes, and kernels are installed.
-test-command = "python -c \"import hotkernels; hotkernels.install(); r = hotkernels.report(); assert r.installed_count > 0 and not r.problems, r\""
+test-command = [
+    "python -c \"import hotkernels; hotkernels.install(); r = hotkernels.report(); assert r.installed_count > 0 and not r.problems, r\"",
+    "python -m hotkernels --help",
+]
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]

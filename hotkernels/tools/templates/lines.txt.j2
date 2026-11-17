@@ -1,0 +1,4 @@
+{# One item per line, for meson.build to read with fs.read(): source file names or compiler flags. #}
+{% for item in items %}
+{{ item }}
+{% endfor %}

@@ -1,6 +1,8 @@
 # Distribution: a source distribution, other platforms, and `python -m hotkernels`
 
-This is a proposal. It settles what [issue 19](https://github.com/sofeikov/hotkernels/issues/19) left open after release 0.1.0, which shipped macOS ARM64 wheels for CPython 3.11 to 3.14 and nothing else. How a release is made is [release-design.md](release-design.md); this document is about what a release contains.
+This began as a proposal and is now implemented. Where the building departed from it, [What changed in the building](#what-changed-in-the-building) says so; the rest stands as proposed.
+
+It settles what [issue 19](https://github.com/sofeikov/hotkernels/issues/19) left open after release 0.1.0, which shipped macOS ARM64 wheels for CPython 3.11 to 3.14 and nothing else. How a release is made is [release-design.md](release-design.md); this document is about what a release contains.
 
 ## Summary
 
@@ -9,9 +11,17 @@ This is a proposal. It settles what [issue 19](https://github.com/sofeikov/hotke
 - **`python -m hotkernels script.py`** runs a script with hotkernels installed, with no change to the script. It reads its few options by hand, an exception to the rule that command lines use `typer`, so the package gains no dependency.
 - **Jinja stays a dependency of the package.** Decided in review.
 
-## Where things stand
+## What changed in the building
 
-Release 0.1.0 is wheels only. `pip install hotkernels` works on an Apple Silicon Mac with CPython 3.11 to 3.14, and fails everywhere else with "no matching distribution". It fails the same way on an Apple Silicon Mac with a Python that has no wheel yet, such as 3.15 when it comes out.
+| Proposed | Built | Why |
+|---|---|---|
+| `meson.build` reads the kernel set's lists with `fs.read()` | It reads them through Python with `run_command` | `fs.read()` refuses files in the build tree, which is where a checkout's kernel set is written |
+| The kernel set picks the sources for the architecture of the machine that makes it | Always the ARM64 sources | The extension is only built for ARM64, so a set made on another machine must carry the same sources |
+| A Linux job checks the source distribution | It builds it in a `python:3.12-slim` container, which has no C compiler, and checks `install()` and `report()` there | A runner image has compilers installed and would not show a build that needs one. Locally, the same build was checked with the compiler pointed at a path that does not exist |
+
+## Where things stood
+
+Release 0.1.0 was wheels only. `pip install hotkernels` works on an Apple Silicon Mac with CPython 3.11 to 3.14, and fails everywhere else with "no matching distribution". It fails the same way on an Apple Silicon Mac with a Python that has no wheel yet, such as 3.15 when it comes out.
 
 The build cannot run from anything but a checkout, because:
 

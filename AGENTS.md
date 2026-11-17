@@ -18,7 +18,7 @@ This file is for coding agents. The first half applies to any work here; the sec
 
 These apply to all Python in this repository.
 
-- **Command lines use `typer`.** Never `argparse`.
+- **Command lines use `typer`.** Never `argparse`. The one exception is code that ships in the `hotkernels` package (`python -m hotkernels`): it reads `sys.argv` by hand, so the package gains no command-line dependency. See [docs/distribution-design.md](docs/distribution-design.md).
 - **Output uses the `logging` module.** Never a bare `print`. Each module gets `log = logging.getLogger(__name__)`; the CLI configures the handler.
 - **Generated text uses Jinja templates**, wherever it is produced: reports, tables, Markdown, progress lines, generated C. Each package keeps its templates in its own `templates/` directory (`judge/templates/`, `survey/templates/`). Python passes values in; it does not assemble multi-line or column-aligned text with string formatting, and it does not build a report out of consecutive `print` or `log` calls.
 - **Every module, class and function has a docstring**, including private and nested ones. Say what it does and anything a reader could not guess from the signature.

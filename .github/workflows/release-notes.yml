@@ -15,7 +15,9 @@ permissions:
 jobs:
   note:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'no release note') }}
-    runs-on: macos-15 # Apple Silicon, where `uv run` builds the workspace
+    # The package builds on Linux without its extension, which is all the check
+    # needs, and Linux runners are plentiful where Apple Silicon ones queue.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
