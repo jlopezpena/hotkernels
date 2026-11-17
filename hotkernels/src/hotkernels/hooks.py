@@ -220,6 +220,18 @@ def _searchsorted() -> bool:
     return bool(np.array_equal(np.searchsorted(table, needles), expected))
 
 
+def _searchsorted_right() -> bool:
+    """Probe the method hook: `np.searchsorted` with `side='right'` for needles that are elements.
+
+    Every needle equals one element, so the left side's answer is one less at
+    each of them: a call that reached the wrong kernel fails.
+    """
+    table = np.arange(PROBE_TABLE_N, dtype=np.float64)
+    needles = (np.arange(PROBE_N) % PROBE_TABLE_N).astype(np.float64)
+    expected = (np.arange(PROBE_N) % PROBE_TABLE_N) + 1
+    return bool(np.array_equal(np.searchsorted(table, needles, side="right"), expected))
+
+
 def _interp() -> bool:
     """Probe the function hook: `np.interp` through points on the line y = 2x.
 
@@ -263,7 +275,10 @@ HOOKS: tuple[Hook, ...] = (
         Probe("cumsum_f32", partial(_cumsum, np.float32), inexact=True),
         Probe("cumsum_f64", partial(_cumsum, np.float64), inexact=True),
     )),
-    Hook("method.searchsorted", METHOD, (Probe("searchsorted_f64", _searchsorted),)),
+    Hook("method.searchsorted", METHOD, (
+        Probe("searchsorted_f64", _searchsorted),
+        Probe("searchsorted_right_f64", _searchsorted_right),
+    )),
     Hook("index.get", INDEXING, (
         Probe("compress_f32", partial(_compress, np.float32)),
         Probe("compress_f64", partial(_compress, np.float64)),
@@ -295,5 +310,6 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("bincount_u8", "np.bincount", "uint8", "bincount", ("function.bincount",)),
     KernelInfo("isin_i64", "np.isin", "int64", "isin", ("function.isin",)),
     KernelInfo("searchsorted_f64", "np.searchsorted", "float64", "searchsorted", ("method.searchsorted",)),
+    KernelInfo("searchsorted_right_f64", "np.searchsorted(side='right')", "float64", "searchsorted", ("method.searchsorted",)),
     KernelInfo("interp_f64", "np.interp", "float64", "interp", ("function.interp",)),
 )
