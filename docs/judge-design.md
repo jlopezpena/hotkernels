@@ -112,6 +112,7 @@ The first real kernels needed more than the two fixtures do. Each addition below
 | `Out("counts", "i64", capacity="nbins")` | An output whose size is the value of an integer scalar, so it changes with the scalar set | `histogram` |
 | `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs | `searchsorted` and `interp` (sorted data) |
 | `In("test", "i64", len=8, classes={"padded_3": fn})` | Value classes of one argument alone, tried next to the ones every argument of its type gets, for inputs a caller sends that the general classes do not produce. Each function takes the argument's default random array and returns the array to use. They are checked like any plain class, pairings included, and are not timed | `isin_i64` (test values padded by repeating the first, as the binding pads them) |
+| `In("v", "f64", len="needles", draws_from="a")` | One more value class, `from_a`, whose elements are elements of `a` as the kernel receives it. Tried with `a` random and with `a` holding repeated values at every size and in every scalar set. See [Values drawn from another argument](#values-drawn-from-another-argument) | `searchsorted` (needles equal to elements, at every path), `interp` (queries on sample points) |
 | `InOut("x", "f64")` | A buffer the kernel modifies in place. It starts as an input and is compared in full with the oracle's result | masked assignment |
 | `Kernel(numpy=fn)` | What is timed as NumPy when that is not the oracle. An in-place oracle has to copy its input; the statement a user writes does not | masked assignment |
 | `mode={"tolerance_ulp": 4, "scale": fn}` | A tolerance measured at a magnitude the spec computes from the inputs, instead of at the size of the result. See [Comparison](#comparison) | float `cumsum` |
@@ -143,6 +144,37 @@ scalar_sets=[ScalarSet("none", {"needles": 0}), ScalarSet("k17", {"needles": 17}
 This was chosen over a second `Size` because it adds nothing to the case description, the timing loop or the reports; [two-sizes-design.md](two-sizes-design.md#why-not-a-second-size) has the comparison. What it costs is the first limit above: the second length is verified for the values the spec lists.
 
 Prepared inputs are kept between cases of one size. `prepare=np.sort` used to run for every case, although most cases of a size differ in one argument and share the other's array. The fixed cases therefore come size by size, every scalar set of one size before the next size.
+
+### Values drawn from another argument
+
+A search answers differently on its two sides only for a needle that equals an element of the array. `np.searchsorted(a, v)` and `np.searchsorted(a, v, side='right')` differ there and nowhere else, and `np.interp` picks between the values of repeated sample points there. Value classes are drawn one argument at a time, so random needles against a random array never equal an element. Ties came only from the pairings of plain classes (`ties` with `ties`, `equal` with `equal`), which run in the default scalar set and up to 4,096 elements, and from fresh cases, which stop at 5,000. Both search kernels take a path of their own from 1,048,576 elements, and only with 128 needles or more, which the default set does not have. A mutation run showed a wrong comparison there passes the judge ([issue 48](https://github.com/sofeikov/kernel-arena/issues/48)).
+
+A spec says that one argument's values may be drawn from another's:
+
+```python
+args=[In("a", "f64", prepare=np.sort), In("v", "f64", len="needles", draws_from="a"), ...]
+```
+
+- **It gives the argument one more value class, `from_<source>`** (here `v=from_a`). Each of its elements is an element of the source as the kernel receives it, after the source's own value class and its `prepare`, at an index drawn at random with replacement. A case description stays reproducible: it names the source's class and the drawn one, and the seed gives the indices.
+- **The source is built first**, whatever the order of the arguments: `interp_f64` takes its queries `x` before its sample points `xp`. A source has the same element type as the argument drawn from it, and does not itself draw from another argument. A source with no elements leaves the drawn argument its random data.
+- **It is tried wherever the argument's other classes are**: with the source random in the single-argument sweep, against every plain class of the source in the pairings, and in fresh cases.
+- **And at every size, in every scalar set, against the source's class of repeated values**: `ties` for floats, `small` for integers. A needle equal to an element with no equal neighbour shows a search's comparison only at the probe that lands on that element. An element in a run of equal ones shows it wherever the run is cut, which is what the first step of a search needs: it compares with one fixed element, `a[p - 1]`, and goes wrong only when elements equal to the needle lie on both sides of it. Above 65,536 elements, where the sweep keeps one class per argument, the drawn class is tried against the random source as well. One memory arrangement per case, rotating, as in the thinner sweep.
+- **Prepared arrays are kept for every class of a size**, not only the last one, so that a sorted source is not sorted again for each scalar set.
+
+Where it is used:
+
+| Kernel | Drawn | From |
+|---|---|---|
+| `searchsorted_f64`, `searchsorted_right_f64` | `v` (needles) | `a` (the sorted array) |
+| `interp_f64` | `x` (queries) | `xp` (the sample points) |
+
+What it costs, estimated for a search kernel with its twelve scalar sets: about 3,700 cases more than its 141,872, of which some 330 are above 65,536 elements. The large ones are most of the time; each needs a sorted array of up to four million `ties`, once per size. The building will measure it.
+
+Why this and not the issue's other option, the pairings of plain classes extended to one large size per path boundary: the pairings run in the default scalar set, and the long-array path is not reached there; extending them to every set multiplies eleven classes of each argument at sizes where an array takes tens of milliseconds to build. And no pairing of plain classes gives a needle equal to an element of random data.
+
+Why a keyword and not a function in `classes`: those functions take the argument's own random array. Drawing needs another argument's finished array and a random generator, and the judge has to know the dependency to build the arguments in order and to pick the source's class. One recipe covers the three kernels; a function form can follow when a kernel needs another.
+
+What it does not give: a needle equal to `a[p - 1]` when the array has no repeated values comes up only by chance, at about one needle in `n`. The first step of a search is checked on ties through the `ties` source, not through random data.
 
 ### Scalar sets
 
@@ -217,7 +249,7 @@ Every case is generated from a fixed seed, so a failure can always be reproduced
   - floating point: NaN, both infinities, both signed zeros, denormals
   - integers: the minimum and maximum values
 - **Positions.** For sizes up to 65, the interesting element (the maximum, a NaN, a single negative zero, the only `True` in a mask) is placed at every possible index in turn. This catches a kernel that is right except in one lane of one vector. At larger sizes it is placed at the start, the middle and the end, which is what reaches code that only runs once a kernel is well into an array: `clip` with a zero lower bound redoes a chunk when it meets a negative zero among ordinary values, and nothing but a single one far into the array gets it there.
-- **Ties.** Duplicates of the winning value at several positions, since NumPy defines which one wins.
+- **Ties.** Duplicates of the winning value at several positions, since NumPy defines which one wins. For a search, needles equal to elements of the array, drawn from it at every size (see [Values drawn from another argument](#values-drawn-from-another-argument)).
 - **Alignment.** Each case runs with the buffers at several different offsets from an aligned address.
 - **Fresh random cases.** After the fixed cases, a batch generated from a new seed on every run. The seed is printed. This stops a kernel from passing by fitting the fixed cases.
 
@@ -460,6 +492,8 @@ A third fixture, `compress_scratch_f32`, covers [scratch output](#scratch-output
 A fourth, `tally_u8`, covers [scalar sets](#scalar-sets). It counts elements by their remainder modulo a scalar bucket count, which also sizes its output. Both of its broken variants are correct for the default bucket count and wrong for another, so they are caught only if the other sets are really run and the output is really sized by the scalar of the case.
 
 A fifth, `rank_u8`, covers [a second length](#a-second-length). For each of a scalar number of needles it counts the elements of an array smaller than the needle. One broken variant reads a byte past the needles, which is caught only if that buffer is placed against the guard page by the scalar's value and not by `n`. The other handles the default number of needles whatever the scalar says.
+
+`rank_u8` also draws its needles from its array, and a selftest step confirms what [Values drawn from another argument](#values-drawn-from-another-argument) promises without running a kernel: at every size the fixture is checked at, in every scalar set, there is a case whose needles are all elements of the array as the kernel receives it, and the array holds repeated values.
 
 | Broken variant | Must be caught by |
 |---|---|
