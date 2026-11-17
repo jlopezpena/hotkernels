@@ -9,7 +9,7 @@
 
 title = "hotkernels"
 tagline = "Faster kernels for NumPy, installed with one line."
-repo = "https://github.com/sofeikov/kernel-arena"
+repo = "https://github.com/sofeikov/hotkernels"
 
 [[page]]
 path = ""

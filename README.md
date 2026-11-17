@@ -94,7 +94,7 @@ At 16 elements most of the gain is NumPy's own call path being skipped, not the 
 - **The package** (`hotkernels/`): what a user installs. A C extension points NumPy at the kernels, and `install()`, `uninstall()`, `enabled()` and `report()` control it. Twenty of the 22 kernels are installed.
 - **The delivery tool** (`delivery/`): tests and times the package from Python. Recorded timings are in `delivery/results/`.
 - **An example** (`examples/workload.py`): a NumPy program written without hotkernels in mind, used to show the effect of the one line.
-- **The documentation site** (`docsite/`): the pages published at [sofeikov.github.io/kernel-arena](https://sofeikov.github.io/kernel-arena/), with a technical report on how all of this works. Its figures are read from the files above when it is built.
+- **The documentation site** (`docsite/`): the pages published at [sofeikov.github.io/hotkernels](https://sofeikov.github.io/hotkernels/), with a technical report on how all of this works. Its figures are read from the files above when it is built.
 
 Supported platform: macOS on Apple Silicon (ARM64).
 
@@ -160,7 +160,7 @@ Pages are Markdown under `docsite/pages/` and are listed in `docsite/site.toml`.
 
 ## Documentation
 
-- [sofeikov.github.io/kernel-arena](https://sofeikov.github.io/kernel-arena/): getting started, and the technical report with interactive figures
+- [sofeikov.github.io/hotkernels](https://sofeikov.github.io/hotkernels/): getting started, and the technical report with interactive figures
 - [docs/core-design.md](docs/core-design.md): what the project is building and why
 - [docs/judge-design.md](docs/judge-design.md): how kernels are checked and timed
 - [docs/survey-design.md](docs/survey-design.md): where NumPy is slow, and which kernels to build in what order

@@ -18,13 +18,13 @@ On any other machine the package still installs and `install()` does nothing, so
 With `pip`:
 
 ```bash
-pip install "git+https://github.com/sofeikov/kernel-arena#subdirectory=hotkernels"
+pip install "git+https://github.com/sofeikov/hotkernels#subdirectory=hotkernels"
 ```
 
 With `uv`:
 
 ```bash
-uv pip install "hotkernels @ git+https://github.com/sofeikov/kernel-arena#subdirectory=hotkernels"
+uv pip install "hotkernels @ git+https://github.com/sofeikov/hotkernels#subdirectory=hotkernels"
 ```
 
 To work on the kernels themselves, clone the repository and run `uv sync`; the judge and the other development tools come with it.
