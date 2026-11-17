@@ -191,7 +191,7 @@ Every case is generated from a fixed seed, so a failure can always be reproduced
   - sorted ascending and descending
   - floating point: NaN, both infinities, both signed zeros, denormals
   - integers: the minimum and maximum values
-- **Positions.** For sizes up to 65, the interesting element (the maximum, a NaN, the only `True` in a mask) is placed at every possible index in turn. This catches a kernel that is right except in one lane of one vector.
+- **Positions.** For sizes up to 65, the interesting element (the maximum, a NaN, a single negative zero, the only `True` in a mask) is placed at every possible index in turn. This catches a kernel that is right except in one lane of one vector. At larger sizes it is placed at the start, the middle and the end, which is what reaches code that only runs once a kernel is well into an array: `clip` with a zero lower bound redoes a chunk when it meets a negative zero among ordinary values, and nothing but a single one far into the array gets it there.
 - **Ties.** Duplicates of the winning value at several positions, since NumPy defines which one wins.
 - **Alignment.** Each case runs with the buffers at several different offsets from an aligned address.
 - **Fresh random cases.** After the fixed cases, a batch generated from a new seed on every run. The seed is printed. This stops a kernel from passing by fitting the fixed cases.

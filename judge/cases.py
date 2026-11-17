@@ -227,6 +227,17 @@ def _f_two_max_at(r):
     return a
 
 
+@_value_class("f", "neg_zero_at", positional=True)
+def _f_neg_zero_at(r):
+    """Random values with a single negative zero at index p.
+
+    The `zeros` class is nothing but zeros, so a kernel that treats an array
+    with zeros in it as a special case never meets one zero among ordinary
+    values there. This class is that case.
+    """
+    return _with_value_at(r, -0.0)
+
+
 # --- Boolean value classes --------------------------------------------------
 
 @_value_class("b", RANDOM)
