@@ -164,6 +164,33 @@ Not tried, and why:
   check has no guard pages, so it says nothing about out-of-bounds reads at
   those sizes.
 
+## Queries on sample points: the judge's drawn class
+
+The search in stage 1 is `searchsorted_f64`'s turned to the right side, and
+the judge had the same gap for it: random queries never land on a sample
+point. [Issue 48](https://github.com/sofeikov/kernel-arena/issues/48) gave the
+judge a value class drawn from another argument; the spec now declares
+`In("x", ..., draws_from="xp")`, so queries are drawn from the sample points,
+with `xp` holding repeated values (`ties`), at every size up to 65,537 and in
+every scalar set. The comparisons were mutated one part at a time on a copy of
+the kernel (`fcmge` to `fcmgt`) and checked with `uv run judge check
+interp_f64 --unlocked`, with the spec on `main` (five runs each, since only
+the fresh cases differed) and with the new one. The kernel was restored after
+each.
+
+| Changed | Spec on `main` | With queries drawn from `xp` |
+|---|---|---|
+| First step of the 64-query search (`Lg64`, 32 instructions) | Passes | Passes |
+| Later steps of it (`Lg64_pass`, 32) | Passes every fixed case; a fresh case caught it in 5 of 5 runs | **Fails**: `n=64 arr=mid3 seed=1 x=from_xp xp=ties fp=random` |
+| The sixteen-query count (`Lg16_element`, 8) | Passes every fixed case; a fresh case caught it in 4 of 5 runs | **Fails**: `n=16 arr=start seed=1 x=from_xp xp=ties fp=random` |
+
+The first step cannot be caught, because it cannot change a result. For a
+query equal to `a[p - 1]` the mutation takes the lower window, and the search
+ends at `p`, inside the run of sample points equal to the query. Stage 2 then
+divides by a zero width, the result is NaN, and the four queries are
+recomputed by `Lslow`, which is `naive.c` line by line. The unmutated kernel
+passes 157,062 cases.
+
 ## Ten-run means, locked
 
 `uv run judge run interp_f64`, locked, ten times, one run at a time, on a machine that was

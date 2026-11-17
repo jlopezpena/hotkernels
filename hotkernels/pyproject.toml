@@ -15,7 +15,9 @@ classifiers = [
 requires-python = ">=3.11"
 dependencies = [
     "jinja2>=3.1.6",
-    "numpy>=2.0",
+    # The oldest NumPy the hooks reproduce; see OLDEST_NUMPY in environment.py.
+    # CI runs `delivery check` on exactly this release and on the newest.
+    "numpy>=2.3",
 ]
 
 [project.urls]
@@ -24,7 +26,7 @@ Repository = "https://github.com/sofeikov/hotkernels"
 "Release notes" = "https://github.com/sofeikov/hotkernels/releases"
 
 [build-system]
-requires = ["meson-python>=0.17", "numpy>=2.0", "jinja2>=3.1.6", "typer>=0.29.1"]
+requires = ["meson-python>=0.17", "numpy>=2.3", "jinja2>=3.1.6", "typer>=0.29.1"]
 build-backend = "mesonpy"
 
 # The extension is compiled from the kernels in ../kernels, so a change there

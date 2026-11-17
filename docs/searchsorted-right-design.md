@@ -59,7 +59,7 @@ Not done, and owed: the judge runs were made with `--unlocked`, because the kern
 
 | Left for later | Issue |
 |---|---|
-| A value class in the judge that draws needles from the array | [48](https://github.com/sofeikov/kernel-arena/issues/48) |
+| A value class in the judge that draws needles from the array. Done: [Values drawn from another argument](judge-design.md#values-drawn-from-another-argument), and the judge now catches both long-array mutations | [48](https://github.com/sofeikov/kernel-arena/issues/48) |
 | A locked re-run on a quiet machine, a recorded `delivery time`, and the README's table and chart | [38](https://github.com/sofeikov/kernel-arena/issues/38) |
 | A path for fewer than 64 needles against a long array, on both sides | [39](https://github.com/sofeikov/kernel-arena/issues/39) |
 
@@ -150,7 +150,7 @@ This proposal does not change the judge. It covers the gap twice:
 - `delivery check` already has needles drawn from the array itself (`_hits` in `delivery/cases.py`) against arrays of 1,048,576 and 1,048,579 elements. Those cases are added for the right side, and they run in CI.
 - Before the kernel is proposed it is mutated: in each path in turn, one comparison is put back to the left side's, and the judge or `delivery check` must fail. The pull request reports which caught each.
 
-Closing it in the judge (a value class that draws one argument from another) is [issue 48](https://github.com/sofeikov/kernel-arena/issues/48).
+Closing it in the judge (a value class that draws one argument from another) is [issue 48](https://github.com/sofeikov/kernel-arena/issues/48). That is now done: the judge draws needles from the array at every size and in every scalar set ([judge-design.md](judge-design.md#values-drawn-from-another-argument)), and both long-array mutations fail `judge check`.
 
 ## The assembly
 

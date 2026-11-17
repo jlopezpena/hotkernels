@@ -15,7 +15,7 @@ hotkernels.install()
 pip install hotkernels
 ```
 
-Wheels are for macOS on Apple Silicon, CPython 3.11 to 3.14, with NumPy 2. Another Python on an Apple Silicon Mac builds from source, which needs the Xcode command line tools. On any other machine the package installs without a compiler and `install()` does nothing, so code that calls it stays portable.
+Wheels are for macOS on Apple Silicon, CPython 3.11 to 3.14, with NumPy 2.3 or a later NumPy 2. Another Python on an Apple Silicon Mac builds from source, which needs the Xcode command line tools. On any other machine the package installs without a compiler and `install()` does nothing, so code that calls it stays portable.
 
 ## What gets faster
 

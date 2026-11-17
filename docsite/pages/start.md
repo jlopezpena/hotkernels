@@ -6,7 +6,7 @@ There is very little to do. Install the package, call `install()` once, and NumP
 |---|---|
 | Machine | A Mac with Apple Silicon (ARM64) |
 | Python | 3.11 or later, the standard build with the interpreter lock |
-| NumPy | 2.0 or later |
+| NumPy | 2.3 or a later NumPy 2 |
 
 Wheels are published for CPython 3.11 to 3.14. With another Python the package is built from source when it is installed, which takes a few seconds and needs the Xcode command line tools (`xcode-select --install`).
 
@@ -128,6 +128,7 @@ How much faster each one is, from Python and at three sizes, is in [the results]
 - **`np.digitize` is served when its bins increase.** It calls `np.searchsorted`, on either side. With decreasing bins it searches them reversed, as a view no kernel takes, and runs at NumPy's speed.
 - **`np.interp` with a few queries against a long table stays with NumPy.** A NaN among the sample points is something the kernel cannot handle, so `xp` is read once before every call. With more than 64 sample points per query that pass would cost more than the kernel saves.
 - **Free-threaded Python is not supported.** `install()` does nothing there, and `report()` says so.
+- **NumPy 2.0 to 2.2 are not supported.** They answer a few calls differently from later releases (`np.clip` drops the sign of a zero on 2.0, and `np.count_nonzero(x)` gives a Python `int` before 2.3), and the kernels give the later answer. Installing hotkernels brings NumPy 2.3 or later; with an older NumPy in place `install()` does nothing, and `report()` says so.
 - **Subclasses mostly stay with NumPy.** `x[mask]`, the methods and the hooked functions take a kernel only for a plain `ndarray`; masked arrays, memory maps and your own subclasses go to NumPy there. `clip` and `argmax` are also hooked beneath NumPy's own handling of array types, so for a subclass they serve whatever plain buffer NumPy hands them, and NumPy wraps the result as it always did.
 
 ## Checking it yourself
