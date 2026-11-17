@@ -50,6 +50,10 @@ _BUSY_LOAD = 2.0
 _LOCK_DIR = Path(tempfile.gettempdir()) / "hotkernels-judge-cores"
 # Only Linux can pin a thread to a CPU.
 _CAN_PIN = hasattr(os, "sched_setaffinity")
+# A judge that starts further processes to time in passes its own CPU on in
+# this environment variable. The child pins to it and does not claim one: the
+# parent holds the lock and waits while the child runs.
+INHERITED_CPU = "HOTKERNELS_JUDGE_CPU"
 
 
 @dataclass
@@ -59,8 +63,11 @@ class Claim:
     # The CPU's number, as Linux counts them.
     cpu: int
     # The open lock file that marks the CPU as taken. None when every candidate
-    # was already taken by another judge and this CPU is shared with one.
+    # was already taken by another judge and this CPU is shared with one, and
+    # in a process that inherited its CPU.
     lock: IO | None
+    # True in a process that was given its parent's CPU and holds no lock.
+    inherited: bool = False
 
 
 def _read(path: Path | str) -> str | None:
@@ -158,10 +165,16 @@ def claim() -> Claim | None:
     lowest-numbered CPUs take most of the machine's interrupts.
 
     Returns:
-        The claim, or None where threads cannot be pinned (macOS).
+        The claim, or None where threads cannot be pinned (macOS). In a
+        process started by another judge to time in, the parent's CPU,
+        without a lock.
     """
     if not _CAN_PIN:
         return None
+    inherited = os.environ.get(INHERITED_CPU)
+    if inherited:
+        os.sched_setaffinity(0, {int(inherited)})
+        return Claim(int(inherited), None, inherited=True)
     candidates = _one_thread_per_core(_performance_cpus())[::-1]
     for cpu in candidates:
         lock = _lock(cpu)
@@ -186,7 +199,7 @@ def throttle_warnings(core: Claim | None) -> list[str]:
     if core is None:
         return []
     found = []
-    if core.lock is None:
+    if core.lock is None and not core.inherited:
         found.append("every performance core was already claimed by another judge run, "
                      "so this one shared a core.")
     if any(_read(path) == off for path, off in _TURBO_OFF.items()):

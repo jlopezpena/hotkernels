@@ -18,6 +18,7 @@ import numpy as np
 import typer
 
 from . import bench as B
+from . import rounds as R
 from . import selftest as S
 from .build import ARCH, BUILD, CC, ROOT, BuildError, build_asm
 from .check import KERNEL, NAIVE, Built, CheckResult, build_all, check, format_result
@@ -73,7 +74,7 @@ UnlockedOpt = typer.Option(
     help="Allow modified reference files. For people creating a kernel or changing the "
          "judge; never for agent runs.",
 )
-QuickOpt = typer.Option(False, "--quick", help="Two sizes and few samples, as a smoke test.")
+QuickOpt = typer.Option(False, "--quick", help="Two sizes and a third of the samples, as a smoke test.")
 
 
 @app.callback()
@@ -239,7 +240,7 @@ def log_bench(report: dict) -> None:
     """Log the timing table for a kernel against naive C and NumPy."""
     env = report["environment"]
     title = (f"{report['kernel']} ({env['arch']}, {env['machine']}), NumPy {env['numpy']}, "
-             f"{report['samples']} samples per point")
+             f"up to {report['samples']} samples per point")
     log.info(render("timing.txt.j2", title=title, warnings=report["warnings"], report=report,
                     kernel=report["subject"], baselines=report["baselines"], labels=_BENCH_LABELS,
                     notes=[f"* {NUMPY_NOTE}"], verdict=None).rstrip())
@@ -367,8 +368,11 @@ def compare(
 ) -> None:
     """Is the working copy of a kernel faster than an earlier version of it?
 
-    Both versions are timed interleaved in one process, which detects much
-    smaller differences than comparing against numbers recorded earlier.
+    Both versions are timed interleaved, which detects much smaller
+    differences than comparing against numbers recorded earlier. The timing
+    is taken in several rounds, each in a process of its own, because where a
+    build happens to be loaded changes its speed a little and a difference
+    has to be larger than that to count: see COMPARE_ROUNDS in judge/bench.py.
     """
     kernel_dir, is_fixture = resolve(kernel)
     guard(kernel, is_fixture, unlocked)
@@ -380,17 +384,22 @@ def compare(
     old_dylib = _build_old_version(built, against)
 
     harness = B.Harness(k, built.harness)
-    new_fn, _new_lib = B.function_address(built.kernel, k.name)
-    old_fn, _old_lib = B.function_address(old_dylib, k.name)
     sizes, samples = _sweep(quick)
+    per_round = max(1, samples // B.COMPARE_ROUNDS)
     canary_before = harness.canary()
-    data = B.measure(k, harness, {NEW: new_fn, OLD: old_fn}, sizes, samples, _log_progress)
+    try:
+        measured = R.measure(k, kernel_dir, built.harness, {NEW: built.kernel, OLD: old_dylib},
+                             sizes, per_round, B.COMPARE_ROUNDS, harness.core)
+    except RuntimeError as e:
+        log.error("\ncannot compare: %s", e)
+        raise typer.Exit(EXIT_FAILED)
     canary_after = harness.canary()
 
-    report = B.analyse(data, NEW, [OLD])
+    report = B.analyse_rounds(measured, NEW, [OLD])
     log.info("\n" + render(
         "timing.txt.j2",
-        title=f"{k.name} ({ARCH}): working copy vs {against}",
+        title=(f"{k.name} ({ARCH}): working copy vs {against}, "
+               f"{B.COMPARE_ROUNDS} rounds of up to {per_round} samples per point"),
         warnings=B.noise_warnings(canary_before, canary_after, harness.core),
         report=report, kernel=NEW, baselines=[OLD], labels=_COMPARE_LABELS, notes=[],
         verdict=_compare_verdict(report["overall"][f"vs_{OLD}"]),
