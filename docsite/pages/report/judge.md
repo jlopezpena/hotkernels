@@ -151,6 +151,7 @@ The judge's method is built around that problem.
 - **Interleaved.** The samples alternate between the contenders, so sample *i* of each was taken at nearly the same moment. Slow drift in the machine (temperature, another process waking up) then hits both.
 - **A pool of inputs at small sizes.** The loop cycles through different inputs, so a branch predictor cannot memorise one and make branchy code look better than it is.
 - **Performance cores.** The timing thread asks macOS for its highest scheduling class.
+- **Placed outputs.** The judge decides where an output buffer sits relative to the inputs, and does not leave it to the allocator. On x86-64 an output a few bytes behind its input, counted within a memory page, stalls the loop, so every timing keeps them clear, and a second table times the bad case on purpose.
 
 The speedup at one size is the ratio of the two median times. Its uncertainty comes from a **paired bootstrap**: draw 30 sample indices with replacement, take the medians of *both* contenders at those same indices, form the ratio; repeat 2,000 times; the 2.5th and 97.5th percentiles of those ratios are the 95% interval. Resampling in pairs is what makes interleaving pay off: noise the two contenders shared cancels in each ratio instead of inflating the interval. A speedup is **significant** when its interval excludes 1.0.
 

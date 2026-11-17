@@ -14,9 +14,11 @@ from typing import Iterator
 import numpy as np
 
 from . import bench as B
+from . import placement as P
 from .build import ARCH, ARM64, X86_64
 from .check import KERNEL, LINT, NAIVE, CheckResult, build_all, check
 from .render import render
+from .spec import Out
 from .worker import CALLING_CONVENTION, MEMORY_SAFETY, WRONG_RESULT
 
 log = logging.getLogger(__name__)
@@ -73,6 +75,11 @@ SLOW_KERNEL, SLOW_VARIANT = "argmax_f32", "slow"
 # The slow variant is timed on a reduced sweep; the gap is large enough.
 _SLOW_SIZES = [1024, 65536]
 _SLOW_SAMPLES = 15
+
+# The fixture whose timing buffers are inspected: it has two inputs and an
+# output, and the sizes cover a pool of many small inputs and single large ones.
+PLACEMENT_KERNEL = "compress_f32"
+_PLACEMENT_SIZES = [16, 1024, 65536, 1048576]
 
 # The stability check repeats the full timing sweep this many times ...
 STABILITY_RUNS = 10
@@ -152,6 +159,49 @@ def _slow_outcomes(speed: bool) -> Iterator[Outcome]:
                   f"[{overall['lo']:.2f} – {overall['hi']:.2f}]")
 
 
+def _misplaced(placement: str) -> list[str]:
+    """Find timing outputs that are not where the judge says it puts them.
+
+    Args:
+        placement: P.APART or P.CLOSE.
+
+    Returns:
+        One description per output buffer of the placement fixture that is
+        out of place: for P.APART, not clear of an input of its own call; for
+        P.CLOSE, not P.CLOSE_BYTES after the input it is placed against.
+        Empty when every buffer is in place.
+    """
+    built, _failure, k = build_all(FIXTURES / PLACEMENT_KERNEL)
+    harness = B.Harness(k, built.harness)
+    naive, _naive_lib = B.function_address(built.naive, k.name)
+    found = []
+    for n in _PLACEMENT_SIZES:
+        pool, outs = B._timing_setup(k, harness, {NAIVE: naive}, B.DEFAULT_DISTRIBUTION, n,
+                                     placement=placement).buffers
+        for entry, made in zip(pool, outs):
+            inputs = [entry[a.name] for a in k.ins]
+            starts = [array.ctypes.data for array in inputs]
+            for a in (a for a in k.outs if isinstance(a, Out)):
+                address = made[a.name].ctypes.data
+                if placement == P.APART:
+                    in_place = P.clear_of(address, starts)
+                else:
+                    anchor = P.anchor_of(made[a.name].size, inputs)
+                    in_place = P.gaps(address, [anchor]) == [P.CLOSE_BYTES]
+                if not in_place:
+                    found.append(f"{a.name} at n={n:,}: {P.gaps(address, starts)} bytes after its inputs")
+    return found
+
+
+def _placement_outcomes() -> Iterator[Outcome]:
+    """Check that timing outputs sit where the judge says, in both placements."""
+    wanted = {P.APART: "every output is clear of its inputs",
+              P.CLOSE: f"every output is {P.CLOSE_BYTES} bytes behind its input"}
+    for placement, description in wanted.items():
+        found = _misplaced(placement)
+        yield Outcome(f"timing buffers ({placement})", not found, found[0] if found else description)
+
+
 def _expected() -> dict[str, dict[str, str]]:
     """Return every broken variant this architecture has.
 
@@ -169,6 +219,7 @@ def _outcomes(speed: bool) -> Iterator[Outcome]:
         yield _correct_outcome(name)
         for variant, expected in variants.items():
             yield _broken_outcome(name, variant, expected)
+    yield from _placement_outcomes()
     yield from _slow_outcomes(speed)
 
 
