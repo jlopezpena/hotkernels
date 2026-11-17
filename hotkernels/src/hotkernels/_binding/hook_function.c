@@ -23,7 +23,7 @@
 // The functions that are hooked, as indices into `functions`.
 enum {
     F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN, F_INTERP,
-    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE,
+    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP,
     F_COUNT
 };
 
@@ -33,6 +33,9 @@ typedef struct {
     const char *attribute;
     // The binding's call function.
     vectorcallfunc wrapper;
+    // Reads what the wrapper needs to know about this NumPy's function when
+    // the hook is applied, or NULL. Takes the function object; raises nothing.
+    void (*prepare)(PyObject *object);
     // The function object, kept alive while the hook is applied.
     PyObject *object;
     // NumPy's own call function, kept while the hook is applied.
@@ -644,22 +647,182 @@ static PyObject *call_where(HK_VECTORCALL_PARAMETERS) {
     return functions[F_WHERE].original(callable, args, nargsf, kwnames);
 }
 
+// -------------------------------------------------------------------- clip
+//
+// `np.clip(x, lo, hi)` runs a Python wrapper, then `x.clip`, then NumPy's
+// `_methods._clip`, then the `clip` ufunc, whose inner loop the loop hook
+// serves. On a small array that path is nearly the whole call. The function
+// and method hooks call the kernel directly when the call needs nothing the
+// ufunc machinery does: no output buffer, no `dtype`, `casting` or `where`,
+// and bounds that leave the result in the array's element type.
+//
+// Which element type NumPy gives the result follows NEP 50. A Python float
+// or int is a weak scalar and takes the array's type: a float32 array clipped
+// to Python floats stays float32. A NumPy scalar is not: clipped to
+// np.float64 bounds, a float32 array gives float64. So a bound is accepted
+// when it is a Python float, a Python int, or a NumPy scalar of exactly the
+// array's type, and anything else goes to NumPy.
+
+// The smallest normal float32 and the largest finite one, as doubles. NumPy
+// converts a Python float bound for a float32 array with a C cast, which
+// raises the overflow flag beyond the largest (NumPy warns) and the underflow
+// flag below the smallest normal. Such a bound is left to NumPy, and the
+// conversion here never raises a flag NumPy reports.
+#define CLIP_F32_SMALLEST_NORMAL ((double)FLT_MIN)
+#define CLIP_F32_LARGEST ((double)FLT_MAX)
+
+// True when np.clip accepts the keywords `min` and `max`, which NumPy 2.1
+// added. In NumPy 2.0 they are passed on to the ufunc, which rejects them.
+// Set when the hook is applied.
+static bool clip_takes_min_max;
+
+// Convert a bound for a float64 array: a Python float, a Python int a double
+// holds exactly, or an np.float64. Returns false for anything else.
+static bool clip_bound_f64(PyObject *bound, double *value) {
+    if (Py_IS_TYPE(bound, &PyDoubleArrType_Type)) {
+        *value = PyArrayScalar_VAL(bound, Double);
+        return true;
+    }
+    return hk_as_exact_double(bound, value);
+}
+
+// Convert a bound for a float32 array as NumPy does: an np.float32 as it is,
+// a Python float rounded to the nearest float32, a Python int only when a
+// float32 holds it exactly. Returns false for anything else, and for a
+// Python float that is a NaN (a NaN bound is NumPy's either way) or whose
+// conversion would overflow or underflow. The conversion can raise only the
+// inexact flag, which NumPy never reports.
+static bool clip_bound_f32(PyObject *bound, float *value) {
+    if (Py_IS_TYPE(bound, &PyFloatArrType_Type)) {
+        *value = PyArrayScalar_VAL(bound, Float);
+        return true;
+    }
+    double d;
+    if (PyFloat_CheckExact(bound)) {
+        d = PyFloat_AS_DOUBLE(bound);
+        // The comparison macros, unlike the operators, raise no flag for a NaN.
+        const double magnitude = fabs(d);
+        const bool in_range = magnitude == 0.0 || isinf(d) ||
+                              (isgreaterequal(magnitude, CLIP_F32_SMALLEST_NORMAL) &&
+                               islessequal(magnitude, CLIP_F32_LARGEST));
+        if (!in_range) return false;
+        *value = (float)d;
+        return true;
+    }
+    if (!PyLong_CheckExact(bound) || !hk_as_exact_double(bound, &d)) return false;
+    *value = (float)d;
+    return (double)*value == d;
+}
+
+// Run a clip kernel on the whole of `x` into a new array of its shape. The
+// kernels leave the invalid-operation flag set on NaN data; NumPy's own loop
+// ends by clearing the flags, and so does this, as the loop hook does.
+static PyObject *run_clip(PyArrayObject *x, hk_kernel kernel, double lo, double hi) {
+    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), PyArray_TYPE(x));
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    const npy_intp n = PyArray_SIZE(x);
+    void *out = PyArray_DATA((PyArrayObject *)result);
+    {
+        HK_BEGIN_NOGIL(n)
+        if (kernel == HK_CLIP_F32) clip_f32(PyArray_DATA(x), out, (size_t)n, (float)lo, (float)hi);
+        else clip_f64(PyArray_DATA(x), out, (size_t)n, lo, hi);
+        feclearexcept(FE_ALL_EXCEPT);
+        HK_END_NOGIL
+    }
+    hk_take(kernel);
+    return result;
+}
+
+// The bounds are compared with islessequal, which raises no flag for a NaN:
+// a NaN bound fails the comparison, as does lo > hi, and both are NumPy's.
+// The float32 bounds are compared after their conversion, as the loop sees
+// them.
+HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi) {
+    if (!hk_is_plain_array(array)) return NULL;
+    PyArrayObject *x = (PyArrayObject *)array;
+    // NumPy returns an empty array without calling the loop; the kernels are
+    // never called with n = 0.
+    if (PyArray_SIZE(x) < 1) return NULL;
+    if (hk_is_flat(array, NPY_FLOAT)) {
+        float lo32, hi32;
+        if (!clip_bound_f32(lo, &lo32) || !clip_bound_f32(hi, &hi32) || !islessequal(lo32, hi32)) return NULL;
+        return run_clip(x, HK_CLIP_F32, lo32, hi32);
+    }
+    if (hk_is_flat(array, NPY_DOUBLE)) {
+        double lo64, hi64;
+        if (!clip_bound_f64(lo, &lo64) || !clip_bound_f64(hi, &hi64) || !islessequal(lo64, hi64)) return NULL;
+        return run_clip(x, HK_CLIP_F64, lo64, hi64);
+    }
+    return NULL;
+}
+
+// np.clip(a, a_min, a_max) for a contiguous float32 or float64 array, with
+// the bounds given by position, as `a_min=` and `a_max=`, or, where NumPy
+// has them, as `min=` and `max=`; `out` absent or None; nothing else. A
+// bound left out, None, or both spellings at once are NumPy's: it raises, or
+// calls np.maximum or np.minimum instead.
+static HK_NOINLINE PyObject *try_clip(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { A, A_MIN, A_MAX, OUT, MIN, MAX, PARAMETERS };
+    // `min` and `max` can only be given by keyword.
+    static const char *const names[PARAMETERS] = {"a", "a_min", "a_max", "out", "min", "max"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, OUT + 1, bound)) return NULL;
+    if (bound[A] == NULL || !hk_is_absent(bound[OUT])) return NULL;
+    PyObject *lo = bound[A_MIN], *hi = bound[A_MAX];
+    if (bound[MIN] != NULL || bound[MAX] != NULL) {
+        if (!clip_takes_min_max || lo != NULL || hi != NULL) return NULL;
+        lo = bound[MIN];
+        hi = bound[MAX];
+    }
+    if (lo == NULL || hi == NULL) return NULL;
+    return hk_try_clip(bound[A], lo, hi);
+}
+
+// A call left to NumPy reaches `x.clip` and then the clip loop, whose hooks
+// count it, so it is not counted here.
+static PyObject *call_clip(HK_VECTORCALL_PARAMETERS) {
+    PyObject *result = try_clip(args, PyVectorcall_NARGS(nargsf), kwnames);
+    if (result != NULL) return result;
+    return functions[F_CLIP].original(callable, args, nargsf, kwnames);
+}
+
+// Find out whether this NumPy's np.clip takes `min` and `max`: they are
+// keyword-only parameters of the Python function behind the function object,
+// which NumPy keeps as its `_implementation`. If that cannot be read, the
+// keywords are left to NumPy.
+static void prepare_clip(PyObject *object) {
+    clip_takes_min_max = false;
+    PyObject *implementation = PyObject_GetAttrString(object, "_implementation");
+    PyObject *defaults = implementation ? PyObject_GetAttrString(implementation, "__kwdefaults__") : NULL;
+    if (defaults != NULL && PyDict_Check(defaults)) {
+        clip_takes_min_max = PyDict_GetItemString(defaults, "min") != NULL &&
+                             PyDict_GetItemString(defaults, "max") != NULL;
+    }
+    Py_XDECREF(defaults);
+    Py_XDECREF(implementation);
+    PyErr_Clear();
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_function functions[F_COUNT] = {
-    [F_ARGMAX] = {"argmax", call_argmax, NULL, NULL},
-    [F_ARGMIN] = {"argmin", call_argmin, NULL, NULL},
-    [F_COUNT_NONZERO] = {"count_nonzero", call_count_nonzero, NULL, NULL},
-    [F_SUM] = {"sum", call_sum, NULL, NULL},
-    [F_HISTOGRAM] = {"histogram", call_histogram, NULL, NULL},
-    [F_BINCOUNT] = {"bincount", call_bincount, NULL, NULL},
-    [F_ISIN] = {"isin", call_isin, NULL, NULL},
-    [F_INTERP] = {"interp", call_interp, NULL, NULL},
-    [F_COMPRESS] = {"compress", call_compress, NULL, NULL},
-    [F_EXTRACT] = {"extract", call_extract, NULL, NULL},
-    [F_PUTMASK] = {"putmask", call_putmask, NULL, NULL},
-    [F_COPYTO] = {"copyto", call_copyto, NULL, NULL},
-    [F_WHERE] = {"where", call_where, NULL, NULL},
+    [F_ARGMAX] = {"argmax", call_argmax, NULL, NULL, NULL},
+    [F_ARGMIN] = {"argmin", call_argmin, NULL, NULL, NULL},
+    [F_COUNT_NONZERO] = {"count_nonzero", call_count_nonzero, NULL, NULL, NULL},
+    [F_SUM] = {"sum", call_sum, NULL, NULL, NULL},
+    [F_HISTOGRAM] = {"histogram", call_histogram, NULL, NULL, NULL},
+    [F_BINCOUNT] = {"bincount", call_bincount, NULL, NULL, NULL},
+    [F_ISIN] = {"isin", call_isin, NULL, NULL, NULL},
+    [F_INTERP] = {"interp", call_interp, NULL, NULL, NULL},
+    [F_COMPRESS] = {"compress", call_compress, NULL, NULL, NULL},
+    [F_EXTRACT] = {"extract", call_extract, NULL, NULL, NULL},
+    [F_PUTMASK] = {"putmask", call_putmask, NULL, NULL, NULL},
+    [F_COPYTO] = {"copyto", call_copyto, NULL, NULL, NULL},
+    [F_WHERE] = {"where", call_where, NULL, NULL, NULL},
+    [F_CLIP] = {"clip", call_clip, prepare_clip, NULL, NULL},
 };
 
 // Return the address of the call pointer inside a callable object, or NULL
@@ -686,6 +849,7 @@ static int function_apply(int index) {
         Py_DECREF(object);
         return -1;
     }
+    if (functions[index].prepare != NULL) functions[index].prepare(object);
     functions[index].object = object;
     functions[index].original = *pointer;
     *pointer = functions[index].wrapper;
@@ -722,5 +886,6 @@ hk_hook hk_function_hooks[] = {
     {"function.putmask", function_apply, function_remove, F_PUTMASK, false},
     {"function.copyto", function_apply, function_remove, F_COPYTO, false},
     {"function.where", function_apply, function_remove, F_WHERE, false},
+    {"function.clip", function_apply, function_remove, F_CLIP, false},
     {NULL, NULL, NULL, 0, false},
 };

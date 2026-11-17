@@ -23,6 +23,7 @@
 #include <numpy/ufuncobject.h>
 
 #include <fenv.h>
+#include <float.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -209,6 +210,15 @@ static inline bool hk_as_exact_double(PyObject *obj, double *out) {
 // belongs to NumPy. None of them raises.
 PyObject *hk_try_sum(PyObject *array);
 PyObject *hk_try_argext(PyObject *array, bool want_max);
+
+// The array NumPy's clip returns for `array` clamped to the bounds `lo` and
+// `hi`, as given by the caller: the clip kernels, on a new array. `array` is
+// contiguous float32 or float64 with at least one element; each bound is an
+// object that leaves the result in the array's element type and converts to
+// it exactly as NumPy converts it, with lo <= hi after the conversion. A
+// caller whose NumPy operation needs more, such as no `out`, tests that
+// first. In hook_function.c.
+PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi);
 
 // The elements of `x` where `mask` is True, as a new one-dimensional array:
 // the compress kernels. `x` is contiguous float32 or float64 and `mask` a

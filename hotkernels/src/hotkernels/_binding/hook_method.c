@@ -6,7 +6,8 @@
 // call. Changing the pointer hooks the method and leaves `np.ndarray.astype`
 // the same object. NumPy's own functions of the same name call the method, so
 // `np.nonzero(x)` and `np.cumsum(x)` arrive here too. `np.sum(x)` does not:
-// it has its own function hook.
+// it has its own function hook. `np.argmax(x)` and `np.clip(x, lo, hi)` have
+// one as well, and arrive here only when it passed them on.
 //
 // A method is called in one of several conventions, recorded in the entry's
 // flags. A wrapper must have the shape the flags say, so a hook is applied
@@ -14,7 +15,7 @@
 #include "binding.h"
 
 // The methods that are hooked, as indices into `methods`.
-enum { M_ASTYPE, M_SUM, M_NONZERO, M_CUMSUM, M_SEARCHSORTED, M_COUNT };
+enum { M_ASTYPE, M_SUM, M_NONZERO, M_CUMSUM, M_SEARCHSORTED, M_ARGMAX, M_ARGMIN, M_CLIP, M_COUNT };
 
 // A method called with an argument array and keyword names
 // (METH_FASTCALL | METH_KEYWORDS). CPython names this type differently
@@ -337,6 +338,71 @@ static PyObject *method_searchsorted(PyObject *self, PyObject *const *args, Py_s
     return ((hk_fast_keywords)(void (*)(void))methods[M_SEARCHSORTED].original)(self, args, nargs, kwnames);
 }
 
+// ------------------------------------------------------ argmax and argmin
+
+// True when every argument of an argmax or argmin call is None: `x.argmax()`,
+// `x.argmax(None)`, or, as np.argmax(x, axis=None) calls the method,
+// `x.argmax(axis=None, out=None)`. `keepdims` is left to NumPy.
+static HK_NOINLINE bool argext_arguments_are_default(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { AXIS, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"axis", "out"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return false;
+    return hk_is_absent(bound[AXIS]) && hk_is_absent(bound[OUT]);
+}
+
+// x.argmax() and x.argmin() on a contiguous float32 or float64 array: the
+// kernel on the whole array, as the function hook calls it for np.argmax(x).
+// The type slot behind the method leaves runs under 128 elements to NumPy,
+// because it has to take the interpreter lock; a method already holds it, so
+// the kernel is called here at every size. A call passed on reaches the type
+// slot for float32 and float64, whose hook counts it, and no kernel for any
+// other type, so it is not counted here. The array's type is tested before
+// the arguments, as for clip below.
+static PyObject *method_argext(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames,
+                               int method, bool want_max) {
+    const bool float_array = hk_is_flat(self, NPY_FLOAT) || hk_is_flat(self, NPY_DOUBLE);
+    if (float_array && ((nargs == 0 && kwnames == NULL) || argext_arguments_are_default(args, nargs, kwnames))) {
+        PyObject *result = hk_try_argext(self, want_max);
+        if (result != NULL) return result;
+    }
+    return ((hk_fast_keywords)(void (*)(void))methods[method].original)(self, args, nargs, kwnames);
+}
+
+static PyObject *method_argmax(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    return method_argext(self, args, nargs, kwnames, M_ARGMAX, true);
+}
+
+static PyObject *method_argmin(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    return method_argext(self, args, nargs, kwnames, M_ARGMIN, false);
+}
+
+// -------------------------------------------------------------------- clip
+
+// x.clip(min, max) for a contiguous float32 or float64 array, the bounds by
+// position or as `min=` and `max=`, and `out` absent or None: the same direct
+// call as np.clip's function hook makes (see hk_try_clip). The method passes
+// its arguments to NumPy's `_methods._clip`, whose parameters these are.
+static HK_NOINLINE PyObject *try_clip(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { MIN, MAX, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"min", "max", "out"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[MIN] == NULL || bound[MAX] == NULL || !hk_is_absent(bound[OUT])) return NULL;
+    return hk_try_clip(self, bound[MIN], bound[MAX]);
+}
+
+// The array's type is tested first: most calls are for another element type,
+// and rejecting those must cost almost nothing. A call passed on reaches the
+// clip loop, whose hook counts it, so it is not counted here.
+static PyObject *method_clip(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    if (hk_is_flat(self, NPY_FLOAT) || hk_is_flat(self, NPY_DOUBLE)) {
+        PyObject *result = try_clip(self, args, nargs, kwnames);
+        if (result != NULL) return result;
+    }
+    return ((hk_fast_keywords)(void (*)(void))methods[M_CLIP].original)(self, args, nargs, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_method methods[M_COUNT] = {
@@ -346,6 +412,9 @@ static hk_method methods[M_COUNT] = {
     [M_CUMSUM] = {"cumsum", METH_VARARGS | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_cumsum, NULL, NULL},
     [M_SEARCHSORTED] = {"searchsorted", METH_FASTCALL | METH_KEYWORDS,
                         (PyCFunction)(void (*)(void))method_searchsorted, NULL, NULL},
+    [M_ARGMAX] = {"argmax", METH_FASTCALL | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_argmax, NULL, NULL},
+    [M_ARGMIN] = {"argmin", METH_FASTCALL | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_argmin, NULL, NULL},
+    [M_CLIP] = {"clip", METH_FASTCALL | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_clip, NULL, NULL},
 };
 
 // Point the method at the binding. See hk_hook.apply.
@@ -390,5 +459,8 @@ hk_hook hk_method_hooks[] = {
     {"method.nonzero", method_apply, method_remove, M_NONZERO, false},
     {"method.cumsum", method_apply, method_remove, M_CUMSUM, false},
     {"method.searchsorted", method_apply, method_remove, M_SEARCHSORTED, false},
+    {"method.argmax", method_apply, method_remove, M_ARGMAX, false},
+    {"method.argmin", method_apply, method_remove, M_ARGMIN, false},
+    {"method.clip", method_apply, method_remove, M_CLIP, false},
     {NULL, NULL, NULL, 0, false},
 };

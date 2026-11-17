@@ -26,7 +26,6 @@ import numpy as np
 import hotkernels
 from hotkernels.environment import BINDING_MODULE
 
-from .cases import SLOT_MIN_N
 from .check import operation_kernels
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -251,13 +250,14 @@ def _set_element(x: np.ndarray) -> None:
 # Statements a kernel takes: at least one per installed kernel.
 TAKEN: tuple[Timed, ...] = (
     Timed("argmax", "np.argmax(x)", "float32", partial(_floats, np.float32), np.argmax, "argmax_f32"),
-    Timed("argmax", "x.argmax()", "float32", partial(_floats, np.float32), lambda x: x.argmax(), "argmax_f32", min_n=SLOT_MIN_N),
+    Timed("argmax", "x.argmax()", "float32", partial(_floats, np.float32), lambda x: x.argmax(), "argmax_f32"),
     Timed("argmax", "np.argmax(x)", "float64", partial(_floats, np.float64), np.argmax, "argmax_f64"),
     Timed("argmin", "np.argmin(x)", "float32", partial(_floats, np.float32), np.argmin, "argmin_f32"),
     Timed("argmin", "np.argmin(x)", "float64", partial(_floats, np.float64), np.argmin, "argmin_f64"),
     Timed("clip", "np.clip(x, -0.5, 0.5)", "float32", partial(_floats, np.float32), lambda x: np.clip(x, LO, HI), "clip_f32"),
     Timed("clip", "np.clip(x, -0.5, 0.5)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, LO, HI), "clip_f64"),
     Timed("clip", "np.clip(x, 0, 1)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, 0, 1), "clip_f64"),
+    Timed("clip", "x.clip(-0.5, 0.5)", "float32", partial(_floats, np.float32), lambda x: x.clip(LO, HI), "clip_f32"),
     Timed("compress", "x[mask]", "float32, half selected", partial(_masked, np.float32, HALF), lambda x, m: x[m], "compress_f32"),
     Timed("compress", "x[mask]", "float64, half selected", partial(_masked, np.float64, HALF), lambda x, m: x[m], "compress_f64"),
     Timed("compress", "x[mask]", "float64, few selected", partial(_masked, np.float64, FEW), lambda x, m: x[m], "compress_f64"),
@@ -294,7 +294,9 @@ TAKEN: tuple[Timed, ...] = (
 # call it does not serve.
 LEFT: tuple[Timed, ...] = (
     Timed("argmax", "np.argmax(x)", "int64", partial(_ints, np.int64), np.argmax, None),
+    Timed("argmax", "x.argmax()", "int64", partial(_ints, np.int64), lambda x: x.argmax(), None),
     Timed("clip", "np.clip(x[::2], -0.5, 0.5)", "float64, strided", partial(_floats, np.float64), lambda x: np.clip(x[::2], LO, HI), None),
+    Timed("clip", "np.clip(x, -0.5, None)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, LO, None), None),
     Timed("astype", "x.astype(np.float64)", "uint8", _bytes, lambda x: x.astype(np.float64), None),
     Timed("sum", "np.sum(x)", "float64", partial(_floats, np.float64), np.sum, None),
     Timed("sum", "x.sum()", "float64", partial(_floats, np.float64), lambda x: x.sum(), None),
