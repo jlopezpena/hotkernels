@@ -161,3 +161,43 @@ far below what the caches deliver.
 - **Kept:** yes
 - **Notes:** 1.18x at 16 (1.1 ns to 0.9 ns), no significant difference from 64 to 1,048,576. The same run showed 0.90x at 4,194,304 and 1.04x (not significant) at 16,777,216 for code that did not change and did not move: those two sizes lie in the third-level cache that all cores share, and with a desktop session running they scatter by this much from one run to the next.
 
+## x86-64 6. Use the big path from 512 bytes
+
+- **Idea:** at 1,024 bytes the plain loop is held to 32 bytes per cycle. Send it through the big path, whose loop does 45.
+- **check:** pass
+- **compare:** no significant difference, 1.002x [0.998 – 1.006]
+- **Kept:** no
+- **Notes:** 1.03x at 1,024 (6.2 ns to 6.0 ns, not significant), nothing elsewhere. What the faster loop saves over eight steps, the head, the constants, the block bookkeeping and the ragged remainder take back.
+
+## x86-64 7. The mixed loop, unaligned and as one block, for everything from 128 to 2,047 bytes
+
+- **Idea:** attempt 6 lost its gain to the head and the block bookkeeping. Below 2,048 bytes there are at most 15 steps, so the 16-bit lanes cannot overflow and one widening at the end is enough: no head, no blocks.
+- **check:** pass
+- **compare:** no significant difference, 1.005x [0.998 – 1.014]
+- **Kept:** no
+- **Notes:** 1.10x at 1,024 (6.3 ns to 5.7 ns) but 0.94x at 256 (2.2 ns to 2.3 ns): two steps do not repay the three constants and the widening.
+
+## x86-64 8. Three tiers: plain loop to 511 bytes, the one-block mixed loop from 512 to 2,047
+
+- **Idea:** keep attempt 7's gain at 1,024 without its loss at 256.
+- **check:** pass
+- **compare:** significantly slower, 0.979x [0.966 – 0.997]
+- **Kept:** no
+- **Notes:** 1.10x at 1,024 as before. But 256 was still 0.94x, now from one more compare and a jump to the shared tail, and 65,536, 262,144 and 1,048,576 each came out 0.97x although the big path's instructions did not change: the added code moved its loop to another address. So the loop's address is worth 3%, which is attempt 9.
+
+## x86-64 9. Start the big loop on a 64-byte boundary
+
+- **Idea:** attempt 8 showed the big loop's address is worth about 3%. Its body is 60 bytes of code and started at offset 61 of a cache line, so it spread over two lines and three 32-byte windows of the decoded-instruction cache. Aligned to 64 it lies in one line and two windows.
+- **check:** pass
+- **compare:** no significant difference, 1.007x [0.996 – 1.023]; rerun once: no significant difference, 1.003x [0.989 – 1.017]
+- **Kept:** no
+- **Notes:** 1.07x and 1.03x at 4,096 and 16,384 in the first run, 1.02x and 1.01x in the second, 0.99x to 1.01x from 65,536 to 1,048,576. A gain of this size inside the first-level cache is real but small, and the overall figure cannot show it: at 4,194,304 and 16,777,216 the two contenders, identical there, differed by up to 10% either way in both runs.
+
+## x86-64 10. Prefetch 4,096 bytes ahead in the big loop
+
+- **Idea:** beyond the second-level cache the loop runs at 70 to 90 bytes per ns whatever its shape, so the question is whether the processor's own prefetcher keeps up. A private micro-benchmark of the big loop with two `prefetcht0` per step, bytes per ns without / 2,048 ahead / 4,096 ahead / 16,384 ahead: 192 / 203 / 206 / 203 at 1,048,576; 88 / 100 / 101 / 100 at 4,194,304; 73 / 83 / 84 / 84 at 16,777,216; 32 / 33 / 35 / 34 at 67,108,864; 29 / 30 / 32 / 31 at 268,435,456. 512 bytes ahead gave half of that. `prefetchnta` was slower than no prefetch from 16,777,216 up (56 against 73), and `prefetcht1` 65,536 bytes ahead was slower at every size. Inside the caches 4,096 ahead cost 1% to 2% at 4,096 and 16,384 and gained 1% to 5% at 65,536 and 262,144. The ARM64 log found prefetch slower everywhere on the M1 (attempt 5 there); that does not hold here.
+- **check:** pass
+- **compare:** significantly faster, 1.017x [1.002 – 1.033]
+- **Kept:** yes
+- **Notes:** 1.14x at 16,777,216, 1.08x at 4,194,304 (not significant: that size scattered between 0.97x and 1.23x), 1.03x to 1.04x at 262,144 and 1,048,576, 1.01x at 65,536. It costs more inside the first-level cache than the micro-benchmark said: 0.92x at 16,384 (69.3 ns to 75.7 ns) and 0.97x at 4,096. Near the end of the array the prefetched addresses lie up to 4,223 bytes past it. A prefetch never faults and reads nothing the program can see, as the ARM64 count kernels already rely on.
+

@@ -39,6 +39,10 @@
 # Steps of the mixed loop between widenings. 64 * 510 = 32,640 stays below
 # 32,768, so `vpmaddwd`, which reads the lanes as signed, widens them exactly.
 .set BLOCK_STEPS, 64
+# How far ahead of its loads the big loop prefetches. The processor's own
+# prefetcher keeps up while the data is in the second-level cache, and falls
+# behind beyond it.
+.set PREFETCH_AHEAD, 4096
 
 .section .rodata
 .p2align 6
@@ -186,6 +190,11 @@ sum_u8:
     vmovdqu ymm6, [rdi + 32]
     vmovdqu ymm7, [rdi + 64]
     vmovdqu ymm8, [rdi + 96]
+    # Ask for the two cache lines PREFETCH_AHEAD bytes on. Near the end of
+    # the array these addresses lie past it: a prefetch never faults and
+    # reads nothing the program can see.
+    prefetcht0 [rdi + PREFETCH_AHEAD]
+    prefetcht0 [rdi + PREFETCH_AHEAD + 64]
     sub     rdi, -128
     vpmaddubsw ymm6, ymm6, ymm9
     vpmaddubsw ymm7, ymm7, ymm9
