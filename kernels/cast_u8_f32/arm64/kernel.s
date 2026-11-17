@@ -21,6 +21,11 @@ Lindex:
     .byte 8, 255, 255, 255, 9, 255, 255, 255, 10, 255, 255, 255, 11, 255, 255, 255
     .byte 12, 255, 255, 255, 13, 255, 255, 255, 14, 255, 255, 255, 15, 255, 255, 255
 
+// From this many elements the loop takes 32 bytes per iteration. Below it,
+// two iterations of the 16-byte loop are faster than one of the 32-byte loop
+// plus its extra branches.
+.set BIG_MIN_N, 128
+
 .text
 .globl _cast_u8_f32
 .p2align 2
@@ -31,6 +36,8 @@ _cast_u8_f32:
     subs    x8, x2, #16             // x8 = elements left after this block
     b.lo    Lsmall
     ldp     q2, q3, [x9, #32]       // indices for bytes 8-11 and 12-15
+    cmp     x2, #BIG_MIN_N
+    b.hs    Lbig
 Lblock:
     ldr     q4, [x0], #16
     tbl.16b v5, { v4 }, v0
@@ -48,6 +55,7 @@ Lblock:
     b.hs    Lblock
     adds    x8, x8, #16             // elements left: 0 to 15
     b.eq    Ldone
+Lstepback:
     // Step back so that one more block ends exactly at the end.
     add     x0, x0, x8
     add     x1, x1, x8, lsl #2
@@ -55,6 +63,42 @@ Lblock:
     sub     x1, x1, #64
     mov     x8, #0
     b       Lblock
+
+Lbig:                               // n >= BIG_MIN_N
+    sub     x8, x2, #32             // x8 = elements left after this block
+Lblock32:
+    // ldnp reads the same bytes as ldp. The non-temporal hint makes the loop
+    // faster once the input is larger than the second-level cache.
+    ldnp    q4, q16, [x0]
+    add     x0, x0, #32
+    tbl.16b v5, { v4 }, v0
+    tbl.16b v6, { v4 }, v1
+    tbl.16b v7, { v4 }, v2
+    tbl.16b v4, { v4 }, v3
+    tbl.16b v17, { v16 }, v0
+    tbl.16b v18, { v16 }, v1
+    tbl.16b v19, { v16 }, v2
+    tbl.16b v16, { v16 }, v3
+    ucvtf.4s v5, v5
+    ucvtf.4s v6, v6
+    ucvtf.4s v7, v7
+    ucvtf.4s v4, v4
+    ucvtf.4s v17, v17
+    ucvtf.4s v18, v18
+    ucvtf.4s v19, v19
+    ucvtf.4s v16, v16
+    stp     q5, q6, [x1]
+    stp     q7, q4, [x1, #32]
+    stp     q17, q18, [x1, #64]
+    stp     q19, q16, [x1, #96]
+    add     x1, x1, #128
+    subs    x8, x8, #32
+    b.hs    Lblock32
+    adds    x8, x8, #16             // x8 = elements left after one more 16-byte block
+    b.hs    Lblock                  // 16 to 31 left
+    adds    x8, x8, #16             // elements left: 0 to 15
+    b.ne    Lstepback
+    ret
 
 Lsmall:                             // n < 16
     cmp     x2, #4
