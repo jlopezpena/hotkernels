@@ -22,6 +22,7 @@ import numpy as np
 import typer
 
 from .cases import Case, build_inputs, fixed_cases, fresh_cases
+from .build import ARCH, ARM64, X86_64
 from .memory import ArenaPool
 from .spec import (FLOAT_SCALARS, USED_RETURN, In, InOut, Kernel, Scalar, Size, element_count,
                    load_spec, np_dtype)
@@ -39,9 +40,11 @@ _FILL_BYTE = 0xA5
 # description to a fixed width means a shorter one fully replaces a longer one.
 _PROGRESS_WIDTH = 400
 
-# The ARM64 and x86-64 calling conventions both pass up to eight integer or
-# pointer arguments, and up to eight floating-point arguments, in registers.
-# The calling-convention wrapper takes one array of each.
+# The calling-convention wrapper takes up to eight integer or pointer
+# arguments and up to eight floating-point arguments, one array of each. ARM64
+# passes all of them in registers. x86-64 passes the first six integers and all
+# eight floats in registers, and its wrapper puts a seventh and eighth integer
+# on the stack, where the convention says they go.
 _REGISTER_ARGS = 8
 # The wrapper writes three values back: the integer return register, the
 # floating-point return register (as raw bits), and a mask of which preserved
@@ -52,13 +55,24 @@ _RESULT_INT, _RESULT_FLOAT_BITS, _RESULT_VIOLATIONS = range(_RESULT_SLOTS)
 RegisterArgs = ctypes.c_uint64 * _REGISTER_ARGS
 WrapperResult = ctypes.c_uint64 * _RESULT_SLOTS
 
-# Meaning of each bit in the violation mask, in bit order. Must match the
-# layout documented in judge/c/abi_arm64.s.
-_PRESERVED_REGISTERS = (
-    [f"x{r}" for r in range(19, 29)]
-    + [f"d{r}" for r in range(8, 16)]
-    + ["the stack pointer", "the frame pointer (x29)"]
-)
+# Meaning of each bit in the violation mask, in bit order, per architecture.
+# Must match the layout documented in judge/c/abi_<arch>.s. Each entry
+# completes the sentence "did not preserve ...".
+_PRESERVED = {
+    ARM64: (
+        [f"x{r}" for r in range(19, 29)]
+        + [f"d{r}" for r in range(8, 16)]
+        + ["the stack pointer", "the frame pointer (x29)"]
+    ),
+    X86_64: [
+        "rbx", "rbp", "r12", "r13", "r14", "r15",
+        "the stack pointer",
+        "the direction flag (left set)",
+        "the rounding mode and exception masks (MXCSR)",
+        "the cleared upper halves of the vector registers (no vzeroupper before returning)",
+    ],
+}
+_PRESERVED_REGISTERS = _PRESERVED.get(ARCH, [])
 
 # Bit widths of the integer return types, for truncating the 64-bit register.
 _INT_RETURN_BITS = {

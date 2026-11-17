@@ -18,7 +18,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import cases
+from . import cases, cores
 from .spec import DEFAULT_SCALARS, Kernel, Out, element_count, np_dtype
 
 # Array sizes timed by default: from data that fits in the fastest cache to
@@ -129,6 +129,9 @@ class Harness:
         self.lib.hk_bench.restype = ctypes.c_uint64
         self.lib.hk_canary.restype = ctypes.c_uint64
         self.lib.hk_init()
+        # The performance core this thread is pinned to, on Linux. Everything
+        # timed after this point, NumPy included, runs on it.
+        self.core = cores.claim()
 
     def canary(self) -> int:
         """Time the fixed reference loop and return the fastest of several runs, in ns."""
@@ -375,8 +378,19 @@ def low_power_mode() -> bool:
     return False
 
 
-def noise_warnings(canary_before: int, canary_after: int) -> list[str]:
-    """Return warnings to show if the machine was too noisy to trust the timings."""
+def noise_warnings(canary_before: int, canary_after: int,
+                   core: cores.Claim | None = None) -> list[str]:
+    """Return warnings to show if the machine was too noisy to trust the timings.
+
+    Args:
+        canary_before: Time of the reference loop before the run, in nanoseconds.
+        canary_after: Its time after the run.
+        core: The core the timing thread was pinned to, from the harness; None
+            where threads are not pinned.
+
+    Returns:
+        One warning per sign of trouble; empty when the timings can be trusted.
+    """
     warnings = []
     drift = abs(canary_after / canary_before - 1)
     if drift > CANARY_TOLERANCE:
@@ -386,4 +400,5 @@ def noise_warnings(canary_before: int, canary_after: int) -> list[str]:
         )
     if low_power_mode():
         warnings.append("NOISY MACHINE: Low Power Mode is on. Timings are not representative.")
+    warnings += [f"NOISY MACHINE: {problem}" for problem in cores.throttle_warnings(core)]
     return warnings
