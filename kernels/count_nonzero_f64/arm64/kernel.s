@@ -26,9 +26,15 @@
 //
 // Two per vector still leaves the four vector ports as the limit, while the
 // core can start eight instructions per cycle. So while the array fits in the
-// caches, each step of 32 elements sends only 28 of them through the vector
-// registers and tests the other four in general registers, which use no
-// vector port (see HYBRID32).
+// L1 cache, one element in eight is loaded into a general register and tested
+// there, which uses no vector port (see HYBRID64 and HYBRID32).
+//
+// Paths, by n:
+//   0..31            one group if there are sixteen elements, then the rest
+//                    loaded into zeroed registers and counted the same way
+//   32..32,767       hybrid steps of 64 elements, then one of 32
+//   32,768..         two plain groups per step, counts flushed every block
+//   2,097,152..      the same with prefetch
 
 // Steps of a main loop (32 elements, one group into each accumulator)
 // between flushes. Each lane is then at most 2 * 8192 = 16,384 and the two
@@ -100,8 +106,7 @@
     cinc    x\count, x\count, ne
 .endm
 
-// One step of the loop for arrays that fit in the caches: counts the 32
-// elements at x0 and advances x0. Elements 0-15 go through COUNT16 into v16,
+// A hybrid step: counts the 32 elements at x0 and advances x0. Elements 0-15 go through COUNT16 into v16,
 // elements 16-27 (six vectors, the tree padded with the zero in v30) into
 // v17, and elements 28-31 are loaded into general registers and counted in
 // x8 and x11. The vector part is 29 instructions on the four vector ports
