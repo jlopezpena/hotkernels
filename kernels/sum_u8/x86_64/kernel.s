@@ -211,7 +211,10 @@ sum_u8:
     jae     .Lblock
     jmp     .Ltail
 
-    # ---- Fewer than 32 bytes. No 256-bit register is written here.
+    # ---- Fewer than 32 bytes. No 256-bit register is written here. The
+    #      block starts on a 32-byte boundary so that the path for n = 16 lies
+    #      in one line of the decoded-instruction cache.
+.p2align 5
 .Lunder32:
     cmp     esi, 16
     jb      .Lunder16

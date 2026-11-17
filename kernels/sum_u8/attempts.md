@@ -153,3 +153,11 @@ far below what the caches deliver.
 - **Kept:** yes
 - **Notes:** 1.25x at 4,096, 1.40x at 16,384 (236 bytes per ns, 45 bytes per cycle), 1.22x from 65,536 to 1,048,576 (192 bytes per ns), no significant difference at 4,194,304 and 16,777,216. 1.36x at 64 and 1.24x at 256 from the layout and from 256 no longer taking the head. 0.83x at 16 (0.9 ns to 1.1 ns): its instructions did not change, only their address. Checked privately on all-0xFF data as in attempt 2, which is the case that would overflow a 16-bit lane if the block were too long.
 
+## x86-64 5. Start the under-32 block on a 32-byte boundary
+
+- **Idea:** a candidate from the design ("alignment of code"). The 16-byte path changed speed twice without its instructions changing (attempts 3 and 4): 0.9 ns when its block happened to start early in a 32-byte window of code, 1.1 ns when it straddled two. This core caches decoded instructions by 32-byte window, and a path that lies in one window is delivered in one cycle. So align the block.
+- **check:** pass
+- **compare:** significantly faster, 1.011x [1.003 – 1.025]
+- **Kept:** yes
+- **Notes:** 1.18x at 16 (1.1 ns to 0.9 ns), no significant difference from 64 to 1,048,576. The same run showed 0.90x at 4,194,304 and 1.04x (not significant) at 16,777,216 for code that did not change and did not move: those two sizes lie in the third-level cache that all cores share, and with a desktop session running they scatter by this much from one run to the next.
+
