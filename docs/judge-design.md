@@ -110,7 +110,7 @@ The first real kernels needed more than the two fixtures do. Each addition below
 | `In("v", "f64", len="needles")` | An input whose length is the value of an integer scalar, so a kernel can have two lengths that vary independently. See [A second length](#a-second-length) | `searchsorted` (the needles), `interp` (the queries) |
 | `Out("counts", "i64", capacity=256)` | An output whose size is fixed | `bincount` |
 | `Out("counts", "i64", capacity="nbins")` | An output whose size is the value of an integer scalar, so it changes with the scalar set | `histogram` |
-| `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs | `searchsorted` and `interp` (sorted data) |
+| `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs or called mostly with inputs of one shape | `searchsorted` and `interp` (sorted data), `isin_i64` (test values padded by repeating the first, as the binding pads them) |
 | `InOut("x", "f64")` | A buffer the kernel modifies in place. It starts as an input and is compared in full with the oracle's result | masked assignment |
 | `Kernel(numpy=fn)` | What is timed as NumPy when that is not the oracle. An in-place oracle has to copy its input; the statement a user writes does not | masked assignment |
 | `mode={"tolerance_ulp": 4, "scale": fn}` | A tolerance measured at a magnitude the spec computes from the inputs, instead of at the size of the result. See [Comparison](#comparison) | float `cumsum` |

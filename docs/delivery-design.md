@@ -80,7 +80,7 @@ Not built, and recorded as issues:
 | Wheels, a build that needs no checkout, `python -m hotkernels` | [19](https://github.com/sofeikov/kernel-arena/issues/19) |
 | `x[mask]` and `np.nonzero` keep about two thirds of the kernel's speed: the buffer, the copy and the mask check | [20](https://github.com/sofeikov/kernel-arena/issues/20) |
 | Free-threaded Python | [21](https://github.com/sofeikov/kernel-arena/issues/21) |
-| A case with repeated test values in the `isin_i64` spec, since the binding pads with repeats | [22](https://github.com/sofeikov/kernel-arena/issues/22) |
+| A case with repeated test values in the `isin_i64` spec, since the binding pads with repeats. Done: the spec now pads every checked set the way the binding does | [22](https://github.com/sofeikov/kernel-arena/issues/22) |
 
 Open before this work and still open: in-place `clip` and `cumsum` ([7](https://github.com/sofeikov/kernel-arena/issues/7)), mask bytes other than 0 or 1 in the kernels themselves ([8](https://github.com/sofeikov/kernel-arena/issues/8)), the kernels' safety against a writer during `argmax` ([9](https://github.com/sofeikov/kernel-arena/issues/9)), and whether float `cumsum` may be non-monotonic at all ([10](https://github.com/sofeikov/kernel-arena/issues/10)). The binding screens for each; none is fixed in the kernels.
 
@@ -351,7 +351,7 @@ Binding the kernels to real calls shows where a kernel is narrower than the NumP
 |---|---|---|---|
 | `searchsorted_f64`, `interp_f64` | One `n` was the length of the sorted array and of the needles | Only a call where the two lengths happened to be equal could use the kernel | Done: the number of needles is its own argument ([two-sizes-design.md](two-sizes-design.md)), and both are bound |
 | `clip_f32`, `clip_f64` | Input and output must not overlap: in place they are wrong on some data ([issue 7](https://github.com/sofeikov/kernel-arena/issues/7)) | `np.clip(x, 0, 1, out=x)` goes to NumPy. The loop hook sees it as an output pointer equal to the input pointer | Decided in the issue: harden the kernels, or have the binding use a temporary |
-| `isin_i64` | Exactly eight test values | Fewer than eight can be padded by repeating one, which does not change membership. More than eight go to NumPy | Add a case with repeated test values to the spec, since padding makes them the normal case |
+| `isin_i64` | Exactly eight test values | Fewer than eight can be padded by repeating one, which does not change membership. More than eight go to NumPy | None: the spec pads its checked test values the same way, so the judge checks what the binding sends ([issue 22](https://github.com/sofeikov/kernel-arena/issues/22)) |
 | `histogram_f64` | A range must be given | For `range=None` the binding calls NumPy's `min` and `max` first, as NumPy does | Nothing |
 | Every operation | One or two element types each | Other types fall back | More kernels; "Later" in the core design |
 
