@@ -169,6 +169,25 @@ uv run docsite build   # build it into build/site
 
 Pages are Markdown under `docsite/pages/` and are listed in `docsite/site.toml`.
 
+## Using the self-hosted runners
+
+The macOS jobs of a pull request run on the maintainer's own Mac when it is online, and on GitHub's runners otherwise. GitHub's macOS runners are often not assigned for a quarter of an hour, after which a job fails. A pull request from a fork and a tag always use GitHub's runners, so a published wheel never comes from that Mac.
+
+To set the runners up on a Mac with Apple Silicon:
+
+```bash
+sudo sysadminctl -addUser ci-runner -fullName "CI Runner" -password -   # once: a standard account for the jobs
+.github/runners/setup.sh 4        # install four runners, so four jobs run at once
+.github/runners/setup.sh remove   # remove them again
+```
+
+- **They start by themselves** at boot and after a system update, as system services under the `ci-runner` account. With FileVault on, that is once someone has logged in at the Mac's login screen.
+- **`RUNNER_STATUS_TOKEN`** is a repository secret the workflows use to see whether a runner is online: a fine-grained personal access token for this repository with read access to Administration. Store it with `gh secret set RUNNER_STATUS_TOKEN`. When it is missing or expired, every job goes to GitHub's runners.
+- **Asleep, switched off or away**, the Mac is skipped and jobs go to GitHub's runners. GitHub forgets a runner that has not connected for about two weeks; run the setup again then.
+- **The repository is public.** Under Settings, Actions, General, set "Fork pull request workflows" to require approval for all external contributors, so that nobody else's pull request can run on the Mac.
+
+[`pick-runner.yml`](.github/workflows/pick-runner.yml) is the workflow that chooses.
+
 ## Making a release
 
 Each pull request that changes the package leaves a note in `release-notes/upcoming/` (see [AGENTS.md](AGENTS.md#release-notes)). To release:
