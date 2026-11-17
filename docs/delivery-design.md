@@ -13,7 +13,7 @@ The core design left two questions for the start of this phase: which patching m
 - **End to end from Python, the speedups hold.** At a million elements: `np.argmax` 8.6x, `np.clip` 4.9x, `x[mask]` 9.8x to 16x, `x[mask] = v` 7.6x to 21x. The mask selection figure is lower than the judge's 22.5x, because a result has to be allocated.
 - **A hooked function can also skip NumPy's Python wrapper.** `np.argmax` on 16 elements drops from 573 ns to 65 ns. That is a win of the binding, not of a kernel.
 - **Two kernels cannot serve real calls yet.** `searchsorted_f64` and `interp_f64` take one length for both of their inputs. They need a second size before they are worth binding.
-- **One recommendation changes an earlier decision.** The float `cumsum` kernels should not be installed by default. See [Decisions](#decisions).
+- **One decision replaces an earlier one.** The float `cumsum` kernels are not installed by default. See [Decisions made in review](#decisions-made-in-review).
 
 ## What the user gets
 
@@ -188,6 +188,19 @@ One set of checks, written once and shared by the function, method and indexing 
 
 Anything else is passed to the original function pointer with the same arguments. Nothing is copied or converted on the way, which is why a fallback costs a nanosecond.
 
+### Inputs outside the kernels' contracts
+
+Review of the kernels found inputs where a kernel is wrong, or unsafe, and its spec does not say so. The binding is the only place they can be stopped. Each costs a check or a pass:
+
+| Input | What the kernel does | What the binding does |
+|---|---|---|
+| A mask byte other than 0 or 1, which a boolean array can hold ([issue 8](https://github.com/sofeikov/kernel-arena/issues/8)) | Counts past the capacity and writes outside the buffer | Reads the mask once before the kernel. Any byte above 1 sends the call to NumPy |
+| The output is the input ([issue 7](https://github.com/sofeikov/kernel-arena/issues/7)) | `clip` and float `cumsum` are wrong on some data | Sends the call to NumPy |
+| Another thread writes the array during `argmax` ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Reads it twice and may read past the end | The type-slot hook holds the interpreter lock while the kernel runs. That stops Python threads, and does not stop code that writes without the lock. Bounding the kernels' scans stays open in the issue |
+| A histogram range whose bin edges are not strictly increasing ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Returns counts where NumPy raises | Builds the edges first, as NumPy does, and sends the call to NumPy if they are not strictly increasing |
+| `clip` with array bounds ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Matches only NumPy's scalar-bound loop | Takes the kernel for scalar bounds only |
+| Floating-point status flags ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | `clip` leaves the invalid flag set; float `cumsum` raises overflow and invalid where NumPy's sequential sum does not. NumPy turns flags into warnings | `clip`: clears the flags after the kernel, which is what NumPy's own loop does. `cumsum`: clears them before, and if any is set afterwards discards the kernel's output and lets NumPy compute and warn |
+
 ### Results and memory
 
 - **A kernel never writes into a caller's buffer unless the operation is defined that way.** `clip` with `out=` and masked assignment are. Scratch kernels are not: [judge-design.md](judge-design.md#scratch-output-writing-inside-the-capacity) requires that a scratch kernel only ever sees a buffer the binding owns.
@@ -197,7 +210,8 @@ Anything else is passed to the original function pointer with the same arguments
 
 ### Threads
 
-- **Inner-loop and type-slot hooks inherit NumPy's behaviour.** The kernel runs where NumPy's loop ran, with the lock held or released as NumPy decided.
+- **The inner-loop hook inherits NumPy's behaviour.** The kernel runs where NumPy's loop ran, with the lock held or released as NumPy decided.
+- **The type-slot hook takes the lock.** NumPy releases it around `argmax`, and the kernels are not safe against a writer; see the table above.
 - **The other hooks release the interpreter lock above a size threshold**, as NumPy does. A kernel is a pure leaf function and touches no Python object.
 - **Masked assignment keeps the lock.** The kernel rewrites elements the mask does not select with their own bits ([kernel-findings.md](kernel-findings.md#masked-assignment)). Holding the lock means no other Python thread can write one of them in between. It blocks other threads for about 180 µs per million elements.
 - **Free-threaded Python is not supported.** `install()` does nothing there. Changing a shared function pointer while other threads run needs its own design.
@@ -255,7 +269,7 @@ Binding the kernels to real calls shows where a kernel is narrower than the NumP
 | Kernel | Limit | Consequence | Proposed |
 |---|---|---|---|
 | `searchsorted_f64`, `interp_f64` | One `n` is the length of the sorted array and of the needles | Only a call where the two lengths happen to be equal can use the kernel | Give the judge a second size, then the specs and the assembly. Not bound until then |
-| `clip_f32`, `clip_f64` | Input and output must not overlap | `np.clip(x, 0, 1, out=x)` goes to NumPy. The loop hook sees it as an output pointer equal to the input pointer | Let a spec declare an output that may be the input, check it, and see whether the kernels already pass |
+| `clip_f32`, `clip_f64` | Input and output must not overlap: in place they are wrong on some data ([issue 7](https://github.com/sofeikov/kernel-arena/issues/7)) | `np.clip(x, 0, 1, out=x)` goes to NumPy. The loop hook sees it as an output pointer equal to the input pointer | Decided in the issue: harden the kernels, or have the binding use a temporary |
 | `isin_i64` | Exactly eight test values | Fewer than eight can be padded by repeating one, which does not change membership. More than eight go to NumPy | Add a case with repeated test values to the spec, since padding makes them the normal case |
 | `histogram_f64` | A range must be given | For `range=None` the binding calls NumPy's `min` and `max` first, as NumPy does | Nothing |
 | Every operation | One or two element types each | Other types fall back | More kernels; "Later" in the core design |
@@ -291,17 +305,22 @@ The core design's, made measurable:
 - Any array that is not a plain `ndarray`.
 - New kernels and new element types.
 
-## Decisions
+## Decisions made in review
 
-Open, with a recommendation for each.
+| Question | Decision |
+|---|---|
+| Change NumPy's own objects in place (function objects, `ndarray`'s method table)? Only the inner-loop hook is an interface NumPy offers for this, and it reaches `clip` alone. With the type slot as well, 3 of the 15 operations are reached | Yes |
+| Hook indexing? It is the only way to `x[mask]` and `x[mask] = v`, and adds about 1 ns to every index operation on every array | Yes |
+| Are kernels that are not bit-identical installed by default? The float `cumsum` kernels are not monotonic for non-negative input ([issue 10](https://github.com/sofeikov/kernel-arena/issues/10)), which breaks `np.searchsorted(np.cumsum(p), r)` | No. `install()` installs exact kernels only; `install(inexact=True)` adds the rest. This replaces the core design's decision to install them and mark them in `report()` |
+
+## Decisions still open
+
+Each has a recommendation. The implementation follows the recommendations until they are decided otherwise.
 
 | # | Question | Recommendation |
 |---|---|---|
-| 1 | **Change NumPy's own objects in place** (function objects, `ndarray`'s method table)? Only the inner-loop hook is an interface NumPy offers for this, and it reaches `clip` alone. With the type slot as well, 3 of the 15 operations are reached | Yes. It is the only way to the one-line promise, each hook is one pointer with its original kept, and each proves itself at install |
-| 2 | **Hook indexing?** It is the only way to `x[mask]` and `x[mask] = v`, the largest gains the compiler does not close. It adds about 1 ns to every index operation on every array | Yes, as the last step, and built so it can be dropped on its own |
-| 3 | **Are kernels that are not bit-identical installed by default?** The core design accepted float `cumsum` in tolerance mode, marked in `report()`. Since then the findings showed its output is not monotonic for non-negative input: on a million uniform float32 values about one adjacent pair in six decreases. `np.searchsorted(np.cumsum(p), r)` is a common way to sample, and it assumes a sorted array | No. `install()` installs exact kernels only; `install(inexact=True)` adds the rest. One optional argument, and the default can never change a result |
-| 4 | **Masked assignment rewrites unselected elements** (open question 1 in the findings) | Yes, with the interpreter lock held during the kernel |
-| 5 | **`clip` reads and writes the floating-point status register** (open question 2 in the findings) | Yes, as the findings recommend. It has to be settled before `clip` is step 1 |
-| 6 | **Remove NumPy's Python wrapper for small arrays** where a deeper hook already delivers the kernel (`np.argmax` at 16 elements: 573 ns to 65 ns)? It means a second hook and a second set of checks for the same operation | Yes for `argmax` and `argmin` in step 2. `clip` after the exit criterion: its wrapper has more arguments to get right |
-| 7 | **Build system for the package** | `meson-python`: it compiles assembly sources without special handling and is what NumPy uses. Not yet tried in this repository |
-| 8 | **Which NumPy versions?** Pin to tested versions, or rely on the self-test at install? | The self-test, plus `delivery check` run against the oldest and newest NumPy 2 releases. A pin would switch hotkernels off on every NumPy release until someone updates it |
+| 1 | **Masked assignment rewrites unselected elements** (open question 1 in the findings) | Yes, with the interpreter lock held during the kernel |
+| 2 | **`clip` reads and writes the floating-point status register** (open question 2 in the findings) | Yes, as the findings recommend, with the flags cleared afterwards |
+| 3 | **Remove NumPy's Python wrapper for small arrays** where a deeper hook already delivers the kernel (`np.argmax` at 16 elements: 573 ns to 65 ns)? It means a second hook and a second set of checks for the same operation | Yes for `argmax` and `argmin` in step 2. `clip` after the exit criterion: its wrapper has more arguments to get right |
+| 4 | **Build system for the package** | `meson-python`: it compiles assembly sources without special handling and is what NumPy uses. Not yet tried in this repository |
+| 5 | **Which NumPy versions?** Pin to tested versions, or rely on the self-test at install? | The self-test, plus `delivery check` run against the oldest and newest NumPy 2 releases. A pin would switch hotkernels off on every NumPy release until someone updates it |

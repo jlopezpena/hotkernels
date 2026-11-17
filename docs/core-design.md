@@ -178,5 +178,5 @@ Mentioned so they are not forgotten. None of these is planned here.
 | Agent loop as its own phase? | No; it is the judge, the contract and `AGENTS.md` |
 | Ship plain C kernels? | Yes, when C beats NumPy and assembly does not beat the C |
 | How many kernels in phase 3? | All shortlisted candidates are tried, not a chosen three |
-| Float `cumsum` that reorders additions? | Acceptable, in tolerance mode. `report()` marks it as inexact |
+| Float `cumsum` that reorders additions? | Acceptable, in tolerance mode. `report()` marks it as inexact. Since narrowed in [delivery-design.md](delivery-design.md): installed only with `install(inexact=True)` |
 | Indexing syntax and methods (`a[mask]`, `x.astype`) | Recorded as a known gap in the delivery path; to be investigated at the start of phase 3 |
