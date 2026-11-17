@@ -17,3 +17,11 @@ The design was worked out on `clip_f32` first; see `kernels/clip_f32/attempts.md
 - **compare:** significantly faster, 1.162x [1.157 – 1.165]
 - **Kept:** yes
 - **Notes:** 256: 1.43x, 1,024: 1.49x, 4,096: 1.50x, 16,384: 1.64x; nothing changes at 16 and 64 (below the threshold) or from 65,536 up (limited by moving the data). The equivalence argument is in the header of `kernel.s`. The guarded paths are not reachable with the judge's inputs, so they were verified outside it with the same harness as `clip_f32`, built for float64: 515,916 calls against the compiled `naive.c` over 19 x 19 bound pairs, quiet and signalling NaNs, zeros, denormals, FPSR clean and with flags set, seven FPCR modes; no difference, no flag lost, and removing any one guard makes it fail. Thresholds from local timing: the clean path breaks even at 80 elements (96 used); with the flag already set it breaks even at 512 (768 used).
+
+## 3. Non-temporal loads (`ldnp`) in the fast loop
+
+- **Idea:** as `clip_f32` attempt 3. From 65,536 elements up the limit is moving the data, and the system `memmove` moves it faster than an `ldp`/`stp` loop because it loads with `ldnp`. `ldnp` reads the same bytes as `ldp`; only the cache hint differs.
+- **check:** pass
+- **compare:** significantly faster, 1.100x [1.094 – 1.104]
+- **Kept:** yes
+- **Notes:** 65,536: 1.16x, 262,144: 1.30x, 1,048,576: 1.37x, 4,194,304: 1.32x, 16,777,216: 1.07x. n = 256 measured 0.97x [0.96 – 0.98] in this run; the other sizes up to 16,384 are unchanged.
