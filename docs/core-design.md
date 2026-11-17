@@ -15,7 +15,7 @@ hotkernels.install()
 
 Behind that line sits a set of kernels. Each one is checked by an automated judge and only shipped if it is correct against NumPy and faster than NumPy. Where a naive C loop compiled with `clang -O3` is enough, the kernel is that C. Where hand-written assembly, written and tuned by a coding agent, beats the C as well, the kernel is the assembly.
 
-The first target is ARM64 NEON on Apple Silicon. x86-64 is planned and will be developed on a separate x86 machine, so the design keeps architectures apart from the start (see [Architectures](#architectures)).
+The first target was ARM64 NEON on Apple Silicon. The second is x86-64 on Linux, designed in [x86-64-design.md](x86-64-design.md). The design keeps architectures apart from the start (see [Architectures](#architectures)).
 
 Priorities, in order:
 
@@ -48,6 +48,8 @@ Consequences:
 - The binding layer matters as much as the kernels. A slow call path wipes out any win on small arrays.
 - Fusing several operations into one pass is a large win, but it cannot be delivered transparently and is out of scope for the proof of concept.
 
+These are findings about one machine and one compiler. They set the direction of the project and have not been repeated on x86-64.
+
 ## Kernel contract
 
 A kernel is a directory:
@@ -56,12 +58,13 @@ A kernel is a directory:
 kernels/<name>/
   spec.py          signature, dtypes, NumPy oracle, correctness mode
   naive.c          naive C reference: the simplest correct loop
-  arm64/kernel.s   hand-written NEON (absent for a kernel shipped as C)
-  x86_64/kernel.s  hand-written AVX (added later, on the x86 machine)
+  arm64/kernel.s   hand-written NEON (absent for a kernel shipped as C on ARM64)
+  x86_64/kernel.s  hand-written AVX2 (designed in x86-64-design.md; none exists yet)
   attempts.md      log of what was tried and what the judge said
 ```
 
 - `spec.py` and `naive.c` are shared by all architectures.
+- Whether a kernel ships as assembly, as C or not at all is decided per architecture.
 - `naive.c` has three jobs: it is the baseline the assembly must beat, a second check on correctness alongside NumPy, and the shipped implementation when no assembly beats it.
 - `attempts.md` records every iteration, including failures, so later runs do not repeat dead ends.
 
@@ -76,9 +79,21 @@ Each kernel declares one of two modes in its spec.
 
 ## Architectures
 
-- The judge contains nothing architecture-specific. It builds and tests whichever kernel directory matches the machine it runs on.
-- Timings are only ever taken on native hardware. x86-64 numbers come from a real x86 machine, never from Rosetta.
-- x86-64 will need a runtime check for which instruction sets the CPU supports (for example AVX2 or AVX-512). This is noted here and not designed yet.
+Two are in the design: ARM64 on macOS, which is built, and x86-64 on Linux, which is designed in [x86-64-design.md](x86-64-design.md).
+
+| Shared by every architecture | Per architecture |
+|---|---|
+| `spec.py` and `naive.c`: the contract, the oracle, the correctness mode | `kernel.s`, and the reasoning behind it |
+| The judge's rules: what correct means, what a kernel may touch, how speed is compared | How the judge enforces them: the calling-convention wrapper, the lint rules, how the timing thread is kept on a fast core |
+| The survey's method | The survey's results, and so the shortlist and the order of work |
+| The binding and its hooks | Which kernels are installed, and what each asks of its caller |
+| The principles above | Every measured number |
+
+- **A kernel is carried to another architecture in spirit.** The idea and the proofs carry over. The instructions, the block sizes and every statement about what the hardware can do are written again. See [x86-64-design.md](x86-64-design.md#carrying-a-kernel-over).
+- **The judge builds and tests whichever kernel directory matches the machine it runs on.**
+- **Timings are only ever taken on native hardware.** x86-64 numbers come from a real x86-64 machine, never from Rosetta.
+- **Documents say which architecture a statement is about.** What holds for an operation is stated once. What holds for one architecture or one machine sits under a heading that names it.
+- **A processor that lacks the instructions a kernel needs gets no kernels.** On x86-64 `install()` checks for them at run time; see [x86-64-design.md](x86-64-design.md#target).
 
 ## Phases
 
@@ -105,7 +120,7 @@ The judge is the foundation. Agents can only iterate unattended if its verdict c
 
 ### Phase 2: survey
 
-Find out where NumPy is actually slow on ARM64 before choosing what to write. NumPy already has NEON code for some operations, so guessing is unreliable.
+Find out where NumPy is actually slow on ARM64 before choosing what to write. NumPy already has NEON code for some operations, so guessing is unreliable. The survey is repeated for every architecture, because NumPy's vector code differs between them.
 
 **How:**
 
@@ -161,7 +176,7 @@ Take the shortlisted kernels to `install()`, in the order given in [survey-desig
 
 Mentioned so they are not forgotten. None of these is planned here.
 
-- **x86-64 kernels.** Same contract and judge, developed and measured on the x86 machine.
+- **AVX-512.** A second tier of x86-64 kernels, on a machine that has it. The first tier is designed in [x86-64-design.md](x86-64-design.md).
 - **Publishing.** Wheels on PyPI so installation needs no compiler, plus `python -m hotkernels script.py` for zero code changes. The release pipeline and its GitHub setup are proposed in [release-design.md](release-design.md).
 - **More kernels.** Work down the survey shortlist.
 - **Fusion.** Fusing a chain of operations into a single pass was the largest win measured. It first needs a way to identify which chains are worth fusing, which is a project of its own.
@@ -174,7 +189,7 @@ Mentioned so they are not forgotten. None of these is planned here.
 | Licence | MIT |
 | Bit-identical always? | Per kernel: exact by default, declared tolerance for float arithmetic |
 | How hands-on with the assembly? | Gains first, via `/goal` iteration; understanding later |
-| Other platforms | x86-64 planned on a separate machine; Linux ARM64 out of scope |
+| Other platforms | x86-64 on Linux, designed in [x86-64-design.md](x86-64-design.md); Linux ARM64 out of scope |
 | Agent loop as its own phase? | No; it is the judge, the contract and `AGENTS.md` |
 | Ship plain C kernels? | Yes, when C beats NumPy and assembly does not beat the C |
 | How many kernels in phase 3? | All shortlisted candidates are tried, not a chosen three |

@@ -36,7 +36,7 @@ judge/                 the tool (Python, plus a small amount of C and assembly)
 kernels/<name>/        one directory per kernel (the contract from core-design.md)
   spec.py
   naive.c
-  arm64/kernel.s
+  <arch>/kernel.s      arm64 or x86_64
   attempts.md
 results/               recorded results, committed
 .judge/                build output and raw runs, not committed
@@ -176,6 +176,8 @@ Cheap static checks on the assembly source, run before anything is executed. A k
 
 A kernel is a pure function over the buffers it is given. These rules keep it that way.
 
+The rules are the same everywhere. What counts as a call, a system call or a reserved register is listed under [Per architecture](#per-architecture).
+
 ## Stage 2: correctness
 
 The kernel and `naive.c` are both run against the oracle. Checking `naive.c` as well matters: if it is wrong, the speed comparison is meaningless.
@@ -217,6 +219,8 @@ Reading past the end changes nothing, so it is harmless as long as the extra byt
 
 The trick only matters for tiny arrays, where the leftover is most of the work. For an array of a million elements the leftover is a rounding error. The rule stays strict because it is simple to state to an agent and simple to verify. It can be relaxed for specific kernels later if the survey shows that tiny arrays are where the wins are.
 
+Some architectures offer a third way: a masked load, which names the elements it wants and does not touch the others, so nothing outside the buffer is read and nothing faults. x86-64 has one and ARM64 NEON does not. Whether it satisfies the rule is [open issue 3](x86-64-design.md#open-issues) of the x86-64 design.
+
 #### Scratch output: writing inside the capacity
 
 *Decided in review of the survey.*
@@ -229,9 +233,9 @@ Out("out", "f32", capacity="n", used="return", scratch=True)
 
 A kernel may then write anywhere inside the declared capacity of that buffer. Only the reported part is compared with NumPy; the rest holds unspecified values. Writing even one byte past the capacity is still a failure, as is every other memory rule.
 
-**Why it is needed.** Mask selection (`a[mask]`) copies the selected elements to the output. The simple loop asks "is this element selected?" before each store, and on an unpredictable mask the processor guesses that answer wrong about half the time. The fast loop does not ask: it stores every element at the current output position, and moves the position forward only if the element was selected. An unselected element is overwritten by the next one. The survey measured this at 0.34 ns per element against 3.2 ns for the loop that asks. The NEON version does the same with a whole block of elements per store.
+**Why it is needed.** Mask selection (`a[mask]`) copies the selected elements to the output. The simple loop asks "is this element selected?" before each store, and on an unpredictable mask the processor guesses that answer wrong about half the time. The fast loop does not ask: it stores every element at the current output position, and moves the position forward only if the element was selected. An unselected element is overwritten by the next one. The survey measured this on ARM64 at 0.34 ns per element against 3.2 ns for the loop that asks. A vector kernel does the same with a whole block of elements per store.
 
-**The last-element problem.** Overwriting only works while there is a next element. Whatever was stored last and not selected stays where it is, just past the reported output. With the scalar loop that is at most one stray element; with NEON it is up to one block minus one. The reported count and the reported elements are correct. The slots after them are not empty, and not what they held before the call.
+**The last-element problem.** Overwriting only works while there is a next element. Whatever was stored last and not selected stays where it is, just past the reported output. With the scalar loop that is at most one stray element; with a vector kernel it is up to one block minus one. The reported count and the reported elements are correct. The slots after them are not empty, and not what they held before the call.
 
 That has consequences, which is why scratch is opt-in per buffer and not the default:
 
@@ -248,7 +252,7 @@ The assembly still needs care at the end of the input: the leftover elements tha
 
 ### Calling convention
 
-Assembly can corrupt its caller in ways that tests pass by luck. The judge calls each kernel through a small assembly wrapper that fills every register the kernel is required to preserve with known values, calls the kernel, and verifies they are unchanged, along with the stack pointer. This wrapper is the only architecture-specific code in the judge: one short file per architecture.
+Assembly can corrupt its caller in ways that tests pass by luck. The judge calls each kernel through a small assembly wrapper that fills every register the kernel is required to preserve with known values, calls the kernel, and verifies they are unchanged, along with the stack pointer. There is one such wrapper per architecture. What each one checks is listed under [Per architecture](#per-architecture).
 
 ### Comparison
 
@@ -282,7 +286,7 @@ Timing is best effort for now. The method below is careful enough to trust a cle
 | Contender | How it is timed |
 |---|---|
 | The assembly kernel | Inside C, called in a loop through a function pointer |
-| `naive.c` | The same loop; compiled by the judge with `clang -O3 -mcpu=native` |
+| `naive.c` | The same loop; compiled by the judge with `clang -O3`, tuned for the machine it runs on (`-mcpu=native` on ARM64, `-march=native` on x86-64) |
 | NumPy | The oracle function, called from Python |
 
 The kernel directory cannot change compiler flags, so the C baseline cannot be weakened.
@@ -300,7 +304,7 @@ A fixed sweep: 16, 64, 256, 1,024, 4,096, 16,384, 65,536, 262,144, 1,048,576, 4,
 - **Interleaving.** Samples from the contenders are alternated, so slow drift in the machine affects all of them equally.
 - **Varied inputs.** At small sizes the loop cycles through a pool of different inputs. Timing one input repeatedly lets the processor memorise its branch pattern, which makes branchy code look faster than it is on real data.
 - **Input shapes.** Where speed depends on the data (how many mask elements are true, where the maximum sits), the spec lists a few named distributions and each is timed.
-- **Performance cores.** The timing thread asks macOS for the highest scheduling priority class, which keeps it on the performance cores.
+- **Performance cores.** The timing thread is kept on a performance core. On macOS it asks for the highest scheduling priority class, which does that.
 
 ### What is reported
 
@@ -324,7 +328,7 @@ argmax_f32 (arm64, Apple M1 Pro)        vs naive C              vs NumPy (includ
 
 ### Noise
 
-Before and after the sweep the judge times a small fixed reference loop. If the two disagree by more than 3%, or the machine is in Low Power Mode, the report carries a prominent warning that the machine was noisy. The numbers are still shown; the reader decides whether to rerun.
+Before and after the sweep the judge times a small fixed reference loop. If the two disagree by more than 3%, or the platform says the machine is throttled (Low Power Mode on macOS), the report carries a prominent warning that the machine was noisy. The numbers are still shown; the reader decides whether to rerun.
 
 ### Comparing two versions of a kernel
 
@@ -377,7 +381,7 @@ A fourth, `tally_u8`, covers [scalar sets](#scalar-sets). It counts elements by 
 | Hard-codes the default value of a scalar | Correctness, in a non-default scalar set |
 | Clears as many output elements as the default scalar value gives, when the case gives fewer | Memory safety, in a non-default scalar set |
 | Overwrites a register it must preserve | Calling convention |
-| Uses `x18` | Lint |
+| Uses a register the platform reserves (`x18` on ARM64) | Lint |
 | Correct but slower than naive C | Speed report: shown as significantly slower |
 
 The second half of the exit criterion is repeatability: ten consecutive `judge bench` runs of the correct fixture on an idle machine agree to within 3% at every size.
@@ -396,12 +400,32 @@ Phase 1 also delivers the two documents that turn the judge into an agent loop. 
   - **The log.** Every attempt goes into `attempts.md` with what was tried and what the judge said.
   - **The final report.** The best speedup with its confidence interval, the optimisations that worked, the ones that did not, and what was left untried.
 
+## Per architecture
+
+The stages above state rules. This section says how each platform enforces them. The ARM64 column describes what is built. The x86-64 column is the proposal in [x86-64-design.md](x86-64-design.md#the-judge) and is not built.
+
+| | ARM64 on macOS | x86-64 on Linux |
+|---|---|---|
+| Kernel source | `kernels/<name>/arm64/kernel.s` | `kernels/<name>/x86_64/kernel.s`, GNU assembler in Intel syntax |
+| Naive C | `clang -O3 -mcpu=native` | `clang -O3 -march=native` |
+| Lint: calls | `bl`, `blr` and their authenticated forms | `call` |
+| Lint: system calls | `svc`, `hvc`, `smc` | `syscall`, `sysenter`, `int` |
+| Lint: reserved register | `x18` | None |
+| Instruction-set level | Not needed: every Apple Silicon Mac runs what the M1 runs | A static check that a kernel uses nothing beyond x86-64-v3. The development machine runs newer instructions, so a crash cannot be relied on to catch one |
+| Must be preserved | `x19` to `x28`, `x29`, the stack pointer, the low 64 bits of `v8` to `v15` | `rbx`, `rbp`, `r12` to `r15`, the stack pointer. Also: the direction flag clear, the rounding mode and exception masks unchanged, the upper halves of the vector registers cleared before returning |
+| Read-only constants | `__TEXT,__const` or `__TEXT,__literal16` | `.rodata` |
+| Performance cores | The highest scheduling priority class | The timing thread pinned to one performance core |
+| Sign of a throttled machine | Low Power Mode | The frequency governor, turbo, and the load average |
+| Leftover elements | A scalar loop, or a final vector that overlaps the previous one | The same, and possibly a masked load: [open issue 3](x86-64-design.md#open-issues) |
+
+Everything else is the same on both: the cases, the guarded buffers, the comparison with NumPy, the statistics, the locked files, and the selftest's broken variants. The one exception is the variant that uses a reserved register, which has no x86-64 counterpart.
+
 ## Out of scope
 
 - Hardware performance counters (cycles, cache misses). On macOS they need elevated privileges. Wall-clock time with the method above is enough for now.
 - Timing in CI. Shared runners are too noisy. CI will run `judge check` and `judge selftest` without the speed fixture.
 - Multi-dimensional or non-contiguous arrays. Kernels see flat, contiguous buffers; anything else falls back to NumPy in the binding.
-- x86-64. The design leaves room for it (one wrapper file and one kernel directory per architecture), but nothing x86-specific is built in phase 1.
+- x86-64 was out of scope for phase 1. It is designed in [x86-64-design.md](x86-64-design.md) and summarised under [Per architecture](#per-architecture).
 
 ## Decisions made in review
 

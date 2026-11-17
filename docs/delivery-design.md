@@ -6,6 +6,8 @@ It details the second half of phase 3 of [core-design.md](core-design.md). The f
 
 The core design left two questions for the start of this phase: which patching mechanisms work on current NumPy, and whether indexing syntax and array methods can be reached at all. Both were answered with a throwaway probe before writing this, and the answers shape the design. They are in [What was verified](#what-was-verified).
 
+The binding is the same C on every architecture. The figures in this document, the list of kernels installed and the limits the binding screens for are ARM64's: every measurement was taken on an Apple M1 Pro. x86-64 gets its own figures and its own list when the package is built there ([x86-64-design.md](x86-64-design.md#the-package-and-its-delivery)). They go beside these, not in place of them.
+
 ## Summary
 
 - **Everything can be reached**, including `a[mask]`, `x[mask] = v` and `x.astype(...)`, which the core design recorded as a known gap. It takes five kinds of hook. One is an API NumPy provides for the purpose. The other four change NumPy's own objects in place.
@@ -214,6 +216,8 @@ What this says:
 
 Use the deepest hook that exists for an operation, because it reaches the most callers and needs the fewest checks. Add the function hook where the fixed cost of the call is worth removing.
 
+The hook for an operation does not depend on the architecture. The "Kernels" column counts ARM64's. A condition that comes from a kernel's own limit, such as `clip`'s "output is not the input", belongs to that architecture's kernel; see [What a caller must know](kernel-findings.md#what-a-caller-must-know).
+
 | NumPy operation | Kernels | Hook | Takes the kernel when |
 |---|---|---|---|
 | `argmax`, `argmin` | 4 | Type slot, plus the function for small arrays | Always, for float32 and float64 |
@@ -258,7 +262,7 @@ Anything else is passed to the original function pointer with the same arguments
 
 ### Inputs outside the kernels' contracts
 
-Review of the kernels found inputs where a kernel is wrong, or unsafe, and its spec does not say so. The binding is the only place they can be stopped. Each costs a check or a pass:
+Review of the ARM64 kernels found inputs where a kernel is wrong, or unsafe, and its spec does not say so. The binding is the only place they can be stopped. Each costs a check or a pass:
 
 | Input | What the kernel does | What the binding does |
 |---|---|---|
@@ -281,7 +285,7 @@ Review of the kernels found inputs where a kernel is wrong, or unsafe, and its s
 - **The inner-loop hook inherits NumPy's behaviour.** The kernel runs where NumPy's loop ran, with the lock held or released as NumPy decided.
 - **The type-slot hook takes the lock.** NumPy releases it around `argmax`, and the kernels are not safe against a writer; see the table above.
 - **The other hooks release the interpreter lock above a size threshold**, as NumPy does. A kernel is a pure leaf function and touches no Python object.
-- **Masked assignment keeps the lock.** The kernel rewrites elements the mask does not select with their own bits ([kernel-findings.md](kernel-findings.md#masked-assignment)). Holding the lock means no other Python thread can write one of them in between. It blocks other threads for about 180 µs per million elements.
+- **Masked assignment keeps the lock.** The ARM64 kernel rewrites elements the mask does not select with their own bits ([kernel-findings.md](kernel-findings.md#masked-assignment)). Holding the lock means no other Python thread can write one of them in between. It blocks other threads for about 180 µs per million elements.
 - **Free-threaded Python is not supported.** `install()` does nothing there. Changing a shared function pointer while other threads run needs its own design.
 
 ### Counting
@@ -293,7 +297,7 @@ Each hook adds one to a per-kernel counter when it takes a kernel and to a per-o
 - **Order.** Hooks go in one at a time, each recording the pointer it replaced in a table.
 - **Each hook proves itself.** After applying a hook, `install()` makes one small call through NumPy's public interface with a known answer. If the kernel's counter did not move, or the answer is wrong, that hook is removed again and `report()` says so. This is the defence against a future NumPy that routes a call differently: the kernel is quietly not installed, and nothing breaks.
 - **`uninstall()` restores in reverse order**, and only a pointer that is still ours. If something else has patched the same place since, it is left alone and reported.
-- **Supported environment.** macOS on ARM64, CPython with the interpreter lock, NumPy 2. Anywhere else `install()` is a no-op.
+- **Supported environment.** CPython with the interpreter lock and NumPy 2, on a supported platform. Today that is macOS on ARM64. Linux on x86-64 is proposed in [x86-64-design.md](x86-64-design.md#target), with a check of the processor at run time. Anywhere else `install()` is a no-op.
 
 ### Package and build
 
@@ -320,7 +324,7 @@ delivery/                    development tool: `uv run delivery check | demo | t
 examples/workload.py         a NumPy program written without hotkernels in mind
 ```
 
-- **`kernels/` stays the only source.** The build takes `kernels/<name>/arm64/kernel.s` where it exists and `naive.c` where it does not, compiled with the flags the judge used. The C prototypes come from the specs, through the code the judge already has for it.
+- **`kernels/` stays the only source.** The build takes `kernels/<name>/<arch>/kernel.s` for the architecture being built where it exists, and `naive.c` where it does not, compiled with the flags the judge used. The C prototypes come from the specs, through the code the judge already has for it.
 - **Two distributions.** `hotkernels` is what a user installs. The judge, the survey and the new `delivery` tool stay in the development distribution. The repository becomes a `uv` workspace holding both.
 - **The package depends on NumPy and Jinja.** Jinja is there for the report, by the repository's rule on generated text, and is imported only when a report is rendered.
 - **Installing needs a compiler for now.** Wheels are under "Later" in the core design, and so is `python -m hotkernels script.py`.
@@ -377,7 +381,7 @@ The core design's, made measurable:
 
 - Wheels, PyPI and `python -m hotkernels`. "Later" in the core design.
 - Free-threaded Python and sub-interpreters.
-- x86-64 and Linux.
+- x86-64 and Linux, which are designed in [x86-64-design.md](x86-64-design.md).
 - Any array that is not a plain `ndarray`.
 - New kernels and new element types.
 
@@ -395,8 +399,8 @@ Each has a recommendation. The implementation follows the recommendations until 
 
 | # | Question | Recommendation |
 |---|---|---|
-| 1 | **Masked assignment rewrites unselected elements** (open question 1 in the findings) | Yes, with the interpreter lock held during the kernel |
-| 2 | **`clip` reads and writes the floating-point status register** (open question 2 in the findings) | Yes, as the findings recommend, with the flags cleared afterwards |
+| 1 | **Masked assignment rewrites unselected elements** (open question 1 in the findings; about the ARM64 kernel) | Yes, with the interpreter lock held during the kernel |
+| 2 | **`clip` reads and writes the floating-point status register** (open question 2 in the findings; about the ARM64 kernels) | Yes, as the findings recommend, with the flags cleared afterwards |
 | 3 | **Remove NumPy's Python wrapper for small arrays** where a deeper hook already delivers the kernel (`np.argmax` at 16 elements: 573 ns to 65 ns)? It means a second hook and a second set of checks for the same operation | Yes for `argmax` and `argmin` in step 2. `clip` after the exit criterion: its wrapper has more arguments to get right |
 | 4 | **Build system for the package** | `meson-python`: it compiles assembly sources without special handling and is what NumPy uses. Not yet tried in this repository |
 | 5 | **Which NumPy versions?** Pin to tested versions, or rely on the self-test at install? | The self-test, plus `delivery check` run against the oldest and newest NumPy 2 releases. A pin would switch hotkernels off on every NumPy release until someone updates it |

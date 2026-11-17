@@ -1,6 +1,6 @@
 # Working in this repository
 
-hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project, [docs/judge-design.md](docs/judge-design.md) for the judge [docs/delivery-design.md](docs/delivery-design.md) for how the kernels reach NumPy and [docs/release-design.md](docs/release-design.md) for how releases are made.
+hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project, [docs/judge-design.md](docs/judge-design.md) for the judge [docs/delivery-design.md](docs/delivery-design.md) for how the kernels reach NumPy and [docs/release-design.md](docs/release-design.md) for how releases are made. The kernels exist for ARM64. x86-64 is designed in [docs/x86-64-design.md](docs/x86-64-design.md) and not built.
 
 This file is for coding agents. The first half applies to any work here; the second half applies when you are writing or tuning a kernel.
 
@@ -32,7 +32,7 @@ These apply to all Python in this repository.
 
 A release gathers short notes left by the pull requests since the last one. You write the note for your pull request.
 
-**When a note is needed.** Your pull request changes `hotkernels/`, or a kernel the package installs (its `kernels/<name>/arm64/kernel.s`, `naive.c` or `spec.py`), and a user of the package would notice: a call served by a new kernel, a faster kernel, a fixed result or crash, a supported Python or NumPy version gained or lost, different `report()` output. Changes that touch only `judge/`, `survey/`, `delivery/`, `docsite/`, `release/`, `docs/` or a README need no note. CI checks this with `uv run release check-note`; run it yourself before pushing.
+**When a note is needed.** Your pull request changes `hotkernels/`, or a kernel the package installs (its `kernels/<name>/<arch>/kernel.s`, `naive.c` or `spec.py`), and a user of the package would notice: a call served by a new kernel, a faster kernel, a fixed result or crash, a supported Python or NumPy version gained or lost, different `report()` output. Changes that touch only `judge/`, `survey/`, `delivery/`, `docsite/`, `release/`, `docs/` or a README need no note. CI checks this with `uv run release check-note`; run it yourself before pushing.
 
 **When it is not.** A change in those paths that no user would notice, such as a comment, a rename or a refactor with identical behaviour, gets the `no release note` label instead. Say in the pull request description why.
 
@@ -53,7 +53,7 @@ If a pull request does two of these, pick the one a user cares about most. One n
 - One to three sentences, plain Markdown, no heading. It becomes one bullet in the release notes.
 - Write for someone who calls NumPy, not for someone who works on this repository. Name the NumPy call and element type (`np.cumsum` on `int32`), not the kernel's file name or the hook that serves it.
 - Say what changed for them, not how. "`np.clip(x, lo, hi, out=x)` gave wrong results on some data and now goes to NumPy", not "added an aliasing check in hook_loop.c".
-- A speed figure is allowed if it comes from `uv run judge run` or `uv run delivery time` on native hardware. Give the size it was measured at. It will be re-measured at release.
+- A speed figure is allowed if it comes from `uv run judge run` or `uv run delivery time` on native hardware. Give the size it was measured at. It will be re-measured at release. Once the package ships for more than one architecture, also name the one the figure was measured on.
 - Do not mention the pull request number in the text; the release notes add it.
 
 Example, `release-notes/upcoming/31.kernel.md`:
@@ -138,9 +138,18 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 - **No reads or writes outside the buffers, by even one byte.** This is strict: loading a full vector that extends past the end of an array is a failure, even though it would usually be harmless. Handle leftover elements inside the buffer, for example with a scalar loop, or with a final vector that overlaps the previous one and ends exactly at the end of the array.
 - **Inputs are read-only.** Writing to an input buffer crashes. A buffer the spec declares `InOut` is the exception: the kernel reads and modifies it in place, and may store an element's own bits back to it.
 - **Write only the output you report.** If the kernel returns a count, it must not write beyond that many elements. The one exception is an output the spec declares `scratch=True`: there the kernel may write anywhere inside the buffer's capacity, and only the reported elements have to be right. Writing past the capacity is always a failure. Check `spec.py` before relying on this; the default is strict.
-- **No function calls, no system calls, no writable data.** Read-only constants are fine (`.section __TEXT,__const` or `__TEXT,__literal16`).
+- **No function calls, no system calls, no writable data.** Read-only constants are fine; the section they go in is listed under the architecture below.
 - **Export exactly one symbol:** the kernel itself.
 - **Match NumPy exactly** unless the spec declares a tolerance. This includes NaN, infinities, signed zeros and which element wins a tie.
+
+### More than one architecture
+
+`spec.py` and `naive.c` are shared. Each architecture has its own `kernel.s`, and the judge builds the one that matches the machine it runs on. Kernels exist for ARM64 only. x86-64 is designed in [docs/x86-64-design.md](docs/x86-64-design.md); its conventions are added here with the judge's port, and until then there is no x86-64 kernel to write.
+
+- **The other architecture's kernel and log are reading material, not a template.** Take the idea and the proofs from them. Choose the instructions, block sizes and paths for the processor you are on.
+- **A dead end there is not a dead end here.** An attempt rejected on another architecture was rejected on that processor. Do not skip it because of that log; try it and record what the judge says.
+- **Say which architecture a statement is about.** In `attempts.md` and in `docs/`, a limit such as "the core loads three vectors per cycle" belongs to one processor. Name it.
+- **A change that removes a caveat or needs a rule changed is not yours to keep.** If a kernel on your architecture would not need a constraint the other one has, or would need the judge to allow something it forbids, report it with the judge's figures and stop.
 
 ### ARM64 on macOS
 
@@ -152,6 +161,7 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 - You must preserve `x19` to `x28`, `x29`, the stack pointer, and the low 64 bits of `v8` to `v15`. Prefer not to use them at all.
 - Never use `x18`. The platform reserves it.
 - `//` and `;` both start a comment.
+- Read-only constants go in `.section __TEXT,__const` or `__TEXT,__literal16`.
 - Unaligned vector loads and stores are allowed and cost nothing extra on this hardware. Buffers are not guaranteed to be aligned.
 - Kernels are only ever called with `n >= min_n` from the spec.
 

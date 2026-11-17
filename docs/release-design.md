@@ -63,7 +63,7 @@ The file name is the pull request number and a type. The types become the sectio
 | `compat` | Compatibility | A Python or NumPy version gained or lost, a new platform, a change to what `install()` installs by default |
 | `change` | Other changes | Anything else a user would notice, such as `report()` output |
 
-**Which pull requests need one.** Those that change `hotkernels/`, or a kernel the package installs (`kernels/<name>/arm64/kernel.s` or `naive.c`). A CI job checks this. A pull request in those paths that a user would not notice, such as a comment or a refactor, gets the `no release note` label and the job passes. Pull requests that touch only the judge, the survey, the documentation site or `docs/` need nothing.
+**Which pull requests need one.** Those that change `hotkernels/`, or a kernel the package installs (`kernels/<name>/<arch>/kernel.s` or `naive.c`). A CI job checks this. A pull request in those paths that a user would not notice, such as a comment or a refactor, gets the `no release note` label and the job passes. Pull requests that touch only the judge, the survey, the documentation site or `docs/` need nothing.
 
 **Who writes it.** Whoever opens the pull request, which is usually an agent. [AGENTS.md](../AGENTS.md) tells agents when a note is needed, how to name it and how to write it. The note is short; the long text is written once per release, in the highlights.
 
@@ -200,6 +200,15 @@ Done once by the maintainer:
 | 5 | The first release, `0.1.0`, to PyPI | Steps 1 to 4, and [issue 18](https://github.com/sofeikov/hotkernels/issues/18) if the release is to claim a NumPy range |
 
 Steps 1 and 2 can land now; they are useful before anything is published, because notes pile up from the next pull request.
+
+## More than one platform
+
+The pipeline was built for one platform, macOS on ARM64. A second, Linux on x86-64, is proposed in [x86-64-design.md](x86-64-design.md#the-package-and-its-delivery). What it changes here:
+
+- **`build` and `test` run once per platform**, each on a runner of that platform. Nothing is uploaded until every platform's wheels are built and tested.
+- **C kernels in a wheel are compiled for the oldest processor that platform's wheels claim to run on:** `apple-m1` on macOS, the x86-64-v3 level on Linux.
+- **A note's speed figure names its platform** once the package ships for more than one.
+- **Re-measuring needs every platform.** Step 5 of the release pull request runs on the maintainer's machine, which is one platform. How the other platform's figures are re-measured is not decided. It is [open issue 6](x86-64-design.md#open-issues) of the x86-64 design.
 
 ## Out of scope
 
