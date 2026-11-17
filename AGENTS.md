@@ -1,6 +1,6 @@
 # Working in this repository
 
-hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project, [docs/judge-design.md](docs/judge-design.md) for the judge [docs/delivery-design.md](docs/delivery-design.md) for how the kernels reach NumPy and [docs/release-design.md](docs/release-design.md) for how releases are made. The kernels exist for ARM64. x86-64 is designed in [docs/x86-64-design.md](docs/x86-64-design.md) and not built.
+hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project, [docs/judge-design.md](docs/judge-design.md) for the judge [docs/delivery-design.md](docs/delivery-design.md) for how the kernels reach NumPy and [docs/release-design.md](docs/release-design.md) for how releases are made. The kernels exist for ARM64. The judge also runs on Linux x86-64, where kernels are being written to the plan in [docs/x86-64-design.md](docs/x86-64-design.md).
 
 This file is for coding agents. The first half applies to any work here; the second half applies when you are writing or tuning a kernel.
 
@@ -13,6 +13,33 @@ This file is for coding agents. The first half applies to any work here; the sec
 - Timings are only meaningful on native hardware. Never report numbers taken under emulation.
 - A pull request that changes what a user of the package gets leaves a release note. See [Release notes](#release-notes).
 - READMEs describe the present state only: what exists and how to use it. No phases, status, roadmap or development history. Plans belong in `docs/`, and history belongs in git. When a change makes a README inaccurate, update it in the same change.
+- A change is not finished until every text that describes it is right. See [Documentation moves with the change](#documentation-moves-with-the-change).
+
+## Documentation moves with the change
+
+The documentation and the explanations written for users are part of the change, not a follow-up. Update them in the same pull request as the code, every time, without being asked.
+
+**Find what the change made untrue.** Search the repository for the kernel's name, the NumPy call, and any count or figure the change moves (`grep -rn "20 of the 22" --include='*.md' .`). A statement that was true before the change and is false after it is a defect of the change, wherever it is written.
+
+**Where to look.**
+
+| The change affects | Update |
+|---|---|
+| Which NumPy calls a kernel takes, or the conditions for it | `docsite/pages/start.md` ("What gets faster", "Things worth knowing"), `hotkernels/README.md`, the hook table in `docs/delivery-design.md`, `docsite/pages/report/delivery.md` |
+| How many kernels exist, are installed, or are bit-identical | `README.md`, `hotkernels/README.md`, `docsite/pages/index.md`, the report chapters under `docsite/pages/report/` that quote the count |
+| A speed figure | `README.md` (the docsite reads its tables from there), `docs/kernel-findings.md`, `delivery/results/` for figures taken from Python. Only figures from native hardware, with the size they were measured at |
+| How a kernel works, what it requires of its caller, or a limit it has | `docs/kernel-findings.md`, the kernel's chapter under `docsite/pages/report/`, the header comment of its `kernel.s` |
+| The judge: the spec format, a command, a field of a case description | `docs/judge-design.md`, `kernels/README.md`, the kernel half of this file, `docsite/pages/report/judge.md` |
+| What `report()` prints | The sample output in `docsite/pages/start.md` |
+| The tools: a command added, renamed or removed | The "Using ..." section of `README.md` |
+
+**Design documents.** A design in `docs/` is written before the code. When the building departs from it, say so in the document in the same pull request (a "What changed in the building" section, as in `docs/delivery-design.md`), and resolve what it listed as open. Do not leave a design that describes something other than what was built.
+
+**Explain it to a user.** Where the change is visible to someone who calls NumPy, the user-facing pages (`docsite/pages/start.md`, `hotkernels/README.md`) say what they get and what they must know, in their terms: the call they write, not the hook or the file that serves it. This is in addition to the release note, which is one bullet; the pages are where the conditions and the caveats go.
+
+**Say what you updated.** The pull request description lists the documents changed, or says that the change makes no existing statement untrue and how that was checked.
+
+`uv run docsite build` must succeed after any change to `docsite/`, to `README.md`, or to a file the site reads its figures from.
 
 ## Python code standards
 
@@ -144,7 +171,7 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 
 ### More than one architecture
 
-`spec.py` and `naive.c` are shared. Each architecture has its own `kernel.s`, and the judge builds the one that matches the machine it runs on. Kernels exist for ARM64 only. x86-64 is designed in [docs/x86-64-design.md](docs/x86-64-design.md); its conventions are added here with the judge's port, and until then there is no x86-64 kernel to write.
+`spec.py` and `naive.c` are shared. Each architecture has its own `kernel.s`, and the judge builds the one that matches the machine it runs on. Kernels exist for ARM64. The judge runs on Linux x86-64 too, with its conventions below; the plan for its kernels is [docs/x86-64-design.md](docs/x86-64-design.md).
 
 - **The other architecture's kernel and log are reading material, not a template.** Take the idea and the proofs from them. Choose the instructions, block sizes and paths for the processor you are on.
 - **A dead end there is not a dead end here.** An attempt rejected on another architecture was rejected on that processor. Do not skip it because of that log; try it and record what the judge says.
@@ -163,6 +190,25 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 - `//` and `;` both start a comment.
 - Read-only constants go in `.section __TEXT,__const` or `__TEXT,__literal16`.
 - Unaligned vector loads and stores are allowed and cost nothing extra on this hardware. Buffers are not guaranteed to be aligned.
+- Kernels are only ever called with `n >= min_n` from the spec.
+
+### x86-64 on Linux
+
+- The file starts with `.intel_syntax noprefix`. It is GNU assembler syntax, and the judge assembles it with GNU `as`.
+- The symbol for C function `foo` is `foo`. Declare it with `.globl foo` and `.type foo, @function`, and align with `.p2align 4`.
+- Labels that start with `.L` are local to the file. Use them for everything except the kernel symbol.
+- Integer and pointer arguments arrive in `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`, in that order, and floating-point arguments in `xmm0` to `xmm7`. The result goes in `rax` or `xmm0`. The two kinds are numbered separately: in `f(double *x, size_t n, double lo, double hi)` the pointer is `rdi`, `n` is `rsi`, `lo` is `xmm0` and `hi` is `xmm1`. A seventh integer argument is on the stack at `[rsp + 8]`.
+- You may freely use `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8` to `r11`, and all of `xmm0` to `xmm15` and `ymm0` to `ymm15`. No vector register is preserved across a call.
+- You must preserve `rbx`, `rbp`, `r12` to `r15` and the stack pointer. Prefer not to use them at all. Leave the direction flag clear and the rounding mode and exception masks in MXCSR as you found them.
+- **Run `vzeroupper` before every `ret` if the kernel wrote any `ymm` register.** The judge asks the processor whether the upper halves are still in use and fails the kernel as `calling convention` if they are.
+- A leaf kernel may use the 128 bytes below `rsp` without moving it. If it moves `rsp`, it restores it before returning and keeps it 16-byte aligned.
+- **Use only x86-64-v3 instructions:** AVX2, FMA, BMI1, BMI2, LZCNT, MOVBE, POPCNT and everything older. No AVX-512, and nothing newer than the level even where this machine runs it (AVX-VNNI, GFNI, VAES, SHA, ADX). No MMX and no x87. The judge refuses anything else as `lint`.
+- `#` starts a comment, and so does `/* */`. `//` does not.
+- Read-only constants go in `.section .rodata` and are addressed relative to `rip`: `[rip + .Lconstants]`.
+- End the file with `.section .note.GNU-stack,"",@progbits`. Without it the library would need an executable stack, and the judge fails the kernel as `lint`.
+- Unaligned vector loads and stores are allowed, and buffers are not guaranteed to be aligned. Do not assume they are free: a 32-byte access that straddles two cache lines costs more than one that does not. Measure.
+- `pext` and `pdep`, gathers and masked stores are allowed. They are fast on this machine and slow on some other x86-64 processors, so name each use in `attempts.md`.
+- The timing thread is pinned to one performance core. Several judges can run at once and each takes a different core, but they still share the last-level cache and memory, so sizes from about a million elements up are only trustworthy when nothing else is running.
 - Kernels are only ever called with `n >= min_n` from the spec.
 
 ### The attempts log

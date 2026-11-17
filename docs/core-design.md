@@ -79,7 +79,7 @@ Each kernel declares one of two modes in its spec.
 
 ## Architectures
 
-Two are in the design: ARM64 on macOS, which is built, and x86-64 on Linux, which is designed in [x86-64-design.md](x86-64-design.md).
+Two are in the design: ARM64 on macOS, which is built, and x86-64 on Linux, where the judge runs and the kernels are being written to [x86-64-design.md](x86-64-design.md).
 
 | Shared by every architecture | Per architecture |
 |---|---|

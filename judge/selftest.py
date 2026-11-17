@@ -14,7 +14,7 @@ from typing import Iterator
 import numpy as np
 
 from . import bench as B
-from .build import ARCH
+from .build import ARCH, ARM64, X86_64
 from .check import KERNEL, LINT, NAIVE, CheckResult, build_all, check
 from .render import render
 from .worker import CALLING_CONVENTION, MEMORY_SAFETY, WRONG_RESULT
@@ -32,7 +32,6 @@ EXPECT = {
         "aligned_only": WRONG_RESULT,
         "overread": MEMORY_SAFETY,
         "clobber_register": CALLING_CONVENTION,
-        "uses_x18": LINT,
     },
     "compress_f32": {
         "write_past_used": MEMORY_SAFETY,
@@ -58,6 +57,15 @@ EXPECT = {
         "needle_overread": MEMORY_SAFETY,
         "fixed_count": WRONG_RESULT,
     },
+}
+# Broken variants that exist for one architecture only, because the rule they
+# break does: architecture -> fixture kernel -> variant -> failure category.
+_ARCH_EXPECT = {
+    # macOS reserves x18.
+    ARM64: {"argmax_f32": {"uses_x18": LINT}},
+    # x86-64 kernels are held to an instruction-set level, and must clear the
+    # upper halves of the vector registers before returning.
+    X86_64: {"argmax_f32": {"beyond_level": LINT, "no_vzeroupper": CALLING_CONVENTION}},
 }
 # A variant that is correct but slow: it must pass correctness and then be
 # reported as significantly slower than naive C.
@@ -144,9 +152,20 @@ def _slow_outcomes(speed: bool) -> Iterator[Outcome]:
                   f"[{overall['lo']:.2f} – {overall['hi']:.2f}]")
 
 
+def _expected() -> dict[str, dict[str, str]]:
+    """Return every broken variant this architecture has.
+
+    Returns:
+        Fixture kernel -> variant -> the failure category that must catch it:
+        the variants every architecture shares, then this one's own.
+    """
+    own = _ARCH_EXPECT.get(ARCH, {})
+    return {name: {**variants, **own.get(name, {})} for name, variants in EXPECT.items()}
+
+
 def _outcomes(speed: bool) -> Iterator[Outcome]:
     """Yield the outcome of every selftest step, in order."""
-    for name, variants in EXPECT.items():
+    for name, variants in _expected().items():
         yield _correct_outcome(name)
         for variant, expected in variants.items():
             yield _broken_outcome(name, variant, expected)

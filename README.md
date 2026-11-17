@@ -11,6 +11,8 @@ Kernels are written by coding agents iterating against a judge. The judge checks
 
 **On an Apple M1 Pro, all 22 kernels are faster than NumPy at every size measured. At a million elements, 17 of them are more than 5x faster and the best is 76x. Twenty return NumPy's result bit for bit.**
 
+The kernels that exist are ARM64 NEON, for Apple Silicon. x86-64 on Linux is the second architecture: the judge runs there, and AVX2 kernels are being written against the same specs. None is installed yet. The plan, and what a first measurement says to expect, is in [docs/x86-64-design.md](docs/x86-64-design.md).
+
 ## Results
 
 How many times faster each kernel is than NumPy, and than the same loop written in plain C and compiled with `clang -O3`:
@@ -87,17 +89,17 @@ At 16 elements most of the gain is NumPy's own call path being skipped, not the 
 
 ## What is here
 
-- **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is.
-- **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32`, `compress_scratch_f32`, `tally_u8` and `rank_u8`, used to test the judge itself.
+- **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is. It runs on macOS ARM64 and on Linux x86-64.
+- **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32`, `compress_scratch_f32`, `tally_u8` and `rank_u8`, used to test the judge itself, each with an ARM64 and an x86-64 version.
 - **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. Recorded results are in `survey/results/`.
-- **Kernels** (`kernels/`): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an ARM64 version. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
+- **Kernels** (`kernels/`): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an ARM64 version. x86-64 versions are not written yet. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
 - **The package** (`hotkernels/`): what a user installs. A C extension points NumPy at the kernels, and `install()`, `uninstall()`, `enabled()` and `report()` control it. Twenty of the 22 kernels are installed.
 - **The delivery tool** (`delivery/`): tests and times the package from Python. Recorded timings are in `delivery/results/`.
 - **An example** (`examples/workload.py`): a NumPy program written without hotkernels in mind, used to show the effect of the one line.
 - **Release tooling** (`release/`, `release-notes/`): the notes each pull request leaves, and the commands that turn them into a release. Publishing to PyPI runs in [`.github/workflows/release.yml`](.github/workflows/release.yml).
 - **The documentation site** (`docsite/`): the pages published at [sofeikov.github.io/hotkernels](https://sofeikov.github.io/hotkernels/), with a technical report on how all of this works. Its figures are read from the files above when it is built.
 
-Supported platform: macOS on Apple Silicon (ARM64).
+Supported platform for the package: macOS on Apple Silicon (ARM64). The judge also runs on Linux x86-64.
 
 ## Using hotkernels
 
@@ -130,7 +132,7 @@ hotkernels.uninstall()          # NumPy is exactly as it was
 
 ## Using the judge
 
-Requires the Xcode command line tools and [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/) and a C toolchain: the Xcode command line tools on macOS, or clang and GNU binutils on Linux x86-64.
 
 ```bash
 uv run judge selftest            # prove the judge catches known-bad kernels
@@ -190,6 +192,7 @@ The tag starts the release workflow, which builds and tests the wheels and waits
 - [docs/delivery-design.md](docs/delivery-design.md): how the kernels reach unmodified NumPy code: the binding, `install()` and `report()`, and how they are tested
 - [docs/two-sizes-design.md](docs/two-sizes-design.md): a second length for `np.searchsorted` and `np.interp`, so their kernels can serve real calls
 - [docs/release-design.md](docs/release-design.md): how a release is made and published, and who can publish
+- [docs/x86-64-design.md](docs/x86-64-design.md): the second architecture: what to target, what changes, and how the kernels are carried over
 - [docs/distribution-design.md](docs/distribution-design.md): what a release contains: wheels, the source distribution, other platforms, `python -m hotkernels`
 - [AGENTS.md](AGENTS.md): rules for coding agents working in this repository
 - [kernels/README.md](kernels/README.md): how to add a kernel

@@ -11,17 +11,20 @@ import re
 _LABEL = re.compile(r"^\s*[\w.$]+:")
 # A C-style block comment.
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-# Directives that create writable data.
+# Directives that create writable data: the section shorthands, and a
+# `.section` naming a writable segment (Mach-O) or section (ELF).
 _DATA_DIRECTIVES = re.compile(
-    r"^\s*\.(data|bss|comm|lcomm|zerofill|tbss|tdata)\b|^\s*\.section\s+__DATA", re.IGNORECASE
+    r"^\s*\.(data|bss|comm|lcomm|zerofill|tbss|tdata)\b"
+    r"|^\s*\.section\s+(__DATA|\.(data|bss|tdata|tbss)\b)", re.IGNORECASE
 )
 
 # Per-architecture rules.
 #   calls:         mnemonics that call another function
 #   syscalls:      mnemonics that enter the operating system
-#   reserved:      pattern matching a register the platform reserves
+#   reserved:      pattern matching a register the platform reserves, or None
 #   reserved_name: that register's name, for the message
 #   line_comment:  extra characters that start a comment, besides `//`
+#   prefixes:      words that may stand in front of a mnemonic on the same line
 _RULES = {
     "arm64": {
         "calls": {"bl", "blr", "blraa", "blrab", "blraaz", "blrabz"},
@@ -29,6 +32,18 @@ _RULES = {
         "reserved": re.compile(r"\b[xw]18\b", re.IGNORECASE),
         "reserved_name": "x18",
         "line_comment": [";"],
+        "prefixes": set(),
+    },
+    # x86-64 on Linux reserves no general register. Instructions outside the
+    # kernel's level are refused by the assembler, not here (see build.py).
+    "x86_64": {
+        "calls": {"call"},
+        "syscalls": {"syscall", "sysenter", "int"},
+        "reserved": None,
+        "reserved_name": None,
+        "line_comment": ["#"],
+        "prefixes": {"notrack", "bnd", "lock", "rep", "repe", "repz", "repne", "repnz",
+                     "data16", "addr32", "rex64"},
     },
 }
 
@@ -66,15 +81,17 @@ def lint_source(text: str, arch: str) -> list[str]:
             issues.append(f"line {number}: declares writable data")
             continue
         line = _strip_labels(raw)
-        tokens = line.split()
+        tokens = [token.lower() for token in line.split()]
+        while tokens and tokens[0] in rules["prefixes"]:
+            tokens = tokens[1:]
         if not tokens:
             continue
-        mnemonic = tokens[0].lower()
+        mnemonic = tokens[0]
         if mnemonic in rules["calls"]:
             issues.append(f"line {number}: calls a function ({mnemonic})")
         if mnemonic in rules["syscalls"]:
             issues.append(f"line {number}: makes a system call ({mnemonic})")
         is_directive = mnemonic.startswith(".")
-        if not is_directive and rules["reserved"].search(line):
+        if not is_directive and rules["reserved"] and rules["reserved"].search(line):
             issues.append(f"line {number}: uses the reserved register {rules['reserved_name']}")
     return issues
