@@ -19,6 +19,7 @@ from typing import Callable
 import numpy as np
 
 from . import cases, cores
+from . import placement as P
 from .spec import DEFAULT_SCALARS, Kernel, Out, element_count, np_dtype
 
 # Array sizes timed by default: from data that fits in the fastest cache to
@@ -63,6 +64,9 @@ _CANARY_REPEATS = 5
 CANARY_TOLERANCE = 0.03
 
 DEFAULT_DISTRIBUTION = "random"
+# In the table that times the close placement: the subject itself, timed with
+# its output clear of the inputs as everywhere else.
+PLACED_APART = "apart"
 # The ctypes type that carries each scalar type into the C timing loop.
 _SCALAR_CTYPES = {"usize": ctypes.c_size_t, "i64": ctypes.c_int64,
                   "f32": ctypes.c_float, "f64": ctypes.c_double}
@@ -184,8 +188,35 @@ def timing_label(dist: str, scalars: str) -> str:
     return dist if scalars == DEFAULT_SCALARS else f"{dist}, scalars={scalars}"
 
 
+def _placed_outputs(k: Kernel, pool: list[dict[str, np.ndarray]], n: int,
+                    scalars: dict[str, int | float], placement: str) -> list[dict[str, np.ndarray]]:
+    """Make the output buffers of every pool entry, placed against that entry's inputs.
+
+    The allocator is not asked where an output goes, because where it sits
+    relative to the inputs changes the time of a call (see judge/placement.py).
+    Only Out buffers are placed. An in-place buffer is its own input.
+
+    Args:
+        k: The kernel's spec.
+        pool: The input arrays of each pool entry, by argument name.
+        n: The value of the kernel's Size argument.
+        scalars: The scalar values of the call, by argument name.
+        placement: P.APART or P.CLOSE.
+
+    Returns:
+        For each pool entry, its uninitialised output arrays by argument name.
+        Empty dictionaries for a kernel without an Out buffer.
+    """
+    out_args = [a for a in k.outs if isinstance(a, Out)]
+    shapes = [(element_count(a, n, scalars=scalars), np_dtype(a.dtype)) for a in out_args]
+    calls = [[entry[a.name] for a in k.ins] for entry in pool]
+    return [{a.name: array for a, array in zip(out_args, made)}
+            for made in P.place(calls, shapes, placement)]
+
+
 def _timing_setup(k: Kernel, harness: Harness, contenders: dict[str, int | None],
-                  dist: str, n: int, scalars: str = DEFAULT_SCALARS) -> _TimingSetup:
+                  dist: str, n: int, scalars: str = DEFAULT_SCALARS,
+                  placement: str = P.APART) -> _TimingSetup:
     """Build one timing function per contender for a given distribution and size.
 
     Args:
@@ -196,6 +227,9 @@ def _timing_setup(k: Kernel, harness: Harness, contenders: dict[str, int | None]
         dist: Name of the input distribution.
         n: Element count.
         scalars: Name of the scalar set whose values every call is given.
+        placement: Where the output buffers of the native contenders sit
+            relative to the inputs: P.APART or P.CLOSE. The NumPy oracle
+            allocates its own result, so this does not reach it.
 
     Returns:
         The timing functions and the buffers they point into.
@@ -205,8 +239,7 @@ def _timing_setup(k: Kernel, harness: Harness, contenders: dict[str, int | None]
     # largest, so that all of it still fits the fastest cache.
     npool = _pool_size(k.largest_buffer(n, scalars))
     pool = [_inputs(k, dist, n, seed, scalar_values) for seed in range(npool)]
-    outs = [{a.name: np.empty(element_count(a, n, scalars=scalar_values), np_dtype(a.dtype))
-             for a in k.outs if isinstance(a, Out)} for _ in range(npool)]
+    outs = _placed_outputs(k, pool, n, scalar_values, placement)
     native_scalars = [scalar_values[a.name] for a in k.scalars]
 
     # One array of pointers per buffer argument, one pointer per pool entry.
@@ -278,6 +311,63 @@ def measure(k: Kernel, harness: Harness, contenders: dict[str, int | None],
                 data[label][n] = _sample(setup.runners, samples)
                 if progress:
                     progress(label, n)
+    return data
+
+
+def has_placed_output(k: Kernel) -> bool:
+    """Say whether a kernel writes a buffer whose place relative to an input can vary.
+
+    Args:
+        k: The kernel's spec.
+
+    Returns:
+        True for a kernel with at least one Out buffer and at least one input.
+    """
+    return bool(k.ins) and any(isinstance(a, Out) for a in k.outs)
+
+
+def measure_close(k: Kernel, harness: Harness, subject: str, contenders: dict[str, int],
+                  sizes: list[int] = SIZES, samples: int = SAMPLES,
+                  progress: Callable[[str, int], None] | None = None) -> Measurements:
+    """Time native contenders with each output buffer just behind its input.
+
+    This is the placement every other timing avoids (see judge/placement.py).
+    It is timed because a caller's two arrays of a power-of-two size often sit
+    exactly there. One table is taken: the first distribution, with the
+    default scalars. It starts at the first size that is timed on a single
+    input: the outputs of a pool of small inputs cannot each be close to their
+    own input and stay close to one another, and spreading them out would be
+    timed instead.
+
+    Args:
+        k: The kernel's spec. It must have an Out buffer and an input.
+        harness: The compiled timing loop.
+        subject: Name of the contender the table is about.
+        contenders: Contender name -> native function address, the subject
+            among them. The NumPy oracle cannot take part: it allocates its
+            own result.
+        sizes: Element counts to time. Those below the kernel's `min_n`, and
+            those timed on a pool of several inputs, are skipped.
+        samples: Timing samples per contender per size.
+        progress: Called with (table name, size) after each size finishes.
+
+    Returns:
+        The samples in the shape `measure` returns, with one more contender,
+        PLACED_APART: the subject timed on the same inputs with its output
+        clear of them, interleaved with the rest.
+    """
+    dist = next(iter(k.distributions)) if k.distributions else DEFAULT_DISTRIBUTION
+    label = timing_label(dist, DEFAULT_SCALARS)
+    data: Measurements = {label: {}}
+    for n in sizes:
+        if n < k.min_n or _pool_size(k.largest_buffer(n)) > 1:
+            continue
+        close = _timing_setup(k, harness, contenders, dist, n, placement=P.CLOSE)
+        apart = _timing_setup(k, harness, {subject: contenders[subject]}, dist, n)
+        runners = {**close.runners, PLACED_APART: apart.runners[subject]}
+        data[label][n] = _sample(runners, samples)
+        if progress:
+            progress(label, n)
     return data
 
 

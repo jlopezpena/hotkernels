@@ -328,6 +328,7 @@ A fixed sweep: 16, 64, 256, 1,024, 4,096, 16,384, 65,536, 262,144, 1,048,576, 4,
 - **Varied inputs.** At small sizes the loop cycles through a pool of different inputs. Timing one input repeatedly lets the processor memorise its branch pattern, which makes branchy code look faster than it is on real data.
 - **Input shapes.** Where speed depends on the data (how many mask elements are true, where the maximum sits), the spec lists a few named distributions and each is timed.
 - **Performance cores.** The timing thread is kept on a performance core. On macOS it asks for the highest scheduling priority class, which does that.
+- **Where the output sits.** The judge decides where each output buffer of a timed call lies relative to that call's inputs, and does not leave it to the allocator. See [Where the output buffer sits](#where-the-output-buffer-sits).
 
 ### What is reported
 
@@ -348,6 +349,43 @@ argmax_f32 (arm64, Apple M1 Pro)        vs naive C              vs NumPy (includ
   ...
   overall                   2.10x    2.05 – 2.16             ...
 ```
+
+### Where the output buffer sits
+
+*Added when the survey was run on x86-64.*
+
+**What goes wrong.** An x86-64 processor decides whether a load has to wait for an earlier store by comparing only the address bits within a 4 KB memory page. If the output buffer starts a few bytes after the input, counted within the page, each store looks like a store to the elements about to be loaded, and the loop stalls. The naive C running sum over 1,048,576 `int64` then takes 1.46 ms instead of 0.29 ms. The slowdown is largest 8 to 32 bytes after the input, visible at 128 and gone at 256.
+
+**Why the judge has to care.** It used to take its timing buffers from NumPy's allocator. Two arrays of a power-of-two size made one after the other often sit exactly 16 bytes apart within the page, because the allocator puts a 16-byte header before each. Which sizes of a sweep landed there changed from one process to the next. A `compare` could then be decided by the allocator.
+
+**What the judge does.**
+
+- **Every timing is taken with the output clear of the inputs.** Each output buffer starts either exactly where each input of its call does, counted within the page, or at least 256 bytes after it. This is what `run`, `bench`, `compare` and the selftest time.
+- **`run` and `bench` add one table that times the bad case on purpose:** the output 16 bytes behind its input. A caller's arrays are often there, so a kernel that stalls in that position is slower for real users than its main table says. The table has the kernel in the close placement, the same code with the output clear (`apart`), and naive C in the close placement. A speedup below 1 against `apart` is what the placement costs.
+- **The two placements differ in nothing else.** In both, the output starts at the same position within a 64-byte cache line as it would 16 bytes after the input. Without that, the two would also differ in how many vector stores straddle two lines, which alone moved times by up to 17%.
+- **The input an output is placed against** is the first one with as many elements as the output, since that is the one a kernel reads in step with its writes; otherwise the first input.
+- **Only `Out` buffers are placed.** An in-place buffer is its own input.
+- **The outputs of a pool of small inputs are carved from one block**, each as low as its rule allows, so they stay as close together as the inputs are.
+
+```
+cumsum_i64: output buffer 16 bytes behind its input, counted within a memory page
+
+           n     naive C      apart*  speedup  [95% interval]
+       4,096    783.1 ns    782.8 ns    1.00x  [1.00 – 1.00] n.s.
+      65,536     12.5 us     12.5 us    1.00x  [1.00 – 1.00] n.s.
+     262,144    449.4 us     65.6 us    0.15x  [0.14 – 0.15]
+   1,048,576     1.46 ms    294.1 us    0.20x  [0.20 – 0.20]
+   4,194,304     2.57 ms     2.61 ms    1.02x  [1.01 – 1.03]
+```
+
+That is `cumsum_i64` as plain C on the Intel Core i5-14600KF. The cost shows where the data lies in the third-level cache, and not where it fits the second-level cache or is larger than all of them.
+
+**Limits.**
+
+- **The close table covers one distribution and the default scalars**, and starts at the first size that is timed on a single input. The outputs of a pool of small inputs cannot each be 16 bytes behind their own input and stay close to one another, and spreading them over many pages would be timed instead.
+- **The close table is not part of the overall figure** and plays no part in `compare`. Whether a kernel has to do well in it is for a person to decide.
+- **NumPy is not in it, and its column in the main table is not placed.** The oracle allocates its own result, so the allocator still decides where that lies. A NumPy time can be several times higher at one size than at its neighbours for this reason. `uv run delivery time` measures real calls and is the place to compare with NumPy.
+- **The same rule runs on ARM64.** It costs nothing where the processor compares whole addresses, and the close table then reads 1.00x. That has not been measured yet.
 
 ### Noise
 
@@ -445,6 +483,7 @@ The stages above state rules. This section says how each platform enforces them.
 | Must be preserved | `x19` to `x28`, `x29`, the stack pointer, the low 64 bits of `v8` to `v15` | `rbx`, `rbp`, `r12` to `r15`, the stack pointer. Also: the direction flag clear, the rounding mode and exception masks unchanged, the upper halves of the vector registers cleared before returning, which the wrapper asks the processor about |
 | Read-only constants | `__TEXT,__const` or `__TEXT,__literal16` | `.rodata` |
 | Performance cores | The highest scheduling priority class | The timing thread pinned to one performance core. The core is claimed through a lock file, so judges running at once take different cores |
+| Output placement | The same rule; no effect is known and none has been measured | The reason for the rule: an output just behind its input stalls the loop. See [Where the output buffer sits](#where-the-output-buffer-sits) |
 | Object format | Mach-O: symbols start with `_`, libraries end in `.dylib` | ELF: plain symbol names, `.so`, and every kernel must declare that it needs no executable stack |
 | Sign of a throttled machine | Low Power Mode | Turbo switched off, a power-saving governor or energy preference, a load average of 2 or more, or a core shared with another judge |
 | Integer arguments | Eight in registers | Six in registers, a seventh and eighth on the stack |
@@ -471,4 +510,5 @@ Everything else is the same on both: the cases, the guarded buffers, the compari
 | Agent target | At least 10% over naive C, then continue until options are exhausted. If 10% is not possible, report best effort and why. |
 | Committing results | Committed for now; revisit later. |
 | NumPy timing | Best effort: timed from Python with call overhead, labelled as such. Stricter if results warrant it. |
+| Where timing outputs sit | The judge places them: clear of the inputs for every timing, and `run` adds a table with the output 16 bytes behind its input. |
 | Fixture kernels | `argmax_f32`, `compress_f32` and `compress_scratch_f32`. |

@@ -126,6 +126,8 @@ If you believe the spec, the naive reference or the judge is wrong, stop and say
 
 `compare` and `run` both run `check` first.
 
+The judge decides where a timed call's output buffer sits relative to its inputs: clear of them. For a kernel with an output buffer, `run` prints a second table with the output 16 bytes behind its input, a position callers often hit and where a loop can stall on x86-64. It plays no part in `compare`. If a kernel is slower there than with the output clear, say so in `attempts.md` with the table's figures; an attempt aimed at that table is judged by `run`, since `compare` does not see it.
+
 ### Reading a failure
 
 ```
@@ -208,6 +210,7 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 - End the file with `.section .note.GNU-stack,"",@progbits`. Without it the library would need an executable stack, and the judge fails the kernel as `lint`.
 - Unaligned vector loads and stores are allowed, and buffers are not guaranteed to be aligned. Do not assume they are free: a 32-byte access that straddles two cache lines costs more than one that does not. Measure.
 - `pext` and `pdep`, gathers and masked stores are allowed. They are fast on this machine and slow on some other x86-64 processors, so name each use in `attempts.md`.
+- **An output just behind the input stalls a loop.** If the output buffer starts 8 to 128 bytes after the input, counted within a 4 KB page, the processor takes each store for a store to the elements about to be loaded. The second table of `run` times exactly that. A kernel may test the two addresses on entry and take a path that does not stall.
 - The timing thread is pinned to one performance core. Several judges can run at once and each takes a different core, but they still share the last-level cache and memory, so sizes from about a million elements up are only trustworthy when nothing else is running.
 - Kernels are only ever called with `n >= min_n` from the spec.
 

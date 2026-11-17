@@ -21,7 +21,9 @@ from . import bench as B
 from . import selftest as S
 from .build import ARCH, BUILD, CC, ROOT, BuildError, build_asm
 from .check import KERNEL, NAIVE, Built, CheckResult, build_all, check, format_result
+from .placement import CLOSE_BYTES
 from .render import render
+from .spec import Kernel
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +43,10 @@ EXIT_REFUSED = 2
 # Contender names used in timing reports.
 NUMPY = "numpy"
 NEW, OLD = "new", "old"
-_BENCH_LABELS = {KERNEL: "kernel", NAIVE: "naive C", NUMPY: "NumPy*"}
+_BENCH_LABELS = {KERNEL: "kernel", NAIVE: "naive C", NUMPY: "NumPy*", B.PLACED_APART: "apart*"}
+# Printed under the table that times the close placement.
+CLOSE_NOTE = ("'apart' is the same code with its output clear of the input, as in the table above. "
+              "A speedup below 1 is what the close placement costs.")
 _COMPARE_LABELS = {NEW: "new", OLD: "old"}
 
 NUMPY_NOTE = (
@@ -190,13 +195,44 @@ def run_bench(built: Built, quick: bool, locked: bool) -> dict:
 
     canary_before = harness.canary()
     data = B.measure(k, harness, contenders, sizes, samples, _log_progress)
+    close = _close_output(k, harness, subject, contenders, sizes, samples)
     canary_after = harness.canary()
 
     report = B.analyse(data, subject, baselines)
     report.update(kernel=k.name, samples=samples, subject=subject, baselines=baselines,
                   warnings=B.noise_warnings(canary_before, canary_after, harness.core),
                   environment=environment(locked))
+    if close:
+        report["close_output"] = close
     return report
+
+
+def _close_output(k: Kernel, harness: B.Harness, subject: str, contenders: dict[str, int | None],
+                  sizes: list[int], samples: int) -> dict | None:
+    """Time the subject with its output buffer just behind its input.
+
+    Args:
+        k: The kernel's spec.
+        harness: The compiled timing loop.
+        subject: Name of the contender the report is about.
+        contenders: Contender name -> native function address, or None for the
+            NumPy oracle, which is left out.
+        sizes: Element counts to time.
+        samples: Timing samples per contender per size.
+
+    Returns:
+        A report in the shape `B.analyse` returns, of the subject in the close
+        placement against itself placed apart and against the other native
+        contenders in the close placement. It also names its `baselines` and
+        the distance in `gap_bytes`. None for a kernel without an output
+        buffer that can be placed.
+    """
+    if not B.has_placed_output(k):
+        return None
+    native = {name: fn for name, fn in contenders.items() if fn is not None}
+    baselines = [B.PLACED_APART] + [name for name in native if name != subject]
+    data = B.measure_close(k, harness, subject, native, sizes, samples, _log_progress)
+    return {**B.analyse(data, subject, baselines), "baselines": baselines, "gap_bytes": CLOSE_BYTES}
 
 
 def log_bench(report: dict) -> None:
@@ -207,6 +243,13 @@ def log_bench(report: dict) -> None:
     log.info(render("timing.txt.j2", title=title, warnings=report["warnings"], report=report,
                     kernel=report["subject"], baselines=report["baselines"], labels=_BENCH_LABELS,
                     notes=[f"* {NUMPY_NOTE}"], verdict=None).rstrip())
+    close = report.get("close_output")
+    if close:
+        title = (f"{report['kernel']}: output buffer {close['gap_bytes']} bytes behind its input, "
+                 "counted within a memory page")
+        log.info("\n" + render("timing.txt.j2", title=title, warnings=[], report=close,
+                               kernel=report["subject"], baselines=close["baselines"],
+                               labels=_BENCH_LABELS, notes=[f"* {CLOSE_NOTE}"], verdict=None).rstrip())
 
 
 def save_run(report: dict, record: bool) -> None:

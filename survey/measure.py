@@ -29,6 +29,7 @@ import numpy as np
 from judge import cores
 from judge.build import C_FLAGS, CC, SHARED_SUFFIX
 from judge.cli import machine
+from judge.placement import CLEAR_BYTES, PAGE_BYTES, clear_of
 
 from .candidates import HELPERS, Cand
 
@@ -85,18 +86,9 @@ _MACRO_KERNEL = re.compile(r"[A-Z_]+\((\w+)")
 _PLAIN_KERNEL = re.compile(r"NOINLINE i64 (\w+)\(")
 # A pointer argument of a candidate: `ptr(<name of an array in its environment>)`.
 _POINTER_ARGUMENT = re.compile(r"ptr\((\w+)\)")
-# Size of a memory page. On x86-64 the processor compares only the address bits
-# within a page when it decides whether a load has to wait for an earlier
-# store. Two buffers that are megabytes apart still get in each other's way if
-# the output starts a few bytes after an input, counted within the page: the
-# stores are mistaken for stores to the elements about to be loaded. Measured
-# on an Intel Core i5-14600KF at 1,048,576 float64 elements, np.clip then
-# takes 8x as long and the naive C loop 1.5x.
-PAGE_BYTES = 4096
-# The effect was gone once the output started this many bytes after the input.
-CLEAR_BYTES = 256
 # Where in the page the survey puts an output buffer, counted from the first
-# input: as far from it as the page allows.
+# input: as far from it as the page allows. Why it is placed at all is
+# explained in judge/placement.py, whose rule for "clear of an input" is used.
 OUTPUT_GAP_BYTES = PAGE_BYTES // 2
 # How `pmset -g` reports that Low Power Mode is on.
 _LOW_POWER_ON = re.compile(r"lowpowermode\s+1")
@@ -210,28 +202,14 @@ def _input_addresses(cand: Cand, env: dict) -> list[int]:
     return [ptr(env[name]) for name in names if name != cand.out]
 
 
-def _clear_of(address: int, inputs: list[int]) -> bool:
-    """Say whether an output buffer at an address keeps out of the way of the inputs.
-
-    Args:
-        address: Where the output buffer would start.
-        inputs: Where the input buffers start.
-
-    Returns:
-        True when, counted within a page, the output starts either exactly
-        where each input does or at least CLEAR_BYTES after it.
-    """
-    gaps = [(address - start) % PAGE_BYTES for start in inputs]
-    return all(gap == 0 or gap >= CLEAR_BYTES for gap in gaps)
-
-
 def placed_output(cand: Cand, env: dict) -> np.ndarray | None:
     """Make a candidate's output buffer at a fixed place relative to its inputs.
 
     Left alone, the allocator decides where the output sits. For two arrays of
     a power-of-two size allocated one after the other, that is often 16 bytes
     after the input within the page, the worst place there is on x86-64 (see
-    PAGE_BYTES). The ratio would then measure the allocator, not the operation.
+    judge/placement.py). The ratio would then measure the allocator, not the
+    operation.
 
     Args:
         cand: The candidate.
@@ -252,7 +230,7 @@ def placed_output(cand: Cand, env: dict) -> np.ndarray | None:
     block = np.empty(made.nbytes + PAGE_BYTES, np.uint8)
     wanted = inputs[0] + OUTPUT_GAP_BYTES
     offsets = [(wanted + step - ptr(block)) % PAGE_BYTES for step in range(0, PAGE_BYTES, CLEAR_BYTES)]
-    offset = next(o for o in offsets if _clear_of(ptr(block) + o, inputs))
+    offset = next(o for o in offsets if clear_of(ptr(block) + o, inputs))
     return block[offset:offset + made.nbytes].view(made.dtype).reshape(made.shape)
 
 
