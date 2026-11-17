@@ -2,6 +2,9 @@
 
 This log holds two architectures. ARM64 (Apple M1 Pro) comes first and runs to "Where it stands". x86-64 (Intel Core i5-14600KF) follows under [x86-64](#x86-64), with its own numbering.
 
+**Verdict on x86-64: assembly kept.** Final `judge run`: 6.15x [6.09 – 6.23] faster than naive C overall
+(1.8x at 16 bytes, 10.4x to 11.4x at 4,096 and 16,384, 9.2x to 9.7x from 65,536 to 1,048,576, 4.7x at 4,194,304 and 16,777,216). Details under [x86-64](#x86-64).
+
 **Verdict on ARM64: assembly kept.** Final `judge run`: 5.83x [5.82 – 5.84] faster than naive C overall
 (3.3x at 16 bytes, 8.2–9.0x from 1,024 to 65,536, 5.0x from 262,144 to 4,194,304, 4.4x at 16,777,216).
 
@@ -216,4 +219,75 @@ far below what the caches deliver.
 - **compare:** significantly faster, 1.011x [1.000 – 1.024]
 - **Kept:** yes
 - **Notes:** 1.06x at 4,194,304 and 1.06x at 16,777,216, neither significant alone (their intervals reach from 0.96x to 1.19x), nothing elsewhere. The verdict is at the edge. What argues for it beyond the verdict is the micro-benchmark above the judge's largest size: 33% at 64 MB and 256 MB, which the judge does not time. Checked privately at the threshold: n of 4,194,303, 4,194,304 and five sizes just above it, at three alignments, on all-0xFF data.
+
+## x86-64 13. The one-block mixed loop from 512 to 2,047 bytes again, out of line and pinned
+
+- **Idea:** attempt 8 failed on its layout, not on its idea. Put the mixed block for 512 to 2,047 bytes out of line behind one more compare, start its loop on a 64-byte boundary, and let the plain path fall into the shared tail as before, so 256 bytes pay one untaken branch and nothing moves that is not pinned.
+- **check:** pass
+- **compare:** no significant difference, 1.024x [0.994 – 1.040]
+- **Kept:** no
+- **Notes:** 1.09x at 1,024 (6.3 ns to 5.7 ns, interval 1.07 to 1.16) and no significant difference at any other size, 256 included. The overall interval is wide because 4,194,304 and 16,777,216 came out 1.10x and 1.07x for code that is the same in both versions. That led to the check below.
+
+## x86-64: what the judge can resolve on this machine
+
+After attempt 13 the committed kernel was compared against itself, seven times, with nothing changed:
+
+| Run | 4,194,304 | 16,777,216 | Verdict |
+|---|---|---|---|
+| 1 | 0.95x [0.82 – 1.04] | 0.83x [0.81 – 0.87] | significantly slower, 0.975x [0.963 – 0.985] |
+| 2 | 0.98x [0.90 – 1.05] | 0.96x [0.87 – 1.09] | no significant difference, 1.000x [0.988 – 1.013] |
+| 3 | 1.01x [0.95 – 1.10] | 1.12x [1.03 – 1.24] | significantly faster, 1.011x [1.002 – 1.024] |
+| 4 | 1.03x [0.90 – 1.14] | 1.00x [0.85 – 1.13] | no significant difference, 0.995x [0.978 – 1.010] |
+| 5 | 1.00x [1.00 – 1.00] | 1.00x [1.00 – 1.01] | significantly slower, 0.994x [0.993 – 0.995] |
+| 6 | 0.99x [0.86 – 1.11] | 1.02x [0.86 – 1.15] | no significant difference, 1.001x [0.981 – 1.015] |
+| 7 | 1.00x [0.89 – 1.21] | 0.95x [0.87 – 1.16] | no significant difference, 0.995x [0.985 – 1.019] |
+
+- **Identical code got a "significant" verdict in three runs of seven.** Every size up to 1,048,576 read 1.00x in all seven. The two largest sizes decide it: they lie in the 24 MB cache that all cores share, and a desktop session was running.
+- **Run 5 was in another regime altogether:** 66 us at 4,194,304 and 255 us at 16,777,216 for both contenders, against 40 us and 165 us in the other runs, and with almost no scatter. The likely reason is whether the input buffer was given large pages; it was not investigated.
+- **What it means for this log.** An overall verdict within about 2.5% of 1.00x is inside what identical code produces here. Attempts 5 and 11 were kept on verdicts of that size, but each rests on a single size with a tight interval (1.18x at 16; 1.09x and 1.10x at 4,096 and 16,384), which the table above does not put in doubt. Attempt 10 has tight gains at 262,144 and 1,048,576 behind it. **Attempt 12 does not:** its verdict of 1.011x [1.000 – 1.024] is the same as run 3 above, and it changes only the two sizes that scatter. The judge has not shown that four streams are faster. The micro-benchmark has, most clearly above the judge's largest size. Whether it stays is for a person to decide.
+- **Attempt 13 is the mirror case:** a gain of 1.09x at 1,024 with a tight interval, not kept because the same two sizes widened the overall interval.
+- **The run stopped here.** The ideas left are all smaller than this floor: folding the load into `vpsadbw` on the 16-byte path, a second accumulator on the 64-byte path, the mixed loop below 512 bytes with a cheaper widening.
+
+## x86-64: where it stands
+
+Final `judge run` (30 samples per point; both final runs printed the judge's warning that the load average was above 2, from the desktop session and the runs before it, and agreed to within 1% overall):
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 0.9 ns | 1.7 ns | 1.80x [1.80 – 1.81] | 1.1 us | 1117x [1116 – 1119] |
+| 64 | 1.2 ns | 3.2 ns | 2.76x [2.75 – 2.76] | 1.1 us | 904x [903 – 905] |
+| 256 | 2.2 ns | 12.3 ns | 5.58x [5.58 – 5.58] | 1.1 us | 509x [508 – 509] |
+| 1,024 | 6.3 ns | 48.7 ns | 7.79x [7.78 – 7.81] | 1.4 us | 216x [216 – 217] |
+| 4,096 | 18.8 ns | 195.3 ns | 10.4x [10.39 – 10.41] | 2.0 us | 107x [107 – 107] |
+| 16,384 | 68.2 ns | 775.0 ns | 11.4x [11.31 – 11.38] | 5.3 us | 78.0x [77.64 – 78.15] |
+| 65,536 | 335.9 ns | 3.1 us | 9.23x [9.21 – 9.24] | 14.9 us | 44.3x [44.20 – 44.34] |
+| 262,144 | 1.3 us | 12.4 us | 9.66x [9.65 – 9.69] | 67.5 us | 52.6x [52.54 – 52.67] |
+| 1,048,576 | 5.2 us | 49.7 us | 9.58x [9.54 – 9.65] | 266.3 us | 51.3x [51.09 – 51.62] |
+| 4,194,304 | 42.6 us | 198.9 us | 4.67x [4.23 – 4.97] | 1.07 ms | 25.1x [22.69 – 26.69] |
+| 16,777,216 | 173.3 us | 816.4 us | 4.71x [4.50 – 5.13] | 4.29 ms | 24.8x [23.67 – 26.65] |
+| overall | | | 6.15x [6.09 – 6.23] | | 119x [118 – 121] |
+
+What holds it at each size:
+
+- **4,096 and 16,384:** 218 and 240 bytes per ns, 42 to 46 bytes per clock cycle. The ceiling of this scheme is 48: every vector costs two vector instructions and the core has three ports for them.
+- **65,536 to 1,048,576:** 195 to 202 bytes per ns. The second-level cache delivers that and no loop shape in the micro-benchmark did better.
+- **4,194,304 and 16,777,216:** 97 bytes per ns, set by the shared cache and by what else is using it.
+- **16 to 1,024:** the instruction count of a call. At 16 bytes the call takes 4.7 cycles.
+
+The candidates the design lists for this kernel (`docs/x86-64-design.md`):
+
+| Candidate | Outcome |
+|---|---|
+| `vpsadbw` against zero, no widening schedule | Kept (attempt 1). Alone it is held to 32 bytes per cycle by its one port, so it shares the loop with `vpmaddubsw` (attempt 4), which brings a widening schedule back |
+| Masked loads and stores for leftover elements | Not tried. The leftover bytes are taken by a vector that overlaps the previous one and is masked with `vpand` from a table, which stays inside the buffer and needs no decision about the rule |
+| Non-temporal stores | Does not apply: the kernel writes no buffer |
+| Alignment of data | Kept (attempt 3): 1.5x from 65,536 to 1,048,576 |
+| Alignment of code | Kept (attempts 5 and 11): 1.2x at 16 bytes, and it is what makes the other sizes hold still |
+| An output just behind the input | Does not apply: no output buffer |
+| Instructions slow on other x86-64 processors | None used: no `pext`, `pdep`, gather or masked store |
+| Instructions beyond the level | Not used. `vpdpbusd` (AVX-VNNI) would add a vector's bytes into an accumulator in one instruction and lift the 48-byte ceiling |
+
+Found here and worth trying on ARM64: prefetch and several streams were both rejected on the M1 (attempts 5 and 6 there) and both pay on this machine, so that result belongs to the processor, not to the operation.
+
+Not exercised by the judge's timing: sizes below 16, sizes that are not a multiple of 16, and inputs that are not hot in the cache when the call is made. Not exercised by the judge at all: all-0xFF data, which is the case that would overflow a 16-bit lane (checked privately on the final version: every n up to 70,000 at three alignments, and sizes around 4,194,304 and up to 40 MB).
 
