@@ -1,0 +1,96 @@
+# The site's pages, in navigation order. `uv run docsite build` reads this.
+#
+# path     URL path under the site root, no slashes at the ends; "" is the home page
+# source   Markdown file under pages/
+# title    shown at the top of the page
+# label    shorter title for navigation (defaults to the title)
+# summary  the line under the title, also the page's description
+# layout   "home", "doc", or "report"; report pages are numbered as chapters, in this order
+
+title = "hotkernels"
+tagline = "Faster kernels for NumPy, installed with one line."
+repo = "https://github.com/sofeikov/hotkernels"
+
+[[page]]
+path = ""
+source = "index.md"
+title = "hotkernels"
+summary = "Hand-written ARM64 kernels for the NumPy operations where NumPy is slow, installed with one line and checked against NumPy bit for bit."
+layout = "home"
+
+[[page]]
+path = "start"
+source = "start.md"
+title = "Get started"
+summary = "Install the package, add one line, and see what it did."
+layout = "doc"
+
+[[page]]
+path = "report"
+source = "report/index.md"
+title = "How hotkernels works"
+label = "Overview"
+summary = "A technical report on making NumPy faster from underneath: where the time goes, how a kernel is proven right, how the fast ones were found, and how they reach code that never asked for them."
+layout = "report"
+
+[[page]]
+path = "report/numpy"
+source = "report/numpy.md"
+title = "Where NumPy leaves time on the table"
+label = "Where the time goes"
+summary = "A NumPy call is a fixed cost plus a loop. Measuring both, operation by operation, shows which loops are worth rewriting and which are already as fast as they can be."
+layout = "report"
+
+[[page]]
+path = "report/machine"
+source = "report/machine.md"
+title = "The machine, in fifteen minutes"
+label = "The machine"
+summary = "Everything about a processor that the rest of this report leans on: vector registers, dependency chains, branch prediction, caches, and what a compiler is not allowed to do."
+layout = "report"
+
+[[page]]
+path = "report/judge"
+source = "report/judge.md"
+title = "The judge"
+summary = "Nobody reads the assembly line by line. A program decides whether a kernel is correct, whether it is safe, and whether it is faster, and it has to be right about all three."
+layout = "report"
+
+[[page]]
+path = "report/loop"
+source = "report/loop.md"
+title = "Agents in a loop"
+label = "The loop"
+summary = "The kernels were written by coding agents under one rule: keep an edit only if the judge says it is correct and significantly faster. Every attempt is on record, including the ones that failed."
+layout = "report"
+
+[[page]]
+path = "report/selection"
+source = "report/selection.md"
+title = "Kernels I: finding and selecting"
+label = "Finding and selecting"
+summary = "argmax, boolean masks, membership tests and binary search. Four problems where the obvious loop is held back by a branch or a chain, and the tricks that remove it."
+layout = "report"
+
+[[page]]
+path = "report/arithmetic"
+source = "report/arithmetic.md"
+title = "Kernels II: adding and counting"
+label = "Adding and counting"
+summary = "Running sums, byte sums, counts, histograms and clipping. Where floating-point rules decide what is allowed, and where a proof replaces arithmetic."
+layout = "report"
+
+[[page]]
+path = "report/delivery"
+source = "report/delivery.md"
+title = "Into NumPy"
+summary = "A fast function nobody calls is worth nothing. Five kinds of hook route unmodified NumPy code to the kernels, and a call no kernel takes pays about a nanosecond."
+layout = "report"
+
+[[page]]
+path = "report/results"
+source = "report/results.md"
+title = "Results, and what they do not say"
+label = "Results and limits"
+summary = "Every number, where it came from, and the cases where the result is narrower than the headline."
+layout = "report"

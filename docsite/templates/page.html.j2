@@ -1,0 +1,102 @@
+{# The one page template. `page.layout` picks the variant: "home", "doc" or "report". #}
+{% set is_report = page.layout == "report" %}
+{% set is_home = page.layout == "home" %}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% if is_home %}{{ site.title }}: {{ site.tagline }}{% else %}{{ page.title }} · {{ site.title }}{% endif %}</title>
+<meta name="description" content="{{ page.summary }}">
+<meta property="og:title" content="{{ page.title }}">
+<meta property="og:description" content="{{ page.summary }}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d9480f'/%3E%3Cpath d='M9 22V10h3v4.5h8V10h3v12h-3v-4.8h-8V22z' fill='%23fff'/%3E%3C/svg%3E">
+{# Set the theme before the first paint, so a dark-mode reader never sees a white flash. #}
+<script>
+(function () {
+  var theme = null;
+  try { theme = localStorage.getItem("theme"); } catch (e) {}
+  if (theme !== "light" && theme !== "dark") {
+    theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  document.documentElement.dataset.theme = theme;
+})();
+</script>
+<link rel="stylesheet" href="{{ root }}static/site.css?v={{ version }}">
+<link rel="stylesheet" href="{{ root }}static/widgets.css?v={{ version }}">
+{% if has_math %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+{% endif %}
+</head>
+<body class="layout-{{ page.layout }}" data-root="{{ root }}" data-version="{{ version }}"{% if has_diagram %} data-diagrams{% endif %}{% if has_math %} data-math{% endif %}>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="wordmark" href="{{ root }}"><span class="wordmark-dot"></span>hotkernels</a>
+  <nav class="topnav" aria-label="Site">
+    <a href="{{ root }}start/"{% if page.path == "start" %} aria-current="page"{% endif %}>Get started</a>
+    <a href="{{ root }}report/"{% if is_report and page.path != "report/results" %} aria-current="page"{% endif %}>How it works</a>
+    <a href="{{ root }}report/results/"{% if page.path == "report/results" %} aria-current="page"{% endif %}>Results</a>
+    <a href="{{ site.repo }}" class="external">GitHub</a>
+  </nav>
+  <button class="theme-toggle" type="button" aria-label="Switch between light and dark">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path class="sun" d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0-5v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1m0-14.2L17 7M7 17l-2.1 2.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path class="moon" d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+  </button>
+</header>
+
+{% if is_home %}
+<main id="main" class="home">
+{{ content | safe }}
+</main>
+{% else %}
+<div class="shell{% if is_report %} has-chapters{% endif %}">
+  {% if is_report %}
+  <nav class="chapters" aria-label="Chapters">
+    <details open>
+      <summary>Chapters</summary>
+      <ol>
+        {% for chapter in chapters %}
+        <li><a href="{{ root }}{{ chapter.url }}"{% if chapter.path == page.path %} aria-current="page"{% endif %}><span class="num">{{ chapter.chapter }}</span>{{ chapter.label }}</a></li>
+        {% endfor %}
+      </ol>
+    </details>
+  </nav>
+  {% endif %}
+
+  <main id="main" class="article">
+    <header class="article-head">
+      <p class="kicker">{% if is_report %}{% if page.chapter == 0 %}Technical report{% else %}Chapter {{ page.chapter }} of {{ chapters | length - 1 }}{% endif %}{% else %}Documentation{% endif %}<span class="minutes">{{ minutes }} min read</span></p>
+      <h1>{{ page.title }}</h1>
+      <p class="standfirst">{{ page.summary }}</p>
+    </header>
+    <div class="prose">
+{{ content | safe }}
+    </div>
+    {% if is_report %}
+    <nav class="pager" aria-label="Chapter">
+      {% if previous %}<a class="pager-prev" href="{{ root }}{{ previous.url }}"><span>Previous</span>{{ previous.title }}</a>{% else %}<span></span>{% endif %}
+      {% if next %}<a class="pager-next" href="{{ root }}{{ next.url }}"><span>Next</span>{{ next.title }}</a>{% endif %}
+    </nav>
+    {% endif %}
+  </main>
+
+  {% if toc %}
+  <aside class="toc" aria-label="On this page">
+    <p>On this page</p>
+    <ul>
+      {% for id, text in toc %}
+      <li><a href="#{{ id }}">{{ text }}</a></li>
+      {% endfor %}
+    </ul>
+  </aside>
+  {% endif %}
+</div>
+{% endif %}
+
+<footer class="footer">
+  <p><a href="{{ root }}">hotkernels</a> is MIT licensed. Every figure on this site was measured on one Apple M1 Pro and is read from the <a href="{{ site.repo }}">repository</a> when the site is built.</p>
+</footer>
+
+<script type="module" src="{{ root }}static/site.js?v={{ version }}"></script>
+</body>
+</html>
