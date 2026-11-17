@@ -1,6 +1,6 @@
 # Delivery: the binding and `install()`
 
-This is a proposal for review. Nothing here is implemented.
+This began as a proposal and is now implemented: the package is in [`hotkernels/`](../hotkernels) and its tests in [`delivery/`](../delivery). Where the building departed from the proposal, [What changed in the building](#what-changed-in-the-building) says so, and [Status](#status) holds the result against the exit criterion. The rest of the text stands as proposed.
 
 It details the second half of phase 3 of [core-design.md](core-design.md). The first half produced 22 kernels that the judge finds correct and faster than NumPy ([kernel-findings.md](kernel-findings.md)). None of them can be called from Python. This document proposes how they reach unmodified NumPy code: the binding, `install()`, `report()`, and how all of it is tested.
 
@@ -14,6 +14,61 @@ The core design left two questions for the start of this phase: which patching m
 - **A hooked function can also skip NumPy's Python wrapper.** `np.argmax` on 16 elements drops from 573 ns to 65 ns. That is a win of the binding, not of a kernel.
 - **Two kernels cannot serve real calls yet.** `searchsorted_f64` and `interp_f64` take one length for both of their inputs. They need a second size before they are worth binding.
 - **One decision replaces an earlier one.** The float `cumsum` kernels are not installed by default. See [Decisions made in review](#decisions-made-in-review).
+
+## Status
+
+Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with NumPy 2.5.5:
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | An unmodified script runs faster with the one line, and `report()` shows the kernels hit | Met. [`examples/workload.py`](../examples/workload.py) uses eleven operations on two million elements: 45 ms on plain NumPy, 8.4 ms installed, identical results. `uv run delivery demo` |
+| 2 | `delivery check` passes | Met. 70,031 calls over the 13 hooked operations agree in result, exception, warnings and the state of their arguments, and the kernel ran exactly where each case says |
+| 3 | NumPy's test suite gives the same outcome | Met. 47,234 tests, none differs. The tests that compile Fortran (`f2py`) are left out |
+| 4 | A fallback costs at most 2 ns more | Met for the calls where 2 ns can be measured: `x[3]`, `x[1:5]` and `x[3] = 1.0` cost 0.3 to 1.5 ns more. On calls of 130 ns and up the difference is inside the noise of the measurement, a percent or two either way |
+| 5 | No installed entry point is slower than NumPy at any size | Met. The lowest figure is `np.clip` at 16 elements, 1.00x. The type slot needed a minimum size to get there; see below |
+| 6 | Every kernel has a verdict | Met. 18 installed, 2 installed only with `inexact=True` (`cumsum_f32`, `cumsum_f64`), 2 not bound (`searchsorted_f64`, `interp_f64`: one length for two inputs) |
+
+The timings were taken on a machine in use (load average about 3). Every statement, at three sizes, is in [`delivery/results/apple-m1-pro.md`](../delivery/results/apple-m1-pro.md). At a million elements, from Python:
+
+| Statement | Faster by | Judge, kernel alone, vs NumPy |
+|---|---|---|
+| `np.argmax(x)`, float32 | 8.98x | 8.82x |
+| `np.clip(x, -0.5, 0.5)`, float32 | 11.2x | 11.1x idle, 8.67x under load |
+| `np.clip(x, -0.5, 0.5)`, float64 | 5.01x | 4.88x idle, 3.65x under load |
+| `x[mask]`, float32, half selected | 31.0x | 41.7x |
+| `x[mask]`, float64, half selected | 15.8x | 22.5x |
+| `x[mask] = 0.0`, float64, half selected | 20.3x | 21.4x |
+| `np.nonzero(mask)`, half selected | 3.52x | 5.15x |
+| `np.nonzero(mask)`, few selected | 13.9x | 19.2x |
+| `np.cumsum(x)`, int64 | 13.6x | 12.5x |
+| `np.cumsum(x)`, float32, `inexact=True` | 29.2x | 29.0x |
+| `x.astype(np.float32)`, uint8 | 5.29x | 2.68x |
+| `np.sum(x)`, uint8 | 15.6x | 15.7x |
+| `np.count_nonzero(x)`, float64 | 3.46x | 3.79x |
+| `np.histogram(x, 50, (-3.0, 3.0))` | 9.40x | 9.70x |
+| `np.bincount(x)`, uint8 | 6.74x | 6.74x |
+| `np.isin(x, eight_values)`, values close together | 18.2x | 75.6x |
+
+Three rows are well below the judge's figure. The mask kernels pay for a buffer and a copy, and for reading the mask once to check it. For `np.isin` the difference is on NumPy's side: NumPy takes 2.2 ms for this call here and took 9.3 ms in the judge's run, and why has not been established. The kernel's own time is the same (122 µs here, 115 µs in review).
+
+## What changed in the building
+
+| Proposed | Built | Why |
+|---|---|---|
+| The type slot inherits NumPy's behaviour and serves every call | It takes the interpreter lock, and leaves runs under 128 elements to NumPy | The lock is needed because the kernels are not safe against a writer ([issue 9]({I}9)). Taking it costs about 40 ns per call, measured: `x.argmax()` on 16 float32 elements went from 174 ns to 210 ns with the kernel, and a row of 16 under `axis=1` from 10 ns to 45 ns. The kernel breaks even at 96 to 128 elements. Short one-dimensional calls are served by the function hook, which already holds the lock |
+| Counters are atomic | They are atomic objects updated by a separate load and store | An atomic add cost more than the rest of a fallback. Two threads counting the same thing at once can lose a count; `report()` is statistics, and the self-test at install runs on one thread |
+| The indexing hook calls `PyType_Modified` | It does not | Nothing CPython caches depends on the two pointers. And CPython stops caching attribute lookups for a type that has been modified a thousand times, which a test that installs repeatedly reaches |
+| One set of checks, shared | The same, with each hook's work kept out of line | The compiler folded the work of taking a kernel into the hook, so every index operation saved twelve registers and reserved the scratch buffer before its first test: 2 to 4 ns. Out of line, the indexing hook is nine instructions |
+| Arguments are checked, then the array | The array first | `np.cumsum` on a float array spent about 60 ns comparing keyword names before finding it had no kernel for the type |
+| `entry/`, one C file per NumPy operation | One C file per kind of hook | An operation's code is short and belongs with the calling convention of its hook |
+| `x[mask] = v` for a Python float | Also a Python int | `x[mask] = 0` is the commonest spelling. NumPy converts the int to the same double |
+| `np.isin` with an int64 array of test values | Also a list or tuple of Python ints | `np.isin(x, [1, 2, 3])` is the commonest spelling, and NumPy converts such a list to int64 |
+| A scratch kernel runs on a buffer of `n` elements, then a copy | The same; the buffer is on the stack up to 2 KB | An allocation is most of a small call |
+| `meson-python`, not yet tried | `meson-python`, in a `uv` workspace | It worked as hoped. The package is installed non-editable, with the kernel and binding sources as `uv` cache keys, so `uv run` rebuilds it when they change |
+
+Two defects in the binding were found by `delivery check` while it was being written, and are fixed: `np.count_nonzero` returned a Python `int` where NumPy returns `np.intp`, and `np.histogram` issued NumPy's overflow warnings twice for a range wider than a double can hold.
+
+Not built, and recorded as issues: the function forms of the mask operations ([issue 15]({I}15)), a second size for the two search kernels ([issue 16]({I}16)), removing NumPy's wrapper for `np.clip` and for the methods ([issue 17]({I}17)), running the check against other NumPy versions ([issue 18]({I}18)), and wheels ([issue 19]({I}19)).
 
 ## What the user gets
 
@@ -218,7 +273,7 @@ Review of the kernels found inputs where a kernel is wrong, or unsafe, and its s
 
 ### Counting
 
-Each hook adds one to a per-kernel counter when it takes a kernel and to another when it passes the call on. `report()` reads them. The counters are atomic, because inner loops run with the lock released. Their cost is part of what the first step measures.
+Each hook adds one to a per-kernel counter when it takes a kernel and to a per-operation counter when it passes the call on. `report()` reads them. Inner loops run with the lock released, so the counters are atomic objects; see [What changed in the building](#what-changed-in-the-building) for how they are updated.
 
 ### Installing and uninstalling
 
@@ -232,16 +287,24 @@ Each hook adds one to a per-kernel counter when it takes a kernel and to another
 ```
 hotkernels/                  the installable package, its own distribution
   pyproject.toml
+  meson.build
+  tools/generate.py          build time: C prototypes and the kernel table, from the specs
   src/hotkernels/
     __init__.py              install, uninstall, enabled, report
+    environment.py           whether this interpreter is supported
+    hooks.py                 every hook, its kernels and its self-test
     report.py                the report's data and its rendering
     templates/               the Jinja template for the report
     _binding/                the C extension
-      module.c               hook table, install and uninstall, counters
-      guard.h                the shared checks
-      hook_*.c               one file per kind of hook
-      entry/                 one file per NumPy operation
-delivery/                    development tool: `uv run delivery check`, `uv run delivery time`
+      binding.h              counters and the shared checks
+      module.c               hook table, counters, the interface to Python
+      hook_slot.c            type slot: argmax, argmin
+      hook_loop.c            inner loop: clip
+      hook_function.c        function objects: argmax, count_nonzero, sum, histogram, bincount, isin
+      hook_method.c          methods: astype, sum, nonzero, cumsum
+      hook_index.c           indexing: x[mask], x[mask] = v
+delivery/                    development tool: `uv run delivery check | demo | time | numpy-tests`
+examples/workload.py         a NumPy program written without hotkernels in mind
 ```
 
 - **`kernels/` stays the only source.** The build takes `kernels/<name>/arm64/kernel.s` where it exists and `naive.c` where it does not, compiled with the flags the judge used. The C prototypes come from the specs, through the code the judge already has for it.

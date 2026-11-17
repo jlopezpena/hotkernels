@@ -19,10 +19,10 @@ Every time is one Python statement, from call to result, as the best of {{ round
 
 ## Calls that reach a hook and are left to NumPy
 
-What a hook costs a call it does not serve.
+What a hook costs a call it does not serve. A difference of a percent or two either way is the noise of the measurement.
 
 | Statement | Data | Elements | NumPy | hotkernels | Difference |
 |---|---|---|---|---|---|
 {% for m in left %}
-| `{{ m.statement }}` | {{ m.data }} | {{ m.n | thousands }} | {{ m.numpy_ns | time }} | {{ m.hotkernels_ns | time }} | {{ m.extra_ns | signed_ns }} ({{ (m.extra_ns / m.numpy_ns) | signed_percent }}) |
+| `{{ m.statement }}` | {{ m.data }} | {{ m.n | thousands }} | {{ m.numpy_ns | time }} | {{ m.hotkernels_ns | time }} | {{ (m.extra_ns / m.numpy_ns) | signed_percent }} |
 {% endfor %}

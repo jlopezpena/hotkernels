@@ -15,6 +15,7 @@ import typer
 import hotkernels
 
 from . import check as C
+from . import demo as D
 from . import numpy_suite
 from . import timing as T
 from .cases import INEXACT_OPERATIONS, OPERATIONS, Case
@@ -142,6 +143,14 @@ def time(
         (RESULTS / f"{stem}.json").write_text(json.dumps({"meta": meta, "rows": T.as_rows(measurements)}, indent=2) + "\n")
         (RESULTS / f"{stem}.md").write_text(render("time.md.j2", **context))
         log.info("recorded in %s", RESULTS / f"{stem}.md")
+
+
+@app.command()
+def demo() -> None:
+    """Run examples/workload.py, an unmodified NumPy program, with and without hotkernels."""
+    outcome = D.run()
+    log.info("%s", render("demo.txt.j2", demo=outcome).rstrip("\n"))
+    raise typer.Exit(EXIT_OK if outcome.identical and outcome.speedup > 1 else EXIT_FAILED)
 
 
 @app.command(name="numpy-tests")

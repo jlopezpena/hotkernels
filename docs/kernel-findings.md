@@ -1,6 +1,6 @@
 # The first kernels: results and findings
 
-This records the first pass over the shortlist in [survey-design.md](survey-design.md): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and an attempt at beating that C in ARM64 assembly. Twenty-one ship as assembly and one as C. It covers the kernel half of phase 3 in [core-design.md](core-design.md). Nothing here is installable yet; the binding and `install()` are the other half.
+This records the first pass over the shortlist in [survey-design.md](survey-design.md): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and an attempt at beating that C in ARM64 assembly. Twenty-one ship as assembly and one as C. It covers the kernel half of phase 3 in [core-design.md](core-design.md). The other half, the binding and `install()`, is in [delivery-design.md](delivery-design.md).
 
 The numbers are the judge's. What is open to review is the set of decisions at the end.
 
@@ -177,4 +177,4 @@ Still open:
 ## What is next
 
 - Re-run every kernel locked after this is merged, record the results and generate the leaderboard.
-- The binding and `install()`, starting with one kernel as planned.
+- The binding and `install()` are done: [delivery-design.md](delivery-design.md). What it showed the kernels still need is listed there.
