@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  # The maintainer's Mac when it is free, a hosted macOS runner otherwise.
+  # The maintainer's Mac when it is online, a hosted macOS runner otherwise.
   runner:
     uses: ./.github/workflows/pick-runner.yml
     secrets: inherit
