@@ -10,23 +10,28 @@ Kernels are written by coding agents iterating against a judge. The judge checks
 
 How many times faster each kernel is than NumPy, and than the same loop written in plain C and compiled with `clang -O3`:
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/speedup-vs-numpy-dark.svg">
+  <img src="docs/images/speedup-vs-numpy-light.svg" alt="Bar chart of each kernel's speedup over NumPy at 1,048,576 elements, from 29.0x for np.cumsum on float32 down to 1.83x for np.isin with test values far apart. The table below has every value.">
+</picture>
+
 | NumPy call | Elements | vs NumPy | vs `clang -O3` |
 |---|---|---|---|
-| `x[mask]` | float32 | 17.3x – 41.7x | 2.70x – 5.70x |
 | `np.cumsum(x)` | float32 | 29.0x | 7.83x |
 | `np.interp(x, xp, fp)` | float64 | 22.7x | 6.02x |
-| `x[mask]` | float64 | 11.0x – 22.5x | 1.67x – 4.10x |
-| `x[mask] = value` | float64 | 7.48x – 21.4x | 4.64x – 19.0x |
 | `np.cumsum(x)` | float64 | 20.1x | 5.48x |
-| `np.nonzero(mask)` | bool | 5.15x – 19.2x | 2.47x – 8.08x |
+| `x[mask]` | float32 | 17.3x – 41.7x | 2.70x – 5.70x |
 | `np.sum(x)` | uint8 | 15.7x | 5.07x |
 | `np.cumsum(x)` | int64 | 12.5x | 1.95x |
 | `np.clip(x, lo, hi)` | float32 | 11.3x | 1.47x |
-| `np.argmax(x)`, `np.argmin(x)` | float32 | 8.82x, 8.86x | 26.6x, 26.7x |
+| `x[mask]` | float64 | 11.0x – 22.5x | 1.67x – 4.10x |
 | `np.searchsorted(a, v)` | float64 | 8.84x | 8.42x |
+| `np.argmax(x)`, `np.argmin(x)` | float32 | 8.82x, 8.86x | 26.6x, 26.7x |
+| `x[mask] = value` | float64 | 7.48x – 21.4x | 4.64x – 19.0x |
 | `np.histogram(x, bins, range)` | float64 | 7.18x | 2.74x |
 | `np.argmax(x)`, `np.argmin(x)` | float64 | 6.86x, 7.10x | 12.7x, 13.2x |
 | `np.bincount(x)` | uint8 | 6.74x | 1.31x |
+| `np.nonzero(mask)` | bool | 5.15x – 19.2x | 2.47x – 8.08x |
 | `np.clip(x, lo, hi)` | float64 | 5.14x | 1.35x |
 | `np.count_nonzero(x)` | float64 | 3.79x | 1.28x |
 | `np.count_nonzero(x)` | int64 | 3.25x | 1.03x |
