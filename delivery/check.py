@@ -253,6 +253,79 @@ def run_operation(operation: str, cases: Iterable[Case], inexact: bool, keep: Ca
     return Summary(name, len(selected), taken, tuple(failures))
 
 
+# Name of the summary line for the checks of install() and uninstall() themselves.
+INSTALLATION = "install and uninstall"
+# NumPy objects whose identity must survive install() and uninstall().
+_HOOKED_OBJECTS = ("argmax", "argmin", "count_nonzero", "sum", "histogram", "bincount", "isin", "clip")
+_HOOKED_METHODS = ("astype", "sum", "nonzero", "cumsum")
+
+
+def _numpy_objects() -> list[object]:
+    """Return the NumPy objects hotkernels changes pointers in."""
+    return [getattr(np, name) for name in _HOOKED_OBJECTS] + [getattr(np.ndarray, name) for name in _HOOKED_METHODS]
+
+
+def _kernel_calls(binding) -> int:
+    """Return how many calls all kernels have taken."""
+    return sum(binding.counters()[0].values())
+
+
+def _exercise() -> None:
+    """Make one call to each kind of hook that a kernel takes when installed."""
+    x = np.arange(1000, dtype=np.float64)
+    mask = x > 500
+    x.argmax(), np.clip(x, 0.0, 1.0), np.count_nonzero(x), x.astype(np.uint8).sum(), x[mask]
+    x[mask] = 0.0
+
+
+def installation_checks() -> Summary:
+    """Check install(), uninstall(), enabled() and report() themselves.
+
+    Returns:
+        A summary with one failure per statement that does not hold: NumPy's
+        objects keep their identity, uninstall() leaves no hook behind, a
+        second install() changes nothing, enabled() restores the state it
+        found, and float cumsum is only taken under install(inexact=True).
+    """
+    binding = importlib.import_module(BINDING_MODULE)
+    checks: list[tuple[str, bool]] = []
+    hotkernels.uninstall()
+    before = _numpy_objects()
+
+    hotkernels.install()
+    checks.append(("NumPy's objects are the same objects after install()", all(a is b for a, b in zip(before, _numpy_objects()))))
+    _exercise()
+    calls = _kernel_calls(binding)
+    checks.append(("kernels take calls after install()", calls >= 6))
+    hotkernels.install()
+    checks.append(("a second install() does not reset the counters", _kernel_calls(binding) == calls))
+    checks.append(("report() counts the calls", sum(k.calls for k in hotkernels.report().kernels) == calls))
+    checks.append(("report() renders when installed", "installed" in str(hotkernels.report())))
+    np.cumsum(np.ones(1000))
+    checks.append(("float cumsum is left to NumPy by install()", binding.counters()[0]["cumsum_f64"] == 0))
+    with hotkernels.enabled():
+        pass
+    checks.append(("enabled() leaves an existing installation in place", hotkernels.report().installed))
+
+    hotkernels.install(inexact=True)
+    np.cumsum(np.ones(1000))
+    checks.append(("float cumsum is taken under install(inexact=True)", binding.counters()[0]["cumsum_f64"] == 1))
+
+    hotkernels.uninstall()
+    binding.reset_counters()
+    _exercise()
+    checks.append(("no hook is applied after uninstall()", not any(binding.applied(name) for name in binding.hooks())))
+    checks.append(("no kernel takes a call after uninstall()", _kernel_calls(binding) == 0))
+    checks.append(("NumPy's objects are the same objects after uninstall()", all(a is b for a, b in zip(before, _numpy_objects()))))
+    checks.append(("report() renders when not installed", "not installed" in str(hotkernels.report())))
+    with hotkernels.enabled():
+        checks.append(("enabled() installs for its block", hotkernels.report().installed))
+    checks.append(("enabled() uninstalls what it installed", not hotkernels.report().installed))
+
+    failures = tuple(Failure(statement, "does not hold", "true", "false") for statement, holds in checks if not holds)
+    return Summary(INSTALLATION, len(checks), 0, failures)
+
+
 def run(operations: dict, inexact_operations: dict, keep: Callable[[Case], bool]) -> Iterator[Summary]:
     """Run every operation, the exact kernels first.
 

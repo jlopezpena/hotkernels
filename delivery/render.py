@@ -37,6 +37,7 @@ def _environment() -> Environment:
         time=format_time,
         times=lambda ratio: f"{ratio:.2f}x",
         signed_ns=lambda ns: f"{ns:+.1f} ns",
+        signed_percent=lambda fraction: f"{fraction:+.1%}",
         rjust=lambda text, width: str(text).rjust(width),
         ljust=lambda text, width: str(text).ljust(width),
     )

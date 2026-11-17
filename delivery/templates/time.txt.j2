@@ -1,0 +1,24 @@
+{# The report of `delivery time`, for the terminal. #}
+{% macro row(m, last) %}
+{{ m.statement | ljust(50) }}{{ m.data | ljust(30) }}{{ m.n | thousands | rjust(10) }}{{ m.numpy_ns | time | rjust(11) }}{{ m.hotkernels_ns | time | rjust(11) }}{{ last | rjust(12) }}
+{% endmacro %}
+Load average when the run started: {{ meta.load_average }}{{ " (the machine was in use: treat the figures as rough)" if meta.load_average > busy_load else "" }}
+
+Calls a kernel takes
+{{ "statement" | ljust(50) }}{{ "data" | ljust(30) }}{{ "elements" | rjust(10) }}{{ "NumPy" | rjust(11) }}{{ "hotkernels" | rjust(11) }}{{ "faster by" | rjust(12) }}
+{% for m in taken %}
+{{ row(m, m.speedup | times) -}}
+{% endfor %}
+
+Calls that reach a hook and are left to NumPy
+{{ "statement" | ljust(50) }}{{ "data" | ljust(30) }}{{ "elements" | rjust(10) }}{{ "NumPy" | rjust(11) }}{{ "hotkernels" | rjust(11) }}{{ "difference" | rjust(12) }}
+{% for m in left %}
+{{ row(m, (m.extra_ns / m.numpy_ns) | signed_percent) -}}
+{% endfor %}
+{% if slower %}
+
+Slower with hotkernels than without:
+{% for m in slower %}
+  {{ m.statement }} ({{ m.data }}) at {{ m.n | thousands }} elements: {{ m.speedup | times }}
+{% endfor %}
+{% endif %}

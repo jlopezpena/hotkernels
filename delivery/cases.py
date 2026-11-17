@@ -340,6 +340,58 @@ def unary_cases(operation: str, kernels: dict[str, str], neighbours: tuple[str, 
 
 # ------------------------------------------------------------- operations
 
+# Bit patterns of NaNs the judge's value classes do not produce: a signalling
+# NaN, and a negative quiet NaN with a payload, per element size in bytes.
+# Operations that copy or compare elements must keep them bit for bit, and
+# the clip kernels treat signalling NaNs on a path of their own.
+_UNUSUAL_NANS = {
+    4: (np.uint32, 0x7FA00001, 0xFFC00123),
+    8: (np.uint64, 0x7FF4000000000001, 0xFFF8000000000123),
+}
+# Every how many elements each of the two patterns is placed.
+_SIGNALLING_EVERY = 5
+_NEGATIVE_EVERY = 7
+
+
+def unusual_nans(dtype: str, n: int) -> np.ndarray:
+    """Build random floats with signalling and negative NaNs spread through them.
+
+    Args:
+        dtype: "f32" or "f64".
+        n: Element count.
+
+    Returns:
+        A contiguous array whose every fifth element is a signalling NaN and
+        every seventh, from the third, a negative quiet NaN with a payload.
+    """
+    x = values(dtype, n)
+    unsigned, signalling, negative = _UNUSUAL_NANS[x.dtype.itemsize]
+    bits = x.view(unsigned)
+    bits[::_SIGNALLING_EVERY] = signalling
+    bits[2::_NEGATIVE_EVERY] = negative
+    return x
+
+
+def unusual_nan_cases(operation: str, kernels: dict[str, str], text: str, call: Callable,
+                      min_n: int = 0) -> Iterator[Case]:
+    """Yield one case per size on data that holds signalling and negative NaNs.
+
+    Args:
+        operation: Operation name.
+        kernels: Element type ("f32", "f64") -> kernel name.
+        text: The call as text, for labels.
+        call: Makes the call on the array.
+        min_n: Element count from which the kernel takes the call.
+
+    Yields:
+        The cases.
+    """
+    for dtype, kernel in kernels.items():
+        for n in VALUE_SIZES:
+            yield Case(operation, f"{text} {dtype} n={n} x=signalling and negative NaNs",
+                       partial(_made, partial(unusual_nans, dtype, n)), call, kernel if n >= min_n else None)
+
+
 def argext_cases(name: str) -> Iterator[Case]:
     """Yield the cases of `argmax` or `argmin`.
 
@@ -366,6 +418,8 @@ def argext_cases(name: str) -> Iterator[Case]:
     kernels = {"f32": f"{name}_f32", "f64": f"{name}_f64"}
     # NumPy raises on an empty array, so no kernel takes one.
     yield from unary_cases(name, kernels, ("i64", "i32", "u8"), spellings, empty_takes=False)
+    yield from unusual_nan_cases(name, kernels, f"np.{name}(x)", function)
+    yield from unusual_nan_cases(name, kernels, f"x.{name}()", spellings[1].call, SLOT_MIN_N)
 
 
 # Layouts NumPy passes to the clip loop as they are, so that an in-place
@@ -410,6 +464,8 @@ def clip_cases() -> Iterator[Case]:
         for _, _, label, maker in value_arrays(dtype, FEW_SIZES):
             yield Case("clip", f"x.clip(lo, hi) {dtype} {label}", partial(_made, maker),
                        partial(_clip_method, default[1], default[2]), kernel)
+    yield from unusual_nan_cases("clip", kernels, "np.clip(x, -0.5, 0.5)", partial(_clip3, np.clip, -0.5, 0.5))
+    yield from unusual_nan_cases("clip", kernels, "np.clip(x, 0.0, 1.0)", partial(_clip3, np.clip, 0.0, 1.0))
     lo, hi = -0.5, 0.5
     spellings = (
         Spelling("np.clip(x, lo, hi)", partial(_clip3, np.clip, lo, hi), normalises=True),
@@ -704,6 +760,7 @@ def count_nonzero_cases() -> Iterator[Case]:
     )
     kernels = {"i64": "count_nonzero_i64", "f64": "count_nonzero_f64"}
     yield from unary_cases("count_nonzero", kernels, ("i32", "f32", "bool", "u8"), spellings)
+    yield from unusual_nan_cases("count_nonzero", {"f64": "count_nonzero_f64"}, "np.count_nonzero(x)", np.count_nonzero)
 
 
 def _histogram_sets() -> Iterator[tuple[str, int, float, float]]:

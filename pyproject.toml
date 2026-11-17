@@ -17,6 +17,13 @@ judge = "judge.cli:app"
 survey = "survey.cli:app"
 delivery = "delivery.cli:app"
 
+[dependency-groups]
+# What `uv run delivery numpy-tests` needs to run NumPy's own test suite.
+dev = [
+    "hypothesis>=6.100",
+    "pytest>=8.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
