@@ -4,12 +4,55 @@ Fast kernels for the NumPy operations where NumPy is slow, delivered as a zero-f
 
 Kernels are written by coding agents iterating against a judge. The judge checks every kernel against NumPy and times it against NumPy and naive `clang -O3` C.
 
+**On an Apple M1 Pro, all 22 kernels are faster than NumPy at every size measured. At a million elements, 18 of them are more than 5x faster and the best is 76x. Twenty return NumPy's result bit for bit.**
+
+## Results
+
+How many times faster each kernel is than NumPy, and than the same loop written in plain C and compiled with `clang -O3`:
+
+| NumPy call | Elements | vs NumPy | vs `clang -O3` |
+|---|---|---|---|
+| `x[mask]` | float32 | 17.3x – 41.7x | 2.70x – 5.70x |
+| `np.cumsum(x)` | float32 | 29.0x | 7.83x |
+| `np.interp(x, xp, fp)` | float64 | 22.7x | 6.02x |
+| `x[mask]` | float64 | 11.0x – 22.5x | 1.67x – 4.10x |
+| `x[mask] = value` | float64 | 7.48x – 21.4x | 4.64x – 19.0x |
+| `np.cumsum(x)` | float64 | 20.1x | 5.48x |
+| `np.nonzero(mask)` | bool | 5.15x – 19.2x | 2.47x – 8.08x |
+| `np.sum(x)` | uint8 | 15.7x | 5.07x |
+| `np.cumsum(x)` | int64 | 12.5x | 1.95x |
+| `np.clip(x, lo, hi)` | float32 | 11.3x | 1.47x |
+| `np.argmax(x)`, `np.argmin(x)` | float32 | 8.82x, 8.86x | 26.6x, 26.7x |
+| `np.searchsorted(a, v)` | float64 | 8.84x | 8.42x |
+| `np.histogram(x, bins, range)` | float64 | 7.18x | 2.74x |
+| `np.argmax(x)`, `np.argmin(x)` | float64 | 6.86x, 7.10x | 12.7x, 13.2x |
+| `np.bincount(x)` | uint8 | 6.74x | 1.31x |
+| `np.clip(x, lo, hi)` | float64 | 5.14x | 1.35x |
+| `np.count_nonzero(x)` | float64 | 3.79x | 1.28x |
+| `np.count_nonzero(x)` | int64 | 3.25x | 1.03x |
+| `x.astype(np.float32)` | uint8 | 2.68x | ships as the C |
+| `np.isin(x, test)` | int64 | 1.83x – 75.6x | 1.00x – 5.34x |
+
+Apple M1 Pro, NumPy 2.5.5, Apple clang 21, arrays of 1,048,576 elements, where the fixed cost of a call no longer matters. A range covers the two kinds of input the kernel is timed on: 5% and 50% of the elements selected for the mask kernels, and test values close together or far apart for `isin`. Results at every size from 16 to 16,777,216 elements, with confidence intervals, are in [docs/kernel-findings.md](docs/kernel-findings.md).
+
+What stands behind the numbers:
+
+- **Checked against NumPy, not against a description of it.** Every kernel is compared with NumPy's own output on inputs that include NaN, infinities, signed zeros, ties and denormals. Twenty of the 22 match bit for bit. The two float `cumsum` kernels regroup the additions, which is where their speed comes from, and stay within a declared error bound.
+- **Memory-safe by test.** Each kernel runs with its buffers placed against inaccessible pages, so reading or writing one byte outside them crashes the check.
+- **Assembly only where it wins.** A kernel keeps its assembly only if the judge finds it significantly faster than the compiled C. `astype` from `uint8` to `float32` did not pass that bar and ships as C.
+
+What the numbers do not say:
+
+- **The kernels are not callable from Python yet.** They are timed as native functions; the NumPy figure is NumPy called the usual way.
+- **Two results depend on the arguments.** `np.isin` is fast when the test values lie within a 16-bit window and ties the C otherwise. `np.clip` takes its fast path unless the lower bound is `+0.0` or the upper bound is `-0.0`, so `np.clip(x, 0, 1)` runs at the speed of the C.
+- **One machine.** Every figure is from a single Apple M1 Pro.
+
 ## What is here
 
 - **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is.
 - **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32` and `compress_scratch_f32`, used to test the judge itself.
 - **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. Recorded results are in `survey/results/`.
-- **Kernels** (`kernels/`): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an ARM64 version. They are checked and timed by the judge but not yet installable. Results are in [docs/kernel-findings.md](docs/kernel-findings.md).
+- **Kernels** (`kernels/`): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an ARM64 version. They are checked and timed by the judge but not yet installable. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
 
 Supported platform: macOS on Apple Silicon (ARM64).
 
