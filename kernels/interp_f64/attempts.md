@@ -209,7 +209,8 @@ replace the indicative and single-pass figures above wherever they are quoted.
 [Issue 39](https://github.com/sofeikov/kernel-arena/issues/39): a call with
 fewer queries than one group (fewer than 16, or fewer than 64 from 64 sample
 points) went one query at a time through `Lslow`, a branchy copy of
-`naive.c`, and so did every call with fewer than 16 sample points.
+`naive.c`, and so did every call with 2 to 15 sample points (one sample
+point has its own path).
 
 What `judge compare` times here: the default scalar set (64 queries) and
 `many` (1,000), at every size from 16 to 16,777,216 sample points. Both take a
