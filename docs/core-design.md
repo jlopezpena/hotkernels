@@ -162,7 +162,7 @@ Take the shortlisted kernels to `install()`, in the order given in [survey-desig
 Mentioned so they are not forgotten. None of these is planned here.
 
 - **x86-64 kernels.** Same contract and judge, developed and measured on the x86 machine.
-- **Publishing.** Wheels on PyPI so installation needs no compiler, plus `python -m hotkernels script.py` for zero code changes. The release pipeline and its GitHub setup get their own design document.
+- **Publishing.** Wheels on PyPI so installation needs no compiler, plus `python -m hotkernels script.py` for zero code changes. The release pipeline and its GitHub setup are proposed in [release-design.md](release-design.md).
 - **More kernels.** Work down the survey shortlist.
 - **Fusion.** Fusing a chain of operations into a single pass was the largest win measured. It first needs a way to identify which chains are worth fusing, which is a project of its own.
 
