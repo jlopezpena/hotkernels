@@ -1,4 +1,4 @@
-<p class="lede">At the end of the last chapter there were 22 native functions, each proven correct on a flat buffer and none reachable from Python. The remaining problem sounds like plumbing and is closer to half the project: make <code>x[mask]</code> in somebody's existing notebook run a kernel, without that person changing a character, and without breaking anything on the day their array is strided, or a subclass, or of a type no kernel handles.</p>
+<p class="lede">At the end of the last chapter there were 23 native functions, each proven correct on a flat buffer and none reachable from Python. The remaining problem sounds like plumbing and is closer to half the project: make <code>x[mask]</code> in somebody's existing notebook run a kernel, without that person changing a character, and without breaking anything on the day their array is strided, or a subclass, or of a type no kernel handles.</p>
 
 ## What "no friction" rules out
 
@@ -216,7 +216,7 @@ The judge proves a kernel right as a native function. It says nothing about the 
 | Spellings | Positional, keyword, `out=`, `axis=`, method and function forms |
 | Values | The judge's value classes: NaN, infinities, signed zeros, ties |
 
-That is **75,307 calls over the 15 hooked operations**, and all agree.
+That is **77,481 calls over the 15 hooked operations**, and all agree.
 
 **Each case also states whether a kernel should have run**, and the counters are checked against it. Without that, a check that quietly stopped matching would pass every comparison, since NumPy's fallback is always right, while delivering nothing.
 
@@ -230,6 +230,6 @@ The binding runs without guard pages. A wrong length passed to a correct kernel 
 
 ## Where that leaves things
 
-Of the 22 kernels, 20 are installed by `install()` and the other 2 with `install(inexact=True)`. The last two to be bound were `searchsorted` and `interp`: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
+Of the 23 kernels, 21 are installed by `install()` and the other 2 with `install(inexact=True)`. `searchsorted` and `interp` were bound late: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. The last kernel added is the right side of the search, which `np.digitize` asks for by default. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
 
 The last chapter collects every number, and is candid about which of them mean less than they appear to.

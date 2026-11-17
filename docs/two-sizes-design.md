@@ -59,7 +59,7 @@ Not done, and owed: every judge run here was made with `--unlocked`, because the
 | A locked re-run of both kernels on a quiet machine, a recorded `delivery time`, and the README's chart | [38](https://github.com/sofeikov/hotkernels/issues/38) |
 | A path for fewer than 64 needles against an array of 64 or more, which go one at a time | [39](https://github.com/sofeikov/hotkernels/issues/39) |
 | A judge check that the search kernels stay inside their buffers on unsorted input | [40](https://github.com/sofeikov/hotkernels/issues/40) |
-| `side='right'` for `np.searchsorted`, which `np.digitize` asks for by default | [41](https://github.com/sofeikov/hotkernels/issues/41) |
+| `side='right'` for `np.searchsorted`, which `np.digitize` asks for by default | [41](https://github.com/sofeikov/hotkernels/issues/41), done since: [searchsorted-right-design.md](searchsorted-right-design.md) |
 
 ## What is wrong today
 

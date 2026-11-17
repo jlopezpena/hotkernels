@@ -27,9 +27,11 @@ These are the figures that matter to someone running NumPy code: one Python stat
 | `np.bincount(x)` | uint8 | 2.23x | 6.74x |
 | `np.isin(x, eight_values)` | int64 | 72.8x | 18.2x |
 | `np.searchsorted(a, v)` | float64 | 1.36x | 7.76x |
+| `np.searchsorted(a, v, side='right')` | float64 | 1.45x | 7.66x |
+| `np.digitize(x, bins)`, 1,000 bin edges | float64 | 1.10x | 26.5x |
 | `np.interp(x, xp, fp)` | float64 | 5.44x | 30.5x |
 
-The last two rows are timed with as many needles as elements, in a later run on a busier machine; they are not in the recorded result the figure above reads.
+The search and `np.interp` rows are timed with as many needles as elements, and `np.digitize` with 1,000 bin edges, in later runs on a busier machine; they are not in the recorded result the figure above reads.
 
 Read the two columns as two different stories. At a million elements the number is the kernel. At 16 elements it is mostly NumPy's own call path being skipped: `np.sum` on 16 bytes is 33x faster because a 1.2 µs wrapper was replaced by a 37 ns call, not because of how the bytes are added.
 
@@ -106,13 +108,14 @@ The judge is the reason any of this can be trusted, so its blind spots are the m
 | **Paths behind a size cap** | `interp`'s large-array path: NumPy's `interp` is too slow to act as an oracle beyond 65,537 elements, so that path was compared with the reference outside the judge, without guard pages |
 | **A tolerance that widens with size** | For float32 `cumsum` beyond some tens of thousands of elements, the bound is wide enough that a single skipped element would pass |
 | **Inputs outside what a spec can express** | Mask bytes other than 0 or 1; an output that is the input; a concurrent writer. All found when the kernels met real calls, and all screened by the binding |
+| **Needles that equal an element, in a long array** | The two sides of a search differ only there, and no generated input above 5,000 elements has one. A search that compared the wrong way on its path for arrays of 1,048,576 elements or more would pass the judge. The test from Python, which draws needles from the array, covers it |
 | **Prefetch addresses** | Two kernels issue prefetch hints up to 256 KB past the end of very large arrays. A prefetch never faults and reads nothing, so this is safe, and invisible |
 
 The pattern is consistent: the judge verifies what its generated inputs exercise. Every defect that got past it was in a region the generator did not reach, and each one that was found led to a new value class, a new scalar set or a new check in the binding.
 
 ## What is not delivered
 
-- **`side='right'` for `np.searchsorted`**, and with it the default form of `np.digitize`. The kernel implements the left side only.
+- **`np.digitize` with decreasing bins.** It searches the bins reversed, as a view no kernel takes.
 - **`np.interp` with `left`, `right` or `period`**, and with more than 64 sample points per query, where reading the sample points for NaN would cost more than the kernel saves.
 - **One or two element types per operation.** `np.argmax` on int32, `x[mask]` on int64, `np.sum` on float64: all go to NumPy. (NumPy is already fast on several of those.)
 - **Plain arrays only.** Subclasses reaching the function, method and indexing hooks go to NumPy.

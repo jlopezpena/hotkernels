@@ -310,6 +310,8 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("bincount_u8", "np.bincount", "uint8", "bincount", ("function.bincount",)),
     KernelInfo("isin_i64", "np.isin", "int64", "isin", ("function.isin",)),
     KernelInfo("searchsorted_f64", "np.searchsorted", "float64", "searchsorted", ("method.searchsorted",)),
-    KernelInfo("searchsorted_right_f64", "np.searchsorted(side='right')", "float64", "searchsorted", ("method.searchsorted",)),
+    # Indented under the row above: the same call with one argument more, in a
+    # column the report keeps to 19 characters.
+    KernelInfo("searchsorted_right_f64", "  side='right'", "float64", "searchsorted", ("method.searchsorted",)),
     KernelInfo("interp_f64", "np.interp", "float64", "interp", ("function.interp",)),
 )

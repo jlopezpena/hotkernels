@@ -225,3 +225,15 @@ Not tried, and why:
   its buffers), and walking the links is itself one cache miss per needle.
   Too large a change to attempt in this run; it is the only idea here that
   could reduce the number of misses at 4M and 16M instead of overlapping them.
+
+## The right side
+
+`searchsorted_right_f64` (`side='right'`) is a copy of this kernel after
+attempt 11 with every `a[i] < key` turned into `a[i] <= key`; see
+[its log](../searchsorted_right_f64/attempts.md). An improvement kept here is
+worth trying there, and the other way round.
+
+That log also records a gap in what the judge checks, which holds for this
+kernel too: no generated input above 5,000 elements has a needle equal to an
+element, so a wrong comparison on the path for arrays of 1,048,576 elements or
+more passes `judge check`. `uv run delivery check` has the cases that catch it.

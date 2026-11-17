@@ -71,7 +71,7 @@ Importing the package changes nothing; only `install()` does. Calling it twice i
 `print(hotkernels.report())` after your code has run:
 
 ```text
-hotkernels 0.1.0: installed, 20 of 22 kernels (NumPy 2.5.5)
+hotkernels 0.1.0: installed, 21 of 23 kernels (NumPy 2.5.5)
 
 NumPy call         Elements Kernel    Result            Kernel calls  Left to NumPy
 np.argmax          float32  assembly  exact                        0              0
@@ -106,7 +106,7 @@ A kernel takes a call only when the array is a plain, contiguous `ndarray` of th
 | `np.histogram(x, bins, range)` | float64 | An integer bin count; no weights or density |
 | `np.bincount(x)` | uint8 | No weights |
 | `np.isin(x, values)` | int64 | At most eight test values; flags at their defaults |
-| `np.searchsorted(a, v)`, `a.searchsorted(v)` | float64 | `a` is one-dimensional; `v` is an array of any shape or a Python number; `side='left'`, which is the default, and no `sorter` |
+| `np.searchsorted(a, v)`, `a.searchsorted(v)`, `np.digitize(x, bins)` | float64 | `a` is one-dimensional; `v` is an array of any shape or a Python number; either `side`; no `sorter`. For `np.digitize`, with or without `right=True`, when the bins increase |
 | `np.interp(x, xp, fp)` | float64 | `xp` and `fp` are one-dimensional and the same length; no `left`, `right` or `period`; `xp` holds no NaN; at most 64 sample points per query |
 
 "Contiguous" means any shape for the operations that work element by element or reduce the whole array: a contiguous 40 by 25 array reaches the `clip` kernel as one run of 1,000 elements.
@@ -120,7 +120,7 @@ How much faster each one is, from Python and at three sizes, is in [the results]
 - **`np.clip(x, 0, 1)` is faster by less than `np.clip(x, -1, 1)`.** A lower bound of exactly zero needs extra care for negative zeros. It is still several times faster than NumPy.
 - **`np.isin` is fastest when the test values are close together**: all between 0 and 65,534, or all within 32,767 of the first one. Otherwise it runs at the speed of compiled C, which is still ahead of NumPy.
 - **`np.searchsorted` and `np.interp` trust you that the array is sorted, as NumPy does.** Neither checks. On an array that is not sorted both return a meaningless result, and the kernel's is not the same meaningless result as NumPy's. Sorted data, including NaNs at the end of `a`, gives NumPy's answer bit for bit.
-- **`np.digitize` is served only with `right=True`.** It calls `np.searchsorted`, and with the default `right=False` it asks for `side='right'`, which has no kernel.
+- **`np.digitize` is served when its bins increase.** It calls `np.searchsorted`, on either side. With decreasing bins it searches them reversed, as a view no kernel takes, and runs at NumPy's speed.
 - **`np.interp` with a few queries against a long table stays with NumPy.** A NaN among the sample points is something the kernel cannot handle, so `xp` is read once before every call. With more than 64 sample points per query that pass would cost more than the kernel saves.
 - **Free-threaded Python is not supported.** `install()` does nothing there, and `report()` says so.
 - **Subclasses mostly stay with NumPy.** `x[mask]`, the methods and the hooked functions take a kernel only for a plain `ndarray`; masked arrays, memory maps and your own subclasses go to NumPy there. `clip` and `argmax` are hooked beneath NumPy's own handling of array types, so they serve whatever plain buffer NumPy hands them, and NumPy wraps the result as it always did.
@@ -131,7 +131,7 @@ From a clone of the repository:
 
 ```bash
 uv run delivery demo          # run examples/workload.py with and without hotkernels, and compare
-uv run delivery check         # 75,307 NumPy calls, both ways; results, errors and warnings must agree
+uv run delivery check         # 77,481 NumPy calls, both ways; results, errors and warnings must agree
 uv run delivery time          # time each statement from Python on your machine
 uv run delivery numpy-tests   # NumPy's own test suite, both ways; about ten minutes
 ```
