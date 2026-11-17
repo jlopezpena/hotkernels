@@ -1,5 +1,15 @@
 # cumsum_f64 attempts
 
+**The spec changed after attempt 4.** Attempts 1 to 4, the screening notes
+after them and the sections "Final numbers" and "Why the exact kernel cannot
+beat the C on long arrays" were written when the spec was exact (output
+bit-identical to adding left to right). From attempt 5 on the spec is in
+tolerance mode: `out[i]` may differ from NumPy by 4 units in the last place
+of `(i + 1) * (|x[0]| + ... + |x[i]|)`, so the additions may be regrouped,
+while NaN and infinity must still appear exactly where NumPy has them. Read
+the earlier entries with that in mind; attempt 3 in particular failed only
+because the spec was exact then.
+
 All timings on an Apple M1 Pro, with `--unlocked` (the spec was not on `main`
 yet) and with other agents timing other kernels on the same machine.
 
@@ -142,3 +152,64 @@ which the table rounds to 1.00x.
 - The only gain an exact kernel has is at short lengths (attempt 2), where
   the benchmark runs many independent calls back to back and the limit is
   how many of them fit in the core at once, not the chain of one call.
+
+## 5. Regrouped NEON blocks with a sum-of-squares check (tolerance spec)
+
+- **Idea:** the `cumsum_i64` scheme on doubles. Two elements per vector;
+  consecutive output vectors differ by `x[i..i+1] + x[i-1..i]`; a block of
+  four vectors sums its four steps from the inputs only and adds the last
+  output vector to each, so the carried chain is one `fadd` per 8 elements.
+  Non-finite handling: the array is done in chunks of 1,024 elements, every
+  output vector is squared and accumulated (`fmla`, four accumulators), and a
+  chunk is accepted only if that sum is finite. That proves every output of
+  the chunk is finite and below sqrt(DBL_MAX), which in turn proves the
+  left-to-right sum is finite there too (the two differ by rounding only, and
+  rounding cannot reach from sqrt(DBL_MAX) to overflow). A rejected chunk is
+  redone one element at a time from the last output before it: a NaN or
+  infinite input switches to the plain left-to-right loop for the rest of the
+  array (from there on the kind of every output depends on the inputs only),
+  and a finite sum above 2^1023 restarts the whole array with the plain loop,
+  because whether the left-to-right sum overflows there can depend on its
+  exact rounding. The proof is in the `kernel.s` header. `out[0]` is stored
+  from the bits of `x[0]`; everything before the array is -0.0, so sums of
+  negative zeros keep their sign as well.
+- **check:** pass (18,136 cases)
+- **compare:** significantly faster than attempt 4, 3.83x [3.83 – 3.84]
+- **Kept:** yes
+- **Notes:** against attempt 4 by size: 0.75x at 16 (3.8 ns against 2.8 ns),
+  1.66x at 64, 3.80x at 256, 5.33x at 1,024, 5.67x at 4,096, 5.52x at
+  16,384, 5.42x at 65,536, 5.63x at 262,144, 5.49x at 1,048,576, 4.13x at
+  4,194,304, 4.81x at 16,777,216. In the first-level cache the loop takes
+  about 4.2 cycles per 8 elements (0.163 ns per element). The loss at 16 is
+  the fixed cost of a call (setting up, the final check) plus 62 operations
+  for two blocks, against 46 for the exact chain, whose latency a benchmark of
+  independent calls does not see; see attempt 6.
+  Measurements behind the design, from a standalone timer that cycles through
+  a pool of inputs as the judge does (cycles per 8 elements at n=1,024 unless
+  said otherwise; the `cumsum_i64` loop is 3.30):
+  - no check at all (wrong on non-finite data, timing only): 3.68. With the
+    carried chain cut as well: 3.30. So the 3-cycle `fadd` on the chain costs
+    about 0.4 and the check about 0.6.
+  - check with 8, 4, 2 accumulators: 4.36, 4.29, 7.4. An `fmla` into its
+    accumulator has a latency of 4 cycles, so two accumulators (four `fmla`
+    each per 16 elements) are chain-bound; four are not.
+  - each `fmla` removed from a block (wrong, timing only) saves 0.15: 4.13
+    with three, 3.98 with two. Replacing `fmla` by `fadd` (which would detect
+    NaN and infinity but not large finite values): 4.30, no cheaper.
+  - four extra integer operations per block cost nothing (4.29); two extra
+    vector `fadd` per block cost 0.15. The loop is limited by the four vector
+    pipes (16 vector operations per block), not by the number of
+    micro-operations.
+  - order of the operations inside a block: with the carry add placed before
+    the other two additions that wait for the carry, 4.22; with each `fmla`
+    right after its output, 4.36. The first is what was committed.
+  - chunk of 512, 1,024, 2,048, 4,096, 8,192, 65,536 elements: 4.29 to 4.33
+    at every size from 1,024 to 262,144, no difference, so the smallest
+    convenient one was taken (a rejected chunk is redone element by element,
+    and the square test is per chunk).
+  - the first shifted vector of a block loaded from `x - 8` instead of built
+    with `ext` (a separate first block for element 0): 4.31, and 12.5 at
+    262,144 elements, the same collapse `cumsum_i64` saw with more loads per
+    iteration. Not used.
+  - carry advanced once per 16 elements (one extra add per iteration): 4.28
+    with the check, 3.68 without. No gain.
