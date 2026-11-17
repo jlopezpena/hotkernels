@@ -24,7 +24,7 @@ Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with NumPy 2.5
 | # | Criterion | Result |
 |---|---|---|
 | 1 | An unmodified script runs faster with the one line, and `report()` shows the kernels hit | Met. [`examples/workload.py`](../examples/workload.py) uses eleven operations on two million elements: 45 ms on plain NumPy, 8.4 ms installed, identical results. `uv run delivery demo` |
-| 2 | `delivery check` passes | Met. 77,481 calls over the 15 hooked operations agree in result, exception, warnings and the state of their arguments, and the kernel ran exactly where each case says |
+| 2 | `delivery check` passes | Met. 85,602 calls over the 15 hooked operations agree in result, exception, warnings and the state of their arguments, and the kernel ran exactly where each case says |
 | 3 | NumPy's test suite gives the same outcome | Met. 47,234 tests, none differs. The tests that compile Fortran (`f2py`) are left out |
 | 4 | A fallback costs at most 2 ns more | Met for the calls where 2 ns can be measured: `x[3]`, `x[1:5]` and `x[3] = 1.0` cost 0.3 to 1.5 ns more. On calls of 130 ns and up the difference is inside the noise of the measurement, a percent or two either way |
 | 5 | No installed entry point is slower than NumPy at any size | Met. The lowest figure is `np.clip` at 16 elements, 1.00x. The type slot needed a minimum size to get there; see below |
@@ -74,7 +74,7 @@ Not built, and recorded as issues:
 
 | Left for later | Issue |
 |---|---|
-| The function forms of the mask operations: `np.compress`, `np.extract`, `np.putmask`, `np.copyto`, `np.where(mask)` | [15](https://github.com/sofeikov/kernel-arena/issues/15) |
+| The function forms of the mask operations: `np.compress`, `np.extract`, `np.putmask`, `np.copyto`, `np.where(mask)`. Done: each has a function hook; see [Which hook serves which kernel](#which-hook-serves-which-kernel) | [15](https://github.com/sofeikov/kernel-arena/issues/15) |
 | Skipping NumPy's wrapper for `np.clip` and for methods on small arrays | [17](https://github.com/sofeikov/kernel-arena/issues/17) |
 | `delivery check` against the oldest and newest NumPy 2 releases | [18](https://github.com/sofeikov/kernel-arena/issues/18) |
 | Wheels, a build that needs no checkout, `python -m hotkernels` | [19](https://github.com/sofeikov/kernel-arena/issues/19) |
@@ -82,7 +82,7 @@ Not built, and recorded as issues:
 | Free-threaded Python | [21](https://github.com/sofeikov/kernel-arena/issues/21) |
 | A case with repeated test values in the `isin_i64` spec, since the binding pads with repeats. Done: the spec has value classes that pad the set the way the binding does | [22](https://github.com/sofeikov/kernel-arena/issues/22) |
 
-Open before this work and still open: in-place `clip` and `cumsum` ([7](https://github.com/sofeikov/kernel-arena/issues/7)), mask bytes other than 0 or 1 in the kernels themselves ([8](https://github.com/sofeikov/kernel-arena/issues/8)), the kernels' safety against a writer during `argmax` ([9](https://github.com/sofeikov/kernel-arena/issues/9)), and whether float `cumsum` may be non-monotonic at all ([10](https://github.com/sofeikov/kernel-arena/issues/10)). The binding screens for each; none is fixed in the kernels.
+Open before this work and still open: in-place `clip` and `cumsum` ([7](https://github.com/sofeikov/kernel-arena/issues/7)), mask bytes other than 0 or 1 in the kernels themselves ([8](https://github.com/sofeikov/kernel-arena/issues/8)), the kernels' safety against a writer during `argmax` (found in [9](https://github.com/sofeikov/kernel-arena/issues/9), now [56](https://github.com/sofeikov/kernel-arena/issues/56)), and whether float `cumsum` may be non-monotonic at all ([10](https://github.com/sofeikov/kernel-arena/issues/10)). The binding screens for each; none is fixed in the kernels.
 
 ## What the user gets
 
@@ -222,8 +222,11 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 | `argmax`, `argmin` | 4 | Type slot, plus the function for small arrays | Always, for float32 and float64 |
 | `clip` | 2 | Inner loop | Contiguous, scalar bounds with `lo <= hi`, output is not the input |
 | `x[mask]` | 2 | Indexing | Both 1-D, contiguous, the same length; a plain `ndarray` indexed by a boolean `ndarray` |
-| `x[mask] = v` | 1 | Indexing | As above, and `v` is a Python float |
+| `np.compress(mask, x)`, `np.extract(mask, x)` | The same 2 | Function | Both contiguous and of the same size; `x` of any shape, which both functions flatten. For `np.compress` the mask is 1-D and there is no `axis` or `out`; for `np.extract` the mask may have any shape |
+| `x[mask] = v` | 1 | Indexing | As for `x[mask]`, `x` writable and not sharing memory with the mask, and `v` a Python float or int |
+| `np.putmask(x, mask, v)`, `np.copyto(x, v, where=mask)` | The same 1 | Function | As for `x[mask] = v`, with `x` of any shape. `np.putmask` needs only the sizes to match; `np.copyto` needs the same shape and no `casting` |
 | `nonzero` | 1 | Method | 1-D contiguous boolean array |
+| `np.where(mask)` | The same 1 | Function | One argument, a 1-D contiguous boolean array. `np.where` calls NumPy's C code for `nonzero` directly, so the method hook does not see it |
 | `searchsorted` | 2 | Method | The array one-dimensional, contiguous float64; the needles a contiguous float64 array of any shape or a Python number; `side` absent, `'left'` or `'right'`, each side with its own kernel ([searchsorted-right-design.md](searchsorted-right-design.md)); no `sorter` |
 | `cumsum` | 3 | Method | Contiguous, no `axis`, `dtype` or `out`. The two float kernels only with `inexact=True` |
 | `astype` | 1 | Method | Contiguous `uint8` to `float32`, other arguments at their defaults |
@@ -236,7 +239,25 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 
 "Contiguous" for a kernel that works element by element or reduces the whole array means any shape. NumPy's inner loops already work that way: a contiguous 40 by 25 array arrived at the `clip` loop as one run of 1,000.
 
-The function forms of the mask operations (`np.compress`, `np.extract`, `np.putmask`, `np.copyto`, `np.where(mask)`) can be hooked the same way. They are not needed for the exit criterion and come after it.
+The function forms of the mask operations (`np.compress`, `np.extract`, `np.putmask`, `np.copyto`, `np.where(mask)`) were not needed for the exit criterion and came after it ([issue 15](https://github.com/sofeikov/kernel-arena/issues/15)). Each is a function object of the type the function hook already changes, and each shares its kernel's checks with the indexing or method hook, including the scan of the mask for bytes other than 0 or 1. They differ from the syntax in what NumPy itself requires, and the table says how:
+
+- **They flatten.** `np.compress` without an axis, `np.extract` and `np.putmask` read their arrays in C order whatever the shape, so a contiguous array of any shape is one flat buffer to the kernel. `np.copyto` broadcasts the mask against `x` instead, and a mask of another shape, even of the same size, is NumPy's to broadcast or refuse.
+- **`np.compress(mask, x, out=o)` is NumPy's.** The compress kernels write scratch output, and a scratch kernel must never see a buffer the caller owns.
+- **Only the masked operation is counted.** A call left to NumPy counts under "Left to NumPy" when it is the operation the kernel serves. `np.copyto` without `where` is a plain copy, and `np.where(mask, x, y)` a selection between two arrays; both pass through the hook without being counted.
+
+From Python, with `uv run delivery time` on the Apple M1 Pro, NumPy 2.5.5, half the mask selected. The machine was running other work (load average about 7), so the figures are rough; they are not yet in `delivery/results/`, which is recorded whole:
+
+| Statement | 16 elements | 4,096 | 1,048,576 |
+|---|---|---|---|
+| `np.compress(mask, x)`, float64 | 6.20x | 9.33x | 6.20x |
+| `np.extract(mask, x)`, float64 | 11.8x | 9.95x | 6.26x |
+| `np.putmask(x, mask, 0.0)`, float64 | 4.03x | 5.36x | 18.4x |
+| `np.copyto(x, 0.0, where=mask)`, float64 | 3.66x | 9.33x | 20.8x |
+| `np.where(mask)` | 2.46x | 3.93x | 3.44x |
+
+NumPy's own `np.compress` is faster than its `x[mask]` (1.97 ms against 5.1 ms at a million elements), so the same kernel gains less there. A call that passes through one of the five hooks to NumPy costs nothing measurable: `np.copyto(x, 0.0)` and `np.where(mask, 1.0, 0.0)` were within 1.3% of plain NumPy at every size.
+
+The keywords each hook accepts are the ones NumPy 2.0 to 2.5 accept: `np.putmask` takes `x` by position only, and `np.where` takes no keywords at all. They were checked on 2.0.2, 2.2.6, 2.3.5 and 2.5.5, and in each the five are function objects of the type the hook expects.
 
 ### Considered and not proposed
 
@@ -267,7 +288,7 @@ Review of the ARM64 kernels found inputs where a kernel is wrong, or unsafe, and
 |---|---|---|
 | A mask byte other than 0 or 1, which a boolean array can hold ([issue 8](https://github.com/sofeikov/kernel-arena/issues/8)) | Counts past the capacity and writes outside the buffer | Reads the mask once before the kernel. Any byte above 1 sends the call to NumPy |
 | The output is the input ([issue 7](https://github.com/sofeikov/kernel-arena/issues/7)) | `clip` and float `cumsum` are wrong on some data | Sends the call to NumPy |
-| Another thread writes the array during `argmax` ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Reads it twice and may read past the end | The type-slot hook holds the interpreter lock while the kernel runs. That stops Python threads, and does not stop code that writes without the lock. Bounding the kernels' scans stays open in the issue |
+| Another thread writes the array during `argmax` ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Reads it twice and may read past the end | Every `argmax` kernel call runs with the interpreter lock held: the type-slot hook takes it back from NumPy, and the function hook never releases it. That stops Python threads, and does not stop code that writes without the lock. Bounding the kernels' scans is [issue 56](https://github.com/sofeikov/kernel-arena/issues/56) |
 | A histogram range whose bin edges are not strictly increasing ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Returns counts where NumPy raises | Builds the edges first, as NumPy does, and sends the call to NumPy if they are not strictly increasing |
 | `clip` with array bounds ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | Matches only NumPy's scalar-bound loop | Takes the kernel for scalar bounds only |
 | A NaN among `np.interp`'s sample points ([issue 9](https://github.com/sofeikov/kernel-arena/issues/9)) | At `xp[0]` it reads before the start of `xp` and `fp`; elsewhere it returns something other than NumPy | Reads `xp` once before the kernel. Any NaN sends the call to NumPy. The pass costs about 0.13 ns per sample point, so the kernel is taken only with at most 64 sample points per query |
@@ -286,7 +307,7 @@ Review of the ARM64 kernels found inputs where a kernel is wrong, or unsafe, and
 - **The inner-loop hook inherits NumPy's behaviour.** The kernel runs where NumPy's loop ran, with the lock held or released as NumPy decided.
 - **The type-slot hook takes the lock.** NumPy releases it around `argmax`, and the kernels are not safe against a writer; see the table above.
 - **The other hooks release the interpreter lock above a size threshold**, as NumPy does. A kernel is a pure leaf function and touches no Python object.
-- **Masked assignment keeps the lock.** The ARM64 kernel rewrites elements the mask does not select with their own bits ([kernel-findings.md](kernel-findings.md#masked-assignment)). Holding the lock means no other Python thread can write one of them in between. It blocks other threads for about 180 µs per million elements.
+- **Masked assignment keeps the lock**, in all three spellings: `x[mask] = v`, `np.putmask` and `np.copyto(..., where=mask)`. The ARM64 kernel rewrites elements the mask does not select with their own bits ([kernel-findings.md](kernel-findings.md#masked-assignment)). Holding the lock means no other Python thread can write one of them in between. It blocks other threads for about 180 µs per million elements.
 - **Free-threaded Python is not supported.** `install()` does nothing there. Changing a shared function pointer while other threads run needs its own design.
 
 ### Counting
@@ -318,8 +339,9 @@ hotkernels/                  the installable package, its own distribution
       module.c               hook table, counters, the interface to Python
       hook_slot.c            type slot: argmax, argmin
       hook_loop.c            inner loop: clip
-      hook_function.c        function objects: argmax, count_nonzero, sum, histogram, bincount, isin
-      hook_method.c          methods: astype, sum, nonzero, cumsum
+      hook_function.c        function objects: argmax, count_nonzero, sum, histogram, bincount, isin,
+                             interp, compress, extract, putmask, copyto, where
+      hook_method.c          methods: astype, sum, nonzero, cumsum, searchsorted
       hook_index.c           indexing: x[mask], x[mask] = v
 delivery/                    development tool: `uv run delivery check | demo | time | numpy-tests`
 examples/workload.py         a NumPy program written without hotkernels in mind

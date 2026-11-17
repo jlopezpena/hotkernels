@@ -75,7 +75,7 @@ _ARCH_EXPECT = {
 SLOW_KERNEL, SLOW_VARIANT = "argmax_f32", "slow"
 # The slow variant is timed on a reduced sweep; the gap is large enough.
 _SLOW_SIZES = [1024, 65536]
-_SLOW_SAMPLES = 15
+_SLOW_SAMPLES = 150
 
 # The fixture whose timing buffers are inspected: it has two inputs and an
 # output, and the sizes cover a pool of many small inputs and single large ones.

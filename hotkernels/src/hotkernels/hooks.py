@@ -151,18 +151,67 @@ def _compress(dtype: type) -> bool:
     return bool(np.array_equal(x[_stride_mask()], x[::PROBE_STRIDE]))
 
 
-def _maskfill() -> bool:
-    """Probe the assignment hook: `x[mask] = value`."""
+def _compress_function(dtype: type, function: Callable) -> bool:
+    """Probe a function hook: `np.compress(mask, x)` or `np.extract(mask, x)`.
+
+    Args:
+        dtype: Element type of the probe array.
+        function: `np.compress` or `np.extract`; both take the mask first.
+
+    Returns:
+        Whether the function selected every PROBE_STRIDE-th element.
+    """
+    x = np.arange(PROBE_N).astype(dtype)
+    return bool(np.array_equal(function(_stride_mask(), x), x[::PROBE_STRIDE]))
+
+
+def _assign(x: np.ndarray, mask: np.ndarray) -> None:
+    """Run `x[mask] = PROBE_FILL`."""
+    x[mask] = PROBE_FILL
+
+
+def _putmask(x: np.ndarray, mask: np.ndarray) -> None:
+    """Run `np.putmask(x, mask, PROBE_FILL)`."""
+    np.putmask(x, mask, PROBE_FILL)
+
+
+def _copyto(x: np.ndarray, mask: np.ndarray) -> None:
+    """Run `np.copyto(x, PROBE_FILL, where=mask)`."""
+    np.copyto(x, PROBE_FILL, where=mask)
+
+
+def _maskfill(assign: Callable[[np.ndarray, np.ndarray], None]) -> bool:
+    """Probe a masked assignment: `x[mask] = value` or one of its function forms.
+
+    Args:
+        assign: Sets the elements of its first argument where its second is
+            True to PROBE_FILL, in place.
+
+    Returns:
+        Whether exactly the selected elements were set.
+    """
     x = np.arange(PROBE_N, dtype=np.float64)
     expected = x.copy()
     expected[::PROBE_STRIDE] = PROBE_FILL
-    x[_stride_mask()] = PROBE_FILL
+    assign(x, _stride_mask())
     return bool(np.array_equal(x, expected))
 
 
-def _nonzero() -> bool:
-    """Probe the method hook: `mask.nonzero()`."""
-    (indices,) = _stride_mask().nonzero()
+def _nonzero_method(mask: np.ndarray) -> tuple:
+    """Return `mask.nonzero()`."""
+    return mask.nonzero()
+
+
+def _nonzero(function: Callable[[np.ndarray], tuple]) -> bool:
+    """Probe `mask.nonzero()` or `np.where(mask)`.
+
+    Args:
+        function: Takes the mask and returns NumPy's tuple of index arrays.
+
+    Returns:
+        Whether the one index array holds every PROBE_STRIDE-th position.
+    """
+    (indices,) = function(_stride_mask())
     return bool(np.array_equal(indices, np.arange(0, PROBE_N, PROBE_STRIDE)))
 
 
@@ -267,9 +316,20 @@ HOOKS: tuple[Hook, ...] = (
     Hook("function.bincount", FUNCTION, (Probe("bincount_u8", _bincount),)),
     Hook("function.isin", FUNCTION, (Probe("isin_i64", _isin),)),
     Hook("function.interp", FUNCTION, (Probe("interp_f64", _interp),)),
+    Hook("function.compress", FUNCTION, (
+        Probe("compress_f32", partial(_compress_function, np.float32, np.compress)),
+        Probe("compress_f64", partial(_compress_function, np.float64, np.compress)),
+    )),
+    Hook("function.extract", FUNCTION, (
+        Probe("compress_f32", partial(_compress_function, np.float32, np.extract)),
+        Probe("compress_f64", partial(_compress_function, np.float64, np.extract)),
+    )),
+    Hook("function.putmask", FUNCTION, (Probe("maskfill_f64", partial(_maskfill, _putmask)),)),
+    Hook("function.copyto", FUNCTION, (Probe("maskfill_f64", partial(_maskfill, _copyto)),)),
+    Hook("function.where", FUNCTION, (Probe("nonzero_bool", partial(_nonzero, np.where)),)),
     Hook("method.astype", METHOD, (Probe("cast_u8_f32", _astype),)),
     Hook("method.sum", METHOD, (Probe("sum_u8", _sum_method),)),
-    Hook("method.nonzero", METHOD, (Probe("nonzero_bool", _nonzero),)),
+    Hook("method.nonzero", METHOD, (Probe("nonzero_bool", partial(_nonzero, _nonzero_method)),)),
     Hook("method.cumsum", METHOD, (
         Probe("cumsum_i64", partial(_cumsum, np.int64)),
         Probe("cumsum_f32", partial(_cumsum, np.float32), inexact=True),
@@ -283,8 +343,11 @@ HOOKS: tuple[Hook, ...] = (
         Probe("compress_f32", partial(_compress, np.float32)),
         Probe("compress_f64", partial(_compress, np.float64)),
     )),
-    Hook("index.set", INDEXING, (Probe("maskfill_f64", _maskfill),)),
+    Hook("index.set", INDEXING, (Probe("maskfill_f64", partial(_maskfill, _assign)),)),
 )
+
+# The hooks that deliver the compress kernels: `x[mask]`, `np.compress` and `np.extract`.
+COMPRESS_HOOKS = ("index.get", "function.compress", "function.extract")
 
 # Every kernel, in the order the report lists them. Kernels of one operation
 # are adjacent.
@@ -295,10 +358,10 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("argmin_f64", "np.argmin", "float64", "argmin", ("slot.argmin.f64", "function.argmin")),
     KernelInfo("clip_f32", "np.clip", "float32", "clip", ("loop.clip.f32",)),
     KernelInfo("clip_f64", "np.clip", "float64", "clip", ("loop.clip.f64",)),
-    KernelInfo("compress_f32", "x[mask]", "float32", "compress", ("index.get",)),
-    KernelInfo("compress_f64", "x[mask]", "float64", "compress", ("index.get",)),
-    KernelInfo("maskfill_f64", "x[mask] = v", "float64", "maskfill", ("index.set",)),
-    KernelInfo("nonzero_bool", "np.nonzero", "bool", "nonzero", ("method.nonzero",)),
+    KernelInfo("compress_f32", "x[mask]", "float32", "compress", COMPRESS_HOOKS),
+    KernelInfo("compress_f64", "x[mask]", "float64", "compress", COMPRESS_HOOKS),
+    KernelInfo("maskfill_f64", "x[mask] = v", "float64", "maskfill", ("index.set", "function.putmask", "function.copyto")),
+    KernelInfo("nonzero_bool", "np.nonzero", "bool", "nonzero", ("method.nonzero", "function.where")),
     KernelInfo("cumsum_i64", "np.cumsum", "int64", "cumsum", ("method.cumsum",)),
     KernelInfo("cumsum_f32", "np.cumsum", "float32", "cumsum", ("method.cumsum",)),
     KernelInfo("cumsum_f64", "np.cumsum", "float64", "cumsum", ("method.cumsum",)),
