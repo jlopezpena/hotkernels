@@ -83,10 +83,9 @@ Lchunk:
     movi    v21.2d, #0
     mov     x3, #CHUNK
     cmp     x2, x3
-    csel    x3, x2, x3, lo          // elements in this chunk
-    mov     x9, x3
-    sub     x2, x2, x3
-    subs    x3, x3, #16
+    csel    x9, x2, x3, lo          // elements in this chunk
+    sub     x2, x2, x9
+    subs    x3, x9, #16
     b.lo    Lrest
 Lmain:
     ldp     q0, q1, [x0]
@@ -182,9 +181,10 @@ Lcheck:
     fadd    v20.2d, v20.2d, v21.2d
     fadd    v18.2d, v18.2d, v20.2d
     faddp   d0, v18.2d              // sum of the squares of every output of the chunk
-    fsub    d0, d0, d0              // 0.0 if that is finite, NaN if not
-    fcmp    d0, d0
-    b.vs    Lredo
+    fmov    x10, d0
+    lsr     x10, x10, #52           // sign and exponent
+    cmp     x10, #0x7ff             // all ones (or more, with the sign): infinite or NaN
+    b.hs    Lredo
     cbnz    x2, Lchunk
 Lfinish:
     str     x11, [x7]               // out[0] = x[0], bit for bit

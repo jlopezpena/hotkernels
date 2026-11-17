@@ -233,3 +233,16 @@ which the table rounds to 1.00x.
   0.211 / 0.195 at 32, 0.242 / 0.188 at 40. This is a throughput choice: a
   caller whose next step waits for the result sees the chain's latency (up
   to 93 cycles for 31 elements) where the blocks would take about 25.
+
+## 7. Shorter chunk header and an integer test at the end of the check
+
+- **Idea:** two things outside the loop. One instruction fewer in the chunk
+  header (`csel` straight into the chunk size, `subs` from it), and the check
+  ends with a move of the sum of squares to a general register and a test of
+  its exponent, instead of `fsub` and `fcmp` (one vector operation fewer).
+- **check:** pass (18,136 cases)
+- **compare:** significantly faster, 1.001x [1.001 – 1.001]
+- **Kept:** yes, by the rule; the gain is a tenth of a percent
+- **Notes:** 163.9 ns against 164.1 ns at 1,024, 41.7 against 41.8 at 256,
+  657.7 against 658.4 at 4,096; no difference at 16 and from 65,536 up. In
+  the standalone timer it could not be told apart from the previous version.
