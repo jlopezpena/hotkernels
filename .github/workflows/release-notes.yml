@@ -6,7 +6,8 @@ name: release-notes
 on:
   pull_request:
     # Labelling reruns the check, so adding the label clears a failure.
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # `edited` covers a change of base branch, which changes the diff.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read
