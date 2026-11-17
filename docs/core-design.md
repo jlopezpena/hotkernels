@@ -130,7 +130,7 @@ Find out where NumPy is actually slow on ARM64 before choosing what to write. Nu
 
 **Exit criterion:** a ranked shortlist with numbers. Every candidate on it goes forward to phase 3; none is dropped in advance.
 
-**Status:** a first pass is in [survey-design.md](survey-design.md): ten assembly candidates and six C-only candidates, with numbers.
+**Status:** a first pass is in [survey-design.md](survey-design.md): ten assembly candidates and six C-only candidates for ARM64, with numbers, and a recorded run with its own shortlist for x86-64.
 
 ### Phase 3: the shortlisted kernels, end to end
 
