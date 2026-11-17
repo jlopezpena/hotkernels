@@ -24,18 +24,18 @@
 // group, and the counts are moved to a general register before a lane can
 // reach 65,536.
 
-// Steps of the main loop (32 elements, one group into each accumulator)
+// Steps of a main loop (at most 32 elements, one group into each accumulator)
 // between flushes. Each lane is then at most 2 * 8192 = 16,384 and the two
 // accumulators added together at most 32,768, which fits in 16 bits.
 .set BLOCK_STEPS, 8192
 // From this many elements (16 MB) the array is larger than the 12 MB L2 cache
-// and the main loop also prefetches. Below it the prefetches only cost time.
+// and the loop prefetches (see Lhuge). Below it the prefetches only cost time.
 .set HUGE_MIN_N, 2097152
 // How far ahead of the loads the prefetches reach, in bytes.
 .set PREFETCH_AHEAD, 262144
-// From this many elements, and below HUGE_MIN_N, the main loop is the hybrid
-// one (see Lhybrid). Below it, the leftover elements a step of 18 leaves
-// behind cost more than the hybrid loop saves.
+// From this many elements, and below HUGE_MIN_N, the loop is the hybrid one
+// (see Lhybrid). Below it, the leftover elements a step of 18 leaves behind
+// cost more than the hybrid loop saves.
 .set HYBRID_MIN_N, 512
 // Elements per step of the hybrid loop: one group of sixteen in vector
 // registers and two in general registers.
@@ -80,8 +80,8 @@
 .endm
 
 // The same with `ldnp`, the load that hints the data will not be needed again
-// soon. Used in the main loop: it costs nothing while the array fits in the
-// caches and is a few percent faster once it does not.
+// soon. Used from HYBRID_MIN_N elements: it costs nothing while the array fits
+// in the caches and is a few percent faster once it does not.
 .macro LOAD16_STREAM base, off
     ldnp    q0, q1, [\base, #\off]
     ldnp    q2, q3, [\base, #\off + 32]
@@ -162,25 +162,17 @@ Lbig:
     movi    v17.2d, #0
     cmp     x1, #HYBRID_MIN_N
     b.hs    Lhybridmin
-Lvector:
-    lsr     x4, x1, #5              // steps left
-Lblock:
-    mov     x5, #BLOCK_STEPS
-    cmp     x4, x5
-    csel    x5, x4, x5, lo          // steps in this block
-    sub     x4, x4, x5
-    cmp     x1, #HUGE_MIN_N
-    b.hs    Lhugestep
+    // 32..511 elements: two groups per step. Too few for a lane to overflow.
+    lsr     x5, x1, #5              // steps
 Lstep:
-    LOAD16_STREAM x0, 0
+    LOAD16  x0, 0
     COUNT16 16
-    LOAD16_STREAM x0, 128
+    LOAD16  x0, 128
     add     x0, x0, #256
     COUNT16 17
     subs    x5, x5, #1
     b.ne    Lstep
-Lblockdone:
-    cbnz    x4, Lflush
+Lstepsdone:
     tst     x1, #31
     b.ne    Lbigtail
     REDUCE  x0
@@ -188,34 +180,11 @@ Lblockdone:
 Lbigtail:
     REDUCE  x6
     b       Ltail
-Lflush:
-    REDUCE  x6
-    movi    v16.2d, #0
-    movi    v17.2d, #0
-    b       Lblock
-
-    // The same loop for arrays that do not fit in the L2 cache: every step
-    // also asks for two of the four cache lines it will read PREFETCH_AHEAD
-    // bytes later (the hardware prefetcher brings their neighbours). Near the
-    // end of the array these addresses lie beyond it; a prefetch never
-    // faults and reads nothing the program can see.
-Lhugestep:
-    add     x7, x0, #PREFETCH_AHEAD
-    prfm    pldl2keep, [x7]
-    prfm    pldl2keep, [x7, #128]
-    LOAD16_STREAM x0, 0
-    COUNT16 16
-    LOAD16_STREAM x0, 128
-    add     x0, x0, #256
-    COUNT16 17
-    subs    x5, x5, #1
-    b.ne    Lhugestep
-    b       Lblockdone
 
     // ---- HYBRID_MIN_N elements or more.
 Lhybridmin:
     cmp     x1, #HUGE_MIN_N
-    b.hs    Lvector
+    b.hs    Lhuge
 
     // Hybrid loop, for arrays that fit in the caches. The vector loop is
     // limited by the four vector ports (sixteen instructions per group, four
@@ -253,3 +222,33 @@ Lhstep:
 Lhflush:
     movi    v16.2d, #0
     b       Lhblock
+
+    // ---- HUGE_MIN_N elements or more: the array does not fit in the L2
+    //      cache. Two groups per step, and every step also asks for two of
+    //      the four cache lines it will read PREFETCH_AHEAD bytes later (the
+    //      hardware prefetcher brings their neighbours). Near the end of the
+    //      array these addresses lie beyond it; a prefetch never faults and
+    //      reads nothing the program can see.
+Lhuge:
+    lsr     x4, x1, #5              // steps left
+Lhugeblock:
+    mov     x5, #BLOCK_STEPS
+    cmp     x4, x5
+    csel    x5, x4, x5, lo          // steps in this block
+    sub     x4, x4, x5
+Lhugestep:
+    add     x7, x0, #PREFETCH_AHEAD
+    prfm    pldl2keep, [x7]
+    prfm    pldl2keep, [x7, #128]
+    LOAD16_STREAM x0, 0
+    COUNT16 16
+    LOAD16_STREAM x0, 128
+    add     x0, x0, #256
+    COUNT16 17
+    subs    x5, x5, #1
+    b.ne    Lhugestep
+    cbz     x4, Lstepsdone
+    REDUCE  x6
+    movi    v16.2d, #0
+    movi    v17.2d, #0
+    b       Lhugeblock
