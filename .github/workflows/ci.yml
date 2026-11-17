@@ -6,8 +6,14 @@ on:
   pull_request:
 
 jobs:
+  # The maintainer's Mac when it is free, a hosted macOS runner otherwise.
+  runner:
+    uses: ./.github/workflows/pick-runner.yml
+    secrets: inherit
+
   judge:
-    runs-on: macos-15 # Apple Silicon
+    needs: runner
+    runs-on: ${{ needs.runner.outputs.runner }} # Apple Silicon either way
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
