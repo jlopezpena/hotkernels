@@ -86,6 +86,7 @@ uv run survey report survey/results/apple-m1-pro.json   # regenerate a report
 - [docs/judge-design.md](docs/judge-design.md): how kernels are checked and timed
 - [docs/survey-design.md](docs/survey-design.md): where NumPy is slow, and which kernels to build in what order
 - [docs/kernel-findings.md](docs/kernel-findings.md): what each kernel achieves, how, and where assembly could not win
+- [docs/delivery-design.md](docs/delivery-design.md): how the kernels are to reach unmodified NumPy code: the binding, `install()` and `report()`
 - [AGENTS.md](AGENTS.md): rules for coding agents working in this repository
 - [kernels/README.md](kernels/README.md): how to add a kernel
 
