@@ -27,6 +27,7 @@ on:
       - "judge/spec.py"
       - "release/**"
       - ".github/workflows/release.yml"
+      - ".github/workflows/pick-runner.yml"
   # A rehearsal: build, test and upload to TestPyPI.
   workflow_dispatch:
 
@@ -107,9 +108,15 @@ jobs:
 
   # Every hooked NumPy call, with and without hotkernels, against each wheel
   # as built for release rather than the package built from the checkout.
+  # Where the tests run: the maintainer's Mac when it is free, except for a
+  # tag. The wheels themselves are always built on a hosted runner.
+  runner:
+    uses: ./.github/workflows/pick-runner.yml
+    secrets: inherit
+
   test:
-    needs: build
-    runs-on: macos-15
+    needs: [build, runner]
+    runs-on: ${{ needs.runner.outputs.runner }}
     strategy:
       fail-fast: false
       matrix:

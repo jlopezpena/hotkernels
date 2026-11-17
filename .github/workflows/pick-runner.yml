@@ -1,0 +1,60 @@
+# Chooses where a macOS job runs: on the maintainer's own Mac when it is
+# online and idle, and on a GitHub-hosted runner otherwise. Hosted macOS
+# runners are often not assigned for a quarter of an hour; the Mac starts at
+# once.
+#
+# A job uses it like this:
+#
+#   runner:
+#     uses: ./.github/workflows/pick-runner.yml
+#     secrets: inherit
+#   judge:
+#     needs: runner
+#     runs-on: ${{ needs.runner.outputs.runner }}
+#
+# The Mac is never chosen for a pull request from a fork, whose code is not
+# the maintainer's, or for a tag, whose wheels are published. Whether the Mac
+# is free is read from the list of the repository's runners, which needs a
+# token the workflow's own does not have: the RUNNER_STATUS_TOKEN secret, a
+# fine-grained token with read access to the repository's administration.
+# Without it, or when it has expired, every job goes to a hosted runner.
+name: pick-runner
+
+on:
+  workflow_call:
+    outputs:
+      runner:
+        description: The label to give `runs-on`.
+        value: ${{ jobs.pick.outputs.runner }}
+    secrets:
+      RUNNER_STATUS_TOKEN:
+        required: false
+
+permissions: {}
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        env:
+          # Label of the maintainer's runner, and the hosted runner used instead.
+          OWN: hotkernels-mac
+          HOSTED: macos-15
+          TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+          # False for a pull request whose branch is in another repository.
+          OWN_CODE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          runner="$HOSTED"
+          if [ "$OWN_CODE" = "true" ] && [ "$GITHUB_REF_TYPE" != "tag" ] && [ -n "$TOKEN" ]; then
+            # Any failure here (an expired token, the API down) leaves the hosted runner chosen.
+            free=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+                     "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners" \
+                   | jq --arg label "$OWN" '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == $label))] | length' \
+                   || echo 0)
+            if [ "${free:-0}" -gt 0 ]; then runner="$OWN"; fi
+          fi
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "macOS jobs of this run go to: $runner" >> "$GITHUB_STEP_SUMMARY"
