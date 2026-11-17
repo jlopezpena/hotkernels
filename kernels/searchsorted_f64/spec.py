@@ -32,7 +32,10 @@ KERNEL = Kernel(
         # NumPy sorts NaN last and searches with the same ordering, so a sorted
         # array may end in NaNs and the answer is still unique.
         In("a", "f64", prepare=np.sort),
-        In("v", "f64", len="needles"),
+        # Drawn from `a` as well as random: a needle equal to an element is
+        # where the two sides of the search differ, and random data never
+        # gives one.
+        In("v", "f64", len="needles", draws_from="a"),
         Out("out", "i64", capacity="needles"),
         # The length of a. It selects the kernel's code path and the depth of
         # the search, so it is the size that is swept.

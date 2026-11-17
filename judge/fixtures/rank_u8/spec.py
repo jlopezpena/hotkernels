@@ -26,7 +26,9 @@ KERNEL = Kernel(
     returns="void",
     args=[
         In("a", "u8"),
-        In("v", "u8", len="needles"),
+        # Needles drawn from the array as well: the selftest checks that the
+        # judge generates them at every size and in every scalar set.
+        In("v", "u8", len="needles", draws_from="a"),
         Out("out", "i64", capacity="needles"),
         Size("n"),
         Scalar("needles", "usize", NEEDLES),

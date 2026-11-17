@@ -66,6 +66,23 @@ DEFAULT_SCALARS = "default"
 # Words a case description uses for its own fields (`n=4 arr=end seed=1
 # scalars=wide x=random`), which an argument or a scalar set must not be named.
 RESERVED_NAMES = ("n", "arr", "seed", "scalars")
+# Start of the name of the value class an argument with `draws_from` gets:
+# `from_a` for one drawn from the argument `a`.
+DRAWN_PREFIX = "from_"
+
+
+def drawn_class(arg) -> str | None:
+    """Return the name of the value class an argument draws from another, if any.
+
+    Args:
+        arg: A buffer argument.
+
+    Returns:
+        DRAWN_PREFIX followed by the source's name for an In with
+        `draws_from`, otherwise None.
+    """
+    source = getattr(arg, "draws_from", None)
+    return f"{DRAWN_PREFIX}{source}" if source else None
 
 
 @dataclass(frozen=True)
@@ -97,6 +114,13 @@ class In:
     # descriptions (`test=padded_3`), so it must not be the name of a
     # general value class.
     classes: dict[str, Callable] | None = None
+    # Name of another input argument whose values this one may be drawn from:
+    # the needles of a search, drawn from the array searched, so that some of
+    # them equal its elements. It gives this argument one more value class,
+    # DRAWN_PREFIX + the source's name (`v=from_a`), whose elements are
+    # elements of the source as the kernel receives it. The source has the
+    # same element type and does not itself draw from another argument.
+    draws_from: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +169,7 @@ class InOut:
     scratch = False
     prepare = None
     classes = None
+    draws_from = None
 
 
 @dataclass(frozen=True)
@@ -275,6 +300,7 @@ class Kernel:
                                  "case descriptions use that word")
         self._check_scalar_sets()
         self._check_scalar_sizes()
+        self._check_draws()
         if len(self.outs) > 1:
             raise ValueError(f"{self.name}: at most one Out or InOut argument is supported")
         if self.out and self.out.used == USED_RETURN and self.returns != "usize":
@@ -307,6 +333,28 @@ class Kernel:
                 if self.scalar_values(set_name)[declared] < 0:
                     raise ValueError(f"{self.name}: scalar set {set_name!r} makes {declared} negative, "
                                      f"and it is the {what} of {a.name}")
+
+    def _check_draws(self) -> None:
+        """Reject an argument that draws from something it cannot draw from.
+
+        The source must be another input of the same element type that does
+        not itself draw from an argument: the judge builds every source before
+        the arguments drawn from it, in one pass.
+        """
+        ins = {a.name: a for a in self.ins}
+        for a in self.ins:
+            if not a.draws_from:
+                continue
+            source = ins.get(a.draws_from)
+            if source is None or source is a:
+                raise ValueError(f"{self.name}: {a.name} draws from {a.draws_from!r}, "
+                                 "which is not another input argument")
+            if source.dtype != a.dtype:
+                raise ValueError(f"{self.name}: {a.name} is {a.dtype} and draws from "
+                                 f"{source.name}, which is {source.dtype}")
+            if source.draws_from:
+                raise ValueError(f"{self.name}: {a.name} draws from {source.name}, "
+                                 "which itself draws from another argument")
 
     def _check_scalar_sets(self) -> None:
         """Reject scalar sets with a bad name or a value for an unknown scalar."""
