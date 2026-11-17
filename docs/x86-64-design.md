@@ -17,7 +17,7 @@ The judge now runs on Linux x86-64 (step 3 of the [order of work](#order-of-work
 
 | Proposed | Built | Why |
 |---|---|---|
-| Kernels assembled by the C compiler driver | By GNU `as` directly | It is the assembler that can be told which instructions exist. Stated with the level, it refused every instruction beyond x86-64-v3 that was tried and accepted the level's own |
+| Kernels assembled by the C compiler driver | By GNU `as` directly | It is the assembler that can be told which instructions exist. Stated with the level, it refused every instruction beyond x86-64-v3 that was tried and accepted the level's own. clang's assembler does not: given `-march=x86-64-v3` it assembled a GFNI instruction and an AVX-512 one without complaint |
 | The level check: preferred the assembler, otherwise a disassembly | The kernel is assembled twice: plainly, where a failure is a build error, then with the level stated, where a failure is lint and names the instruction | The two failures mean different things to whoever reads them |
 | Whether the wrapper can ask the processor about `vzeroupper` was to be confirmed | It can, with `xgetbv`. A 256-bit write sets the bit even when it writes zeros, and `vzeroupper` clears it | Measured on this machine. Where a processor cannot report it the check is skipped |
 | The timing thread pinned in the C harness | Pinned from Python, to the highest-numbered performance core that no other judge holds, one thread per physical core | Several agents run judges at once. Without a claim they would all pin to the same core |
@@ -26,7 +26,7 @@ The judge now runs on Linux x86-64 (step 3 of the [order of work](#order-of-work
 | Not mentioned | The wrapper passes a seventh and eighth integer argument on the stack | The convention has six integer registers, and the judge's spec allows eight arguments |
 | The attempts logs moved beside each kernel in this step | Not yet; a separate pull request | It touches every kernel directory and the documentation site, and is easier to review alone |
 
-**Checked with gcc, not yet with clang.** clang was not installed on the development machine when this was built, so the selftest was run with gcc standing in for it. It has to be confirmed with clang, on this machine once clang is installed or by a Linux job in continuous integration, which does not exist yet. The fixtures and the wrapper use nothing a C compiler's assembler should treat differently, but that is an expectation until such a run passes.
+**Checked with clang.** The selftest passes with clang 21.1.8 as the compiler, which is what the design asks for, and continuous integration runs it on Linux. It was developed with gcc standing in, before clang was installed on this machine, and passes with both. The choice of compiler matters as much as [open issue 2](#open-issues) expected: the naive C for `sum_u8` takes 49 ns for 1,024 bytes built by clang and 127 ns built by gcc.
 
 **Repeatability.** On this machine, with a desktop session running, five runs of the ten-run check gave worst spreads of 2.0%, 2.3%, 4.7%, 7.9% and 17.6% against a target of 3%. The last was taken while other tests ran on the machine. Sizes up to 1,048,576 elements stayed within 2.3% in four of the five. The misses were at 256 elements once, and otherwise at 4,194,304: sixteen megabytes of `float32`, which only just fits the 24 MB cache that every core shares, so anything else that uses the cache moves it.
 
