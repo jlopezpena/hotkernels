@@ -28,6 +28,11 @@
 // between flushes. Each lane is then at most 2 * 8192 = 16,384 and the two
 // accumulators added together at most 32,768, which fits in 16 bits.
 .set BLOCK_STEPS, 8192
+// From this many elements (16 MB) the array is larger than the 12 MB L2 cache
+// and the main loop also prefetches. Below it the prefetches only cost time.
+.set HUGE_MIN_N, 2097152
+// How far ahead of the loads the prefetches reach, in bytes.
+.set PREFETCH_AHEAD, 262144
 
 // v0-v7 = eight vectors (sixteen elements; absent ones must be zero),
 // v31 = the 63-bit mask.
@@ -152,6 +157,8 @@ Lblock:
     cmp     x4, x5
     csel    x5, x4, x5, lo          // steps in this block
     sub     x4, x4, x5
+    cmp     x1, #HUGE_MIN_N
+    b.hs    Lhugestep
 Lstep:
     LOAD16_STREAM x0, 0
     COUNT16 16
@@ -160,6 +167,7 @@ Lstep:
     COUNT16 17
     subs    x5, x5, #1
     b.ne    Lstep
+Lblockdone:
     cbnz    x4, Lflush
     tst     x1, #31
     b.ne    Lbigtail
@@ -173,3 +181,21 @@ Lflush:
     movi    v16.2d, #0
     movi    v17.2d, #0
     b       Lblock
+
+    // The same loop for arrays that do not fit in the L2 cache: every step
+    // also asks for two of the four cache lines it will read PREFETCH_AHEAD
+    // bytes later (the hardware prefetcher brings their neighbours). Near the
+    // end of the array these addresses lie beyond it; a prefetch never
+    // faults and reads nothing the program can see.
+Lhugestep:
+    add     x7, x0, #PREFETCH_AHEAD
+    prfm    pldl2keep, [x7]
+    prfm    pldl2keep, [x7, #128]
+    LOAD16_STREAM x0, 0
+    COUNT16 16
+    LOAD16_STREAM x0, 128
+    add     x0, x0, #256
+    COUNT16 17
+    subs    x5, x5, #1
+    b.ne    Lhugestep
+    b       Lblockdone
