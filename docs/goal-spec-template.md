@@ -14,7 +14,7 @@ Make `kernels/<kernel>/<arch>/kernel.s` as fast as you can while keeping it corr
 
 **How to iterate.**
 
-1. Read `kernels/<kernel>/attempts.md` so you do not repeat earlier attempts.
+1. Read `kernels/<kernel>/attempts.md` so you do not repeat earlier attempts on this architecture. If the kernel has assembly for another architecture, read that `kernel.s` and its attempts for the idea and the proofs. Do not start from that code, and do not treat an attempt rejected there as rejected here.
 2. Make one change to `kernel.s`.
 3. Run `uv run judge check <kernel>`. If it fails, fix or revert.
 4. Run `uv run judge compare <kernel> --against HEAD`. Keep the change only if the result is `significantly faster`; otherwise revert it.
@@ -22,6 +22,8 @@ Make `kernels/<kernel>/<arch>/kernel.s` as fast as you can while keeping it corr
 6. If kept, commit `kernel.s` and `attempts.md` together.
 
 If there is no `kernel.s` yet, start with the simplest correct version, get `check` passing, commit it, and iterate from there.
+
+**On x86-64.** Try each candidate listed for the kernel's family in `docs/x86-64-design.md` under "Candidates per family", or say why it could not be tried. A candidate that would remove a caveat of the ARM64 kernel, change what the binding must guarantee, or need a judge rule changed is reported, not kept on your own authority.
 
 **When to stop.** Stop when eight consecutive attempts have produced no significant improvement and you have no untried idea that you expect to help.
 
@@ -34,5 +36,6 @@ If there is no `kernel.s` yet, start with the simplest correct version, get `che
 - the optimisations that worked, in order of how much they gave
 - the optimisations that did not work, and why
 - anything you left untried, and why
+- on x86-64, each of the family's candidates: kept, rejected with the judge's result, or not tried and why
 
 **Limits.** Edit only `kernels/<kernel>/<arch>/kernel.s` and `kernels/<kernel>/attempts.md`. Never pass `--unlocked`. If you think the spec, the naive reference or the judge is wrong, stop and report it.

@@ -1,8 +1,10 @@
 # The survey: design and findings
 
-This is a proposal for review. It details phase 2 of [core-design.md](core-design.md): where NumPy is slow on ARM64, which operations are worth a kernel, and in what order to build them.
+This is a proposal for review. It details phase 2 of [core-design.md](core-design.md): where NumPy is slow, which operations are worth a kernel, and in what order to build them.
 
-Unlike the other design documents, the measuring part is already done. The harness in [`survey/`](../survey) exists and the numbers below are real. What is proposed, and open to change, is the ranking and the order of work.
+The answer depends on the architecture, because NumPy's own vector code does: an operation NumPy leaves scalar on one can be vectorised on another. The method is shared. The results, the shortlist and the order of work are given per architecture. One has been surveyed so far, ARM64. x86-64 is next ([x86-64-design.md](x86-64-design.md)).
+
+Unlike the other design documents, the measuring part is already done for ARM64. The harness in [`survey/`](../survey) exists and the numbers below are real. What is proposed, and open to change, is the ranking and the order of work.
 
 The survey was run before the judge existed, so it uses its own small harness. The timings are "naive timings": good enough to rank candidates, not good enough to defend a 10% difference. Every candidate is measured again by the judge before it ships.
 
@@ -32,12 +34,11 @@ The baselines in `survey/naive.c` are survey code. A candidate that goes forward
 
 ## Method
 
-- **Machine.** Apple M1 Pro, macOS 27.2.1, NumPy 2.5.5, Apple clang 21.
-- **Contenders.** For each candidate, the NumPy statement a user would write, against the simplest correct C loop compiled with `clang -O3 -mcpu=native`.
-- **Timing.** C is timed inside C. NumPy is timed from Python and includes its call overhead. Samples are interleaved, the median of up to 11 is reported, and the thread asks for the performance cores. A reference loop timed before and after the run drifted by 0.6%.
+- **Contenders.** For each candidate, the NumPy statement a user would write, against the simplest correct C loop compiled with `clang -O3` and tuned for the machine it runs on (`-mcpu=native` on ARM64).
+- **Timing.** C is timed inside C. NumPy is timed from Python and includes its call overhead. Samples are interleaved, the median of up to 11 is reported, and the thread is kept on the performance cores. A reference loop is timed before and after the run, and its drift is recorded with the result.
 - **Sizes.** 1, 16, 256, 4,096, 65,536, 1,048,576 and 16,777,216 elements.
 - **Allocation.** Where NumPy allocates its result, the C side also mallocs and frees its output on every call. Otherwise the gap would partly be the allocator, which no kernel can remove.
-- **Correctness.** Every naive C kernel was checked against NumPy on the timed input. All 65 variants agree.
+- **Correctness.** Every naive C kernel is checked against NumPy on the timed input.
 - **Was the C vectorised?** Taken from clang's own loop-vectoriser remarks.
 
 To reproduce:
@@ -48,11 +49,18 @@ uv run survey run
 
 `uv run survey report <file.json>` regenerates the report of an existing result file.
 
-Full tables: [apple-m1-pro.md](../survey/results/apple-m1-pro.md) (61 variants) and [apple-m1-pro-branchless.md](../survey/results/apple-m1-pro-branchless.md) (4 follow-up variants).
-
 "Gap" below always means NumPy time divided by naive C time, as a geometric mean over sizes of 65,536 and up. A gap of 4x means the naive loop is four times faster than NumPy.
 
-## What the numbers say
+## Recorded runs
+
+| Architecture | Machine and run | Full tables |
+|---|---|---|
+| ARM64 | Apple M1 Pro, macOS 27.2.1, NumPy 2.5.5, Apple clang 21. The reference loop drifted by 0.6%. All 65 variants agree with NumPy | [apple-m1-pro.md](../survey/results/apple-m1-pro.md) (61 variants) and [apple-m1-pro-branchless.md](../survey/results/apple-m1-pro-branchless.md) (4 follow-up variants) |
+| x86-64 | None yet. The survey has to be ported first. A first look that was not recorded is described in [x86-64-design.md](x86-64-design.md#what-was-measured-before-writing-this) | |
+
+## Results on ARM64
+
+### What the numbers say
 
 1. **Most of the phase 2 list is slower than a naive C loop.** Of the candidates named in the core design, only `argmax`/`argmin`, `any`/`all`, `count_nonzero` on booleans and `searchsorted` on integers are ahead of naive C. Most of the rest is behind, by 1.5x to 7x; `take` through `a[idx]` and `clip` on integers are level.
 2. **The biggest gaps are often closed by the compiler alone.** `clip` on floats (7x), `astype` from `uint8` to `float32` (5.5x), `np.sum` on `uint8` (3.3x) and `count_nonzero` on non-boolean data (2.9x) are all loops that clang vectorises by itself. Assembly would tie the C, so these ship as C kernels (decided in review). **Phase 3 measured otherwise:** assembly beat the C on five of the six, see [kernel-findings.md](kernel-findings.md).
@@ -61,7 +69,7 @@ Full tables: [apple-m1-pro.md](../survey/results/apple-m1-pro.md) (61 variants) 
 5. **Where NumPy already has NEON, it is very good.** `np.max`, `np.any`, `np.all`, `count_nonzero` on booleans and `packbits` run at 0.01 to 0.05 ns per element, 10x to 50x ahead of naive C. These are not targets.
 6. **Stepped slices are not a target.** Copying and adding over `a[::2]` tie naive C (gap 1.03x to 1.09x), and `np.sum` and `np.argmax` on a stepped slice are ahead of it.
 
-## Shortlist
+### Shortlist
 
 Ranked by how likely a hand-written kernel is to beat both NumPy and C, then by the size of the gap. The first two columns of numbers are measured. The last column is a judgement and has not been tested.
 
@@ -85,7 +93,7 @@ Also measured and worth keeping in mind:
 - **`np.take(a, idx)`** is 3.2x behind naive C, while `a[idx]` is level with it (1.07x). The function form is slow, not the gather.
 - **`np.sum(mask)`** costs 0.21 ns per element; `np.count_nonzero(mask)` costs 0.03. Routing one to the other is a 7x win with no new kernel.
 
-### C kernels
+#### C kernels
 
 These have large gaps but clang vectorises the naive loop, so assembly is expected to tie C. They ship as C. The agent may still attempt assembly; it replaces the C only if the judge says it is significantly faster.
 
@@ -100,11 +108,11 @@ These have large gaps but clang vectorises the naive loop, so assembly is expect
 
 `np.clip` on int64 is level with C, so the float gap is specific to NumPy's float loop.
 
-### Not targets
+#### Not targets
 
 NumPy is level with or ahead of naive C: `np.max`, `np.sum` on floats, `any`, `all`, `count_nonzero` on booleans, `packbits`, `argmax` on booleans and integers, `searchsorted` on int64, `np.where(c, a, b)`, `np.diff`, `np.dot` on int64, `np.array_equal`, `a[idx]`, `a[idx] = v`, `astype` from float64 to float32, `np.correlate`, and everything measured on stepped slices.
 
-## Per-call overhead
+### Per-call overhead
 
 NumPy's time on a one-element array, which is almost entirely fixed cost. The naive C kernel takes a few nanoseconds here, or about 25 ns when it has to allocate.
 
@@ -122,7 +130,7 @@ Two consequences:
 - The floor for a call that goes straight into C is around 60 to 150 ns. Calls costing 500 ns or more spend most of that in Python-level wrappers, and a patched function with a direct path could remove it. That is a win in the binding, not in a kernel, and it is largest for `histogram`, `isin`, `clip` and the reductions.
 - It sets the budget for phase 3: our own binding has to cost well under 100 ns per call, or small arrays get slower.
 
-## Order of work
+### Order of work
 
 Every candidate above is tried; none is dropped in advance. The judge decides whether each ships as assembly, as C, or not at all. The order puts shared techniques together and the cheapest evidence first.
 
@@ -137,6 +145,10 @@ Every candidate above is tried; none is dropped in advance. The judge decides wh
 | 7 | Masked assignment | Only `np.putmask` and `np.copyto` are reached until the indexing gap is resolved |
 | 8 | `isin` with a small test set | Least certain gain over C |
 | 9 | Remaining C kernels: `astype`, `np.sum` on uint8, `count_nonzero` on int64 and float64 | No assembly expected; can be done at any point |
+
+## Results on x86-64
+
+Not recorded yet. This section gets the same parts as the ARM64 one: what the numbers say, a shortlist, the fixed cost per call and an order of work. They are not expected to match. NumPy has AVX2 loops for `argmax`, `clip` and `astype`, all of which were ARM64 targets.
 
 ## How the kernels get built
 
@@ -162,13 +174,13 @@ The kernels are still worth building: the judge can measure them, and the functi
 
 ## The baseline for mask selection
 
-The branchy loop is the simplest C for `a[mask]`, but the branchless loop is just as short and 9x faster at 50% density, so the branchless loop is the honest baseline for mask selection and `nonzero`. It leaves a stray element just past the reported output, inside the buffer's capacity, and the NEON technique leaves up to a block of them. The judge's default output rule rejects that.
+The branchy loop is the simplest C for `a[mask]`, but the branchless loop is just as short and 9x faster at 50% density, so the branchless loop is the honest baseline for mask selection and `nonzero`. It leaves a stray element just past the reported output, inside the buffer's capacity, and a kernel that stores a block at a time leaves up to a block of them. The judge's default output rule rejects that.
 
 Decided in review: a spec may declare an output buffer as scratch, which lets the kernel write anywhere inside its capacity. The trade-offs, including what the stray last element means for the binding, are set out in [judge-design.md](judge-design.md#scratch-output-writing-inside-the-capacity). The judge implements it, with `compress_scratch_f32` as its fixture.
 
 ## Limits of this survey
 
-- One machine, one run, one input distribution per candidate (two densities for the mask operations).
+- One machine and one run per architecture, one input distribution per candidate (two densities for the mask operations).
 - At sizes up to 4,096 the C loop sees the same input on every repeat, so the branch predictor learns it. Ratios for the mask operations at small sizes flatter the C. The ranking uses sizes of 65,536 and up.
 - NumPy's numbers include call overhead; the C numbers include no binding cost. At small sizes this flatters the C, as the judge design already notes.
 - The last column of the shortlist is a judgement about what assembly can do. Nothing in this survey measures assembly.
