@@ -248,6 +248,15 @@ After attempt 13 the committed kernel was compared against itself, seven times, 
 - **Attempt 13 is the mirror case:** a gain of 1.09x at 1,024 with a tight interval, not kept because the same two sizes widened the overall interval.
 - **The run stopped here.** The ideas left are all smaller than this floor: folding the load into `vpsadbw` on the 16-byte path, a second accumulator on the 64-byte path, the mixed loop below 512 bytes with a cheaper widening.
 
+## x86-64: attempt 12 again, after the judge was changed
+
+The scatter above was traced to the length of a sample and to comparing within one process (`docs/judge-design.md`, "Short samples" and "Rounds"). With 300 samples of 1 ms and `compare` taken over five processes:
+
+- **The kernel against itself, ten times:** no significant difference every time, 1.000x to 1.007x.
+- **The kernel against the version before attempt 12** (`6e34f7a`), four times: significantly faster every time, 1.007x to 1.010x overall, with 1.05x to 1.06x at 4,194,304 and 1.04x to 1.06x at 16,777,216 and nothing at any other size.
+
+So four streams are faster at the two sizes they change, by about 6%, and attempt 12 stands on the judge's figures.
+
 ## x86-64: where it stands
 
 Final `judge run` (30 samples per point; both final runs printed the judge's warning that the load average was above 2, from the desktop session and the runs before it, and agreed to within 1% overall):
@@ -290,4 +299,3 @@ The candidates the design lists for this kernel (`docs/x86-64-design.md`):
 Found here and worth trying on ARM64: prefetch and several streams were both rejected on the M1 (attempts 5 and 6 there) and both pay on this machine, so that result belongs to the processor, not to the operation.
 
 Not exercised by the judge's timing: sizes below 16, sizes that are not a multiple of 16, and inputs that are not hot in the cache when the call is made. Not exercised by the judge at all: all-0xFF data, which is the case that would overflow a 16-bit lane (checked privately on the final version: every n up to 70,000 at three alignments, and sizes around 4,194,304 and up to 40 MB).
-

@@ -25,15 +25,49 @@ from .spec import DEFAULT_SCALARS, Kernel, Out, element_count, np_dtype
 # Array sizes timed by default: from data that fits in the fastest cache to
 # data far larger than any cache.
 SIZES = [16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216]
-# Timing samples per contender per size.
-SAMPLES = 30
+# Timing samples per contender per size: this many where a sample lasts no
+# longer than TARGET_SAMPLE_NS, fewer where calls are slow (see _sample_count).
+SAMPLES = 300
 # Each sample repeats the call until it has run for at least this long, so
 # timer resolution and call overhead are negligible.
-TARGET_SAMPLE_NS = 10_000_000
+#
+# Samples are short and many on purpose. Whatever is too large for a core's
+# own caches is slowed by the memory traffic of the other cores, and on a
+# machine that is also someone's desktop that traffic comes in bursts a few
+# milliseconds long, many times a second. A sample of 10 ms nearly always
+# contains part of one, so its time is a mixture, and the median of 30 such
+# samples moves with how much of a burst each caught. A sample of 1 ms is
+# either clear of the bursts or inside one, most are clear, and the median is
+# then the undisturbed time. Measured on an Intel Core i5-14600KF with a
+# desktop session running, one function timed against itself twenty times
+# over: with 30 samples of 10 ms the two medians differed by up to 16% at
+# 4,194,304 and 16,777,216 bytes; with 300 samples of 1 ms by 0.1% and 0.3%.
+# Up to 1,048,576 bytes they agreed to 1% before and to 0.14% after.
+TARGET_SAMPLE_NS = 1_000_000
+# Fewest samples taken per contender per size, however slow the calls are.
+MIN_SAMPLES = 30
 
-# A reduced run for smoke tests: two sizes, few samples.
+# `compare` takes its measurement in this many rounds, each in a process of its
+# own, and splits its samples between them.
+#
+# Within one process two builds of the same source are not the same: they are
+# loaded at different addresses, and that alone can cost one of them a
+# mispredicted branch per call at one size. The samples of that process all
+# carry the same offset, so their interval, a few tenths of a percent wide
+# with short samples, does not contain it. Measured on the Intel Core
+# i5-14600KF over 41 comparisons of a kernel with itself: the overall figure
+# was off by up to 0.7%, and one size by up to 4%. A new process loads both
+# builds somewhere else and draws the offset again, so the spread between
+# rounds is the uncertainty that matters, and the interval is built from it.
+COMPARE_ROUNDS = 5
+# Two-sided 95% points of Student's t distribution, by degrees of freedom:
+# what a mean of that many rounds plus one needs to turn its standard error
+# into a 95% interval.
+_T_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262}
+
+# A reduced run for smoke tests: two sizes, a third of the samples.
 QUICK_SIZES = [1024, 65536]
-QUICK_SAMPLES = 10
+QUICK_SAMPLES = 100
 
 # Calibration multiplies the repeat count by this factor until a trial run is
 # long enough to extrapolate from.
@@ -152,15 +186,45 @@ def function_address(dylib: Path, name: str) -> tuple[int, ctypes.CDLL]:
     return ctypes.cast(getattr(lib, name), ctypes.c_void_p).value, lib
 
 
-def _calibrate(run: Callable[[int], int]) -> int:
-    """Find a repeat count for which one sample lasts about TARGET_SAMPLE_NS."""
-    reps = 1
+def _calibrate(run: Callable[[int], int]) -> tuple[int, float]:
+    """Find a repeat count for which one sample lasts about TARGET_SAMPLE_NS.
+
+    Args:
+        run: Times the given number of calls and returns the nanoseconds taken.
+
+    Returns:
+        The repeat count to use for every sample, and how long one sample is
+        then expected to last, in nanoseconds. That is longer than
+        TARGET_SAMPLE_NS when a single call already is.
+    """
+    trial = 1
     while True:
-        elapsed = run(reps)
-        if elapsed >= TARGET_SAMPLE_NS / _CALIBRATION_FRACTION or reps >= _MAX_REPS:
+        elapsed = run(trial)
+        if elapsed >= TARGET_SAMPLE_NS / _CALIBRATION_FRACTION or trial >= _MAX_REPS:
             break
-        reps *= _CALIBRATION_GROWTH
-    return max(1, int(reps * TARGET_SAMPLE_NS / max(elapsed, 1)))
+        trial *= _CALIBRATION_GROWTH
+    reps = max(1, int(trial * TARGET_SAMPLE_NS / max(elapsed, 1)))
+    return reps, elapsed / trial * reps
+
+
+def _sample_count(sample_ns: list[float], samples: int) -> int:
+    """Decide how many samples to take of each contender at one size.
+
+    The time a size is given is fixed: what `samples` samples of
+    TARGET_SAMPLE_NS take for every contender. Where a single call of some
+    contender lasts longer than that, fewer samples fit.
+
+    Args:
+        sample_ns: How long one sample of each contender lasts, in nanoseconds.
+        samples: The most samples to take of each contender.
+
+    Returns:
+        The number of samples of each contender that fit the time, at most
+        `samples` and at least MIN_SAMPLES, or `samples` if that is smaller.
+    """
+    budget_ns = samples * TARGET_SAMPLE_NS * len(sample_ns)
+    fitting = int(budget_ns / max(sum(sample_ns), 1))
+    return max(min(MIN_SAMPLES, samples), min(samples, fitting))
 
 
 @dataclass
@@ -377,12 +441,16 @@ def _sample(runners: dict[str, Callable[[int], int]], samples: int) -> dict[str,
     Args:
         runners: Contender name -> function that takes a repeat count and
             returns elapsed nanoseconds.
-        samples: How many samples to take of each contender.
+        samples: The most samples to take of each contender. Fewer are taken
+            where calls are slow (see `_sample_count`); every contender gets
+            the same number.
 
     Returns:
         Contender name -> array of nanoseconds per call, one entry per sample.
     """
-    reps = {name: _calibrate(run) for name, run in runners.items()}
+    calibrated = {name: _calibrate(run) for name, run in runners.items()}
+    reps = {name: count for name, (count, _) in calibrated.items()}
+    samples = _sample_count([lasting for _, lasting in calibrated.values()], samples)
     times: dict[str, list[float]] = {name: [] for name in runners}
     order = list(runners)
     for sample in range(samples):
@@ -405,13 +473,43 @@ def _ratio(base: np.ndarray, kern: np.ndarray, rng: np.random.Generator) -> tupl
     return float(np.median(base) / np.median(kern)), resamples
 
 
+def _bounded(point: float, lo: float, hi: float) -> dict:
+    """Describe a speedup by its point estimate and the ends of its 95% interval.
+
+    Args:
+        point: The speedup.
+        lo: Lower end of the interval.
+        hi: Upper end of the interval.
+
+    Returns:
+        The three figures and whether the speedup is significant, which it is
+        when the interval does not include 1.0.
+    """
+    return {"speedup": point, "lo": lo, "hi": hi, "significant": bool(lo > 1.0 or hi < 1.0)}
+
+
 def _summary(point: float, resamples: np.ndarray) -> dict:
     """Summarise a speedup: point estimate, 95% interval, and significance.
 
     A speedup is significant when its interval does not include 1.0.
     """
     lo, hi = (float(v) for v in np.percentile(resamples, _INTERVAL_PERCENTILES))
-    return {"speedup": point, "lo": lo, "hi": hi, "significant": bool(lo > 1.0 or hi < 1.0)}
+    return _bounded(point, lo, hi)
+
+
+def _across_rounds(logs: np.ndarray) -> dict:
+    """Summarise a speedup measured once per round.
+
+    Args:
+        logs: The natural logarithm of the speedup in each round; at least two.
+
+    Returns:
+        The geometric mean of the rounds as the speedup, with a 95% interval
+        from the spread between rounds (Student's t on the logarithms).
+    """
+    mean = float(np.mean(logs))
+    half = _T_95[len(logs) - 1] * float(np.std(logs, ddof=1)) / np.sqrt(len(logs))
+    return _bounded(float(np.exp(mean)), float(np.exp(mean - half)), float(np.exp(mean + half)))
 
 
 def _geomean_summary(points: list[float], resamples: list[np.ndarray]) -> dict:
@@ -437,7 +535,8 @@ def analyse(data: Measurements, kernel: str, baselines: list[str]) -> dict:
         points: dict[str, list] = {b: [] for b in baselines}
         resamples: dict[str, list] = {b: [] for b in baselines}
         for n, times in by_size.items():
-            row = {"n": n, "median_ns": {name: float(np.median(t)) for name, t in times.items()}}
+            row = {"n": n, "samples": len(times[kernel]),
+                   "median_ns": {name: float(np.median(t)) for name, t in times.items()}}
             for b in baselines:
                 point, drawn = _ratio(times[b], times[kernel], rng)
                 row[f"vs_{b}"] = _summary(point, drawn)
@@ -451,6 +550,50 @@ def analyse(data: Measurements, kernel: str, baselines: list[str]) -> dict:
             all_resamples[b] += resamples[b]
     for b in baselines:
         report["overall"][f"vs_{b}"] = _geomean_summary(all_points[b], all_resamples[b])
+    return report
+
+
+def analyse_rounds(rounds: list[Measurements], kernel: str, baselines: list[str]) -> dict:
+    """Turn the timings of several rounds into speedups of `kernel` over each baseline.
+
+    Each round was measured in a process of its own. Within a round a speedup
+    is the ratio of median times, as in `analyse`. Across rounds it is the
+    geometric mean of those ratios, and its interval comes from how much the
+    rounds differ, not from the samples within one: see COMPARE_ROUNDS.
+
+    Args:
+        rounds: The measurements of each round, all of the same tables, sizes
+            and contenders. At least two.
+        kernel: Name of the contender the report is about.
+        baselines: Names of the contenders it is compared with.
+
+    Returns:
+        A report in the shape `analyse` returns. A row's `samples` is the
+        total over the rounds, and its `median_ns` the median over the rounds
+        of each round's median.
+    """
+    report: dict = {"distributions": {}, "overall": {}}
+    everything: dict[str, list[np.ndarray]] = {b: [] for b in baselines}
+    for dist, by_size in rounds[0].items():
+        rows = []
+        logs: dict[str, list[np.ndarray]] = {b: [] for b in baselines}
+        for n in by_size:
+            taken = [measured[dist][n] for measured in rounds]
+            row = {"n": n, "samples": sum(len(times[kernel]) for times in taken),
+                   "median_ns": {name: float(np.median([np.median(times[name]) for times in taken]))
+                                 for name in by_size[n]}}
+            for b in baselines:
+                per_round = np.log([np.median(times[b]) / np.median(times[kernel]) for times in taken])
+                row[f"vs_{b}"] = _across_rounds(per_round)
+                logs[b].append(per_round)
+            rows.append(row)
+        # One value per round: the mean over the sizes of that round's logarithms.
+        overall = {f"vs_{b}": _across_rounds(np.mean(logs[b], axis=0)) for b in baselines}
+        report["distributions"][dist] = {"sizes": rows, "overall": overall}
+        for b in baselines:
+            everything[b] += logs[b]
+    for b in baselines:
+        report["overall"][f"vs_{b}"] = _across_rounds(np.mean(everything[b], axis=0))
     return report
 
 
