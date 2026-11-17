@@ -7,9 +7,9 @@ The numbers are the judge's. What is open to review is the set of decisions at t
 ## Summary
 
 - **Twenty-one of the 22 kernels have assembly that the judge reports as significantly faster than naive C.** The exception, `cast_u8_f32`, ties the compiler and ships as its C. Every kernel is faster than NumPy at every size measured. Twenty are bit-identical to NumPy. The two float `cumsum` kernels are within a declared tolerance, which is what makes them faster at all.
-- **The survey's prediction for the "C kernels" was wrong.** It expected assembly to tie the compiler on `clip`, `astype`, `np.sum` on `uint8` and `count_nonzero`, because clang vectorises those loops. Tried, assembly beat the C on five of the six: by 5.9x on `sum_u8` and by 1.3x to 1.4x on the counts and on `clip`. A vectorised loop is not necessarily a good one.
+- **The survey's prediction for the "C kernels" was wrong.** It expected assembly to tie the compiler on `clip`, `astype`, `np.sum` on `uint8` and `count_nonzero`, because clang vectorises those loops. Tried, assembly beat the C on five of the six: by 5.9x on `sum_u8`, by 1.3x to 1.4x on the counts, and by 1.35x to 1.38x on `clip` for bounds that allow its fast path. A vectorised loop is not necessarily a good one.
 - **Three results are narrower than their headline number.** `isin_i64` is fast only for test values that lie close together, and the two `clip` kernels only for some bounds. Each is set out below.
-- **The judge has blind spots that mattered.** It tests one value per scalar argument and, from 4,096 elements up, repeats one input per size. Both hid things that were found by other means.
+- **The judge has blind spots that mattered.** It tested one value per scalar argument and, from 4,096 elements up, repeats one input per size. Both hid things that were found by other means. The first is now closed: a spec lists several combinations of scalar values, and the `clip`, `histogram` and masked-assignment kernels are checked with them.
 
 | Kernel | Input | vs naive C | at 16 | at 4,096 | at 1,048,576 | at 16,777,216 | vs NumPy | at 1,048,576 |
 |---|---|---|---|---|---|---|---|---|
@@ -34,7 +34,7 @@ The numbers are the judge's. What is open to review is the set of decisions at t
 | `isin_i64` | all | 2.11x [2.11 – 2.11] | | | | | 32.0x | |
 | `searchsorted_f64` | random | 8.82x [8.80 – 8.86] | 4.84x | 9.70x | 8.42x | 12.6x | 13.2x | 8.84x |
 | `interp_f64` | random | 4.95x [4.92 – 4.96] | 1.81x | 5.03x | 6.02x | 8.69x | 21.8x | 22.7x |
-| `histogram_f64` | random | 2.69x [2.69 – 2.69] | 2.02x | 2.83x | 2.74x | 2.73x | 23.8x | 7.18x |
+| `histogram_f64` | random | 3.48x [3.47 – 3.49] | 2.27x | 3.82x | 3.59x | 3.57x | 31.6x | 9.70x |
 | `bincount_u8` | random | 1.24x [1.24 – 1.25] | 1.07x | 1.29x | 1.31x | 1.30x | 8.14x | 6.74x |
 | `cumsum_i64` | random | 1.90x [1.89 – 1.93] | 1.36x | 2.43x | 1.95x | 1.69x | 24.3x | 12.5x |
 | `cumsum_f64` | random | 4.46x [4.43 – 4.47] | 1.74x | 5.76x | 5.48x | 4.78x | 31.7x | 20.1x |
@@ -42,22 +42,27 @@ The numbers are the judge's. What is open to review is the set of decisions at t
 | `sum_u8` | random | 5.85x [5.84 – 5.85] | 3.33x | 8.87x | 5.07x | 4.40x | 73.4x | 15.7x |
 | `count_nonzero_i64` | random | 1.28x [1.28 – 1.28] | 1.73x | 1.50x | 1.03x | 1.07x | 8.26x | 3.25x |
 | `count_nonzero_f64` | random | 1.41x [1.41 – 1.41] | 1.39x | 1.71x | 1.28x | 1.08x | 7.80x | 3.79x |
-| `clip_f32` | random | 1.38x [1.38 – 1.38] | 1.17x | 1.49x | 1.47x | 1.10x | 29.8x | 11.3x |
-| `clip_f64` | random | 1.37x [1.36 – 1.37] | 1.09x | 1.58x | 1.35x | 1.08x | 14.5x | 5.14x |
+| `clip_f32` | bounds (-0.5, 0.5) | 1.38x [1.37 – 1.38] | 1.16x | 1.56x | 1.44x | 1.10x | 28.1x | 11.1x |
+| `clip_f32` | bounds (0, 1) | 1.02x [1.02 – 1.03] | 1.16x | 1.00x n.s. | 1.00x n.s. | 1.01x n.s. | 21.0x | 7.70x |
+| `clip_f32` | all | 1.19x [1.18 – 1.19] | | | | | 24.3x | |
+| `clip_f64` | bounds (-0.5, 0.5) | 1.35x [1.34 – 1.35] | 1.09x | 1.65x | 1.30x | 1.08x | 14.4x | 4.88x |
+| `clip_f64` | bounds (0, 1) | 1.02x [1.01 – 1.02] | 1.09x | 1.01x | 1.01x | 0.99x n.s. | 10.7x | 3.70x |
+| `clip_f64` | all | 1.17x [1.16 – 1.17] | | | | | 12.4x | |
 | `cast_u8_f32` | random | C kernel | | | | | 9.05x | 2.68x |
 
-Every figure is how many times faster the kernel is. "vs naive C" and "vs NumPy" are geometric means over the eleven sizes from 16 to 16,777,216 elements, with the 95% interval for the first; the four columns after it are the speedup over naive C at single sizes. "n.s." marks a difference that is not statistically significant. Kernels timed on two kinds of input have a row for each and one for both. The NumPy mean is dominated by NumPy's fixed cost per call at small sizes (for example 1.3 µs for `np.sum` on 16 bytes), which is a property of the call path and not of the loop. The column at 1,048,576 elements shows the loops alone.
+Every figure is how many times faster the kernel is. "vs naive C" and "vs NumPy" are geometric means over the eleven sizes from 16 to 16,777,216 elements, with the 95% interval for the first; the four columns after it are the speedup over naive C at single sizes. "n.s." marks a difference that is not statistically significant. Kernels timed on two kinds of input, or with two sets of scalar values, have a row for each and one for both. The NumPy mean is dominated by NumPy's fixed cost per call at small sizes (for example 1.3 µs for `np.sum` on 16 bytes), which is a property of the call path and not of the loop. The column at 1,048,576 elements shows the loops alone.
 
 ## How the numbers were taken
 
 - **Machine.** Apple M1 Pro, macOS (Darwin 27.2.0), NumPy 2.5.5, Apple clang 21. Native, not emulated.
 - **Command.** `uv run judge run <kernel> --unlocked` for each kernel, one after another, with nothing else running. 30 interleaved samples per size.
+- **Two passes.** The `histogram_f64` and `clip` rows are from a second pass of the same command, taken after scalar sets were added to the judge and the faster `histogram` path was adopted. Every other row is from the first pass. `maskfill_f64` was timed again in the second pass, but the machine was no longer idle and its sizes from 1,048,576 elements up varied by a factor of two between runs; its kernel had not changed, so its first-pass row stands.
 - **Unlocked.** The judge refuses to time a kernel whose `spec.py`, `naive.c` or judge differs from `main`, unless told otherwise. The specs and the judge changes are new in the same pull request as the assembly, so every run here needed `--unlocked` and the judge marks the results as untrusted. Nothing is recorded under `results/` for that reason. Once this is merged, the same commands without the flag give results that can be recorded.
 - **How the kernels were written.** One agent per family of kernels, each in its own worktree, following the rule in [AGENTS.md](../AGENTS.md): keep an edit only if `check` passes and `compare --against HEAD` reports it significantly faster. Each kernel's `attempts.md` lists every attempt, kept or not. Attempts labelled "local" or "private" there were timed outside the judge and are not judge results.
 
 ## What the judge had to learn
 
-The two fixtures needed nothing beyond arrays and a size. The real kernels needed scalar arguments, fixed-size buffers, buffers modified in place, inputs that must be sorted, kernels without assembly, and a tolerance measured at a scale other than the result. These are described in [judge-design.md](judge-design.md#what-a-spec-can-express). All of them change the judge; its selftest passes with them.
+The two fixtures needed nothing beyond arrays and a size. The real kernels needed scalar arguments, several combinations of values for them, fixed-size buffers and buffers sized by a scalar, buffers modified in place, inputs that must be sorted, kernels without assembly, and a tolerance measured at a scale other than the result. These are described in [judge-design.md](judge-design.md#what-a-spec-can-express). All of them change the judge; its selftest passes with them.
 
 ## Results by family
 
@@ -95,8 +100,9 @@ The two fixtures needed nothing beyond arrays and a size. The real kernels neede
 
 ### `histogram` and `bincount`
 
-- **`histogram_f64`.** NumPy computes a bin estimate by divide, multiply and truncate, then corrects it against the two neighbouring bin edges. The kernel does those operations two elements per vector, in the same order and individually rounded, and falls back to scalar code for a lane that is out of range, NaN or in the last bin. It takes 14 vector operations per two elements, which is the limit: about 0.88 ns per element.
-- **A faster variant exists and is not included.** It skips the two edge corrections for elements whose position inside the bin is provably far enough from an edge that neither correction can fire, about 2,047 elements in 2,048. It measured 1.30x faster than the kernel above and passed a differential test of 410 million elements. It replaces operations with a proof, so it is left as a decision.
+- **`histogram_f64`, the literal path.** NumPy computes a bin estimate by divide, multiply and truncate, then corrects it against the two neighbouring bin edges. The kernel can do those operations two elements per vector, in the same order and individually rounded, falling back to scalar code for a lane that is out of range, NaN or in the last bin. That takes 14 vector operations per two elements and about 0.88 ns per element, and nothing cheaper computes the same thing.
+- **The path the kernel takes instead.** It computes the estimate exactly as NumPy does and skips the two edge corrections for an element whose position inside its bin is at least 2^-12 of a bin away from either edge: about 2,047 elements in 2,048. An error bound in the `kernel.s` header shows that neither correction can fire for such an element, provided the bin count and range pass a check made once per call; when they do not, the literal path is used. Every other element goes to a scalar copy of the reference. Four vector operations per two elements, 0.69 ns per element, 1.30x [1.30 – 1.30] over the literal path.
+- **Why it was held back, and what changed.** It replaces operations with a proof, and the proof depends on the bin count and range, of which the judge could test one combination. The spec now lists fourteen, and the kernel passes all of them. The judge's data seldom lands near a bin edge, so the evidence about edges is two differential tests outside the judge: the author's against the reference (410 million elements), and one against `np.histogram` itself with values on and within three ulps of NumPy's edges and around the 2^-12 threshold (430,000 rounds, 126 million elements, no mismatch; a histogram without the corrections fails 2,086 of 3,000 rounds of the same inputs).
 - **`bincount_u8`** is limited by one counter load and store per element. Reading eight input bytes per load and, for large arrays, counting into four tables on the stack so that equal neighbouring bytes do not wait on each other, is worth 1.24x. A 65,536-entry pair table and `dc zva` for zeroing were slower.
 
 ### `cumsum`
@@ -122,14 +128,14 @@ These were expected to ship as C. Five ship as assembly.
 
 ## Where the result is narrower than the number
 
-- **`clip`: fast only for some bounds.** The two-operation path is taken when neither `lo` is `+0.0` nor `hi` is `-0.0`, because `fmax(-0.0, +0.0)` is `+0.0` where NumPy keeps `-0.0`. `np.clip(x, 0, 1)`, probably the commonest call, therefore takes the exact path and runs at the speed of naive C. The judge times the bounds (-0.5, 0.5). A three-operation path for a zero bound is possible and was not written, because the judge cannot time a second pair of bounds.
-- **`clip`: defined for ordered bounds only.** For `lo > hi` NumPy returns `hi`, and for a NaN bound it returns NaN. The reference does neither. Compared outside the judge over 100 pairs of bounds per type, the reference matches NumPy bit for bit on every ordered pair and on none of the others. The specs now say so, and the binding must send such calls to NumPy.
+- **`clip`: fast only for some bounds.** The two-operation path is taken when neither `lo` is `+0.0` nor `hi` is `-0.0`, because `fmax(-0.0, +0.0)` is `+0.0` where NumPy keeps `-0.0`. `np.clip(x, 0, 1)`, probably the commonest call, therefore takes the exact path and runs at the speed of naive C: 1.02x overall and 1.00x from 1,024 elements up. The judge now times both (-0.5, 0.5) and (0, 1), which is where that figure comes from and why the kernels' overall figure is 1.17x to 1.19x and not 1.35x to 1.38x. A three-operation path for a zero bound is possible and has not been written; the judge can now time it.
+- **`clip`: defined for ordered bounds only.** For `lo > hi` NumPy returns `hi`, and for a NaN bound it returns NaN. The reference does neither. Compared outside the judge over 100 pairs of bounds per type, the reference matches NumPy bit for bit on every ordered pair and on none of the others. The specs now say so, the judge checks twelve ordered pairs (zeros of both signs, equal bounds, infinite, denormal and near-largest bounds), and the binding must send any other call to NumPy.
 - **`clip`: reads and writes the floating-point status register.** To stay exact when the data holds a signalling NaN, the kernel reads FPSR after the fast loop and redoes the array if the invalid-operation flag was raised. If the caller left that flag set, it is cleared first and set again afterwards. No rule forbids this, flags are only ever added, and it is how a two-operation path can be exact at all; it is still more than "a pure function over its buffers" suggests, so it is listed under "Decisions".
 - **`isin_i64`: fast only for test values within a 16-bit window**, as above.
 
 ## What the judge does not see
 
-1. **One value per scalar argument.** This hid three things: the clip reference being wrong for reversed and NaN bounds, the clip kernel's dependence on the bounds, and it is the reason the faster `histogram` variant cannot be judged on other bin counts and ranges. Kernels with scalars were verified outside the judge by their authors (for `clip`, 515,916 calls per kernel across 361 pairs of bounds). The fix is value classes, or at least several declared values, for scalars, in both `check` and timing.
+1. **Scalar values nobody listed.** The judge used to pass one value per scalar. That hid the clip reference being wrong for reversed and NaN bounds and the clip kernel's dependence on the bounds, and it was the reason the faster `histogram` path could not be judged. A spec now lists further combinations ([judge-design.md](judge-design.md#scalar-sets)): twelve pairs of bounds for `clip`, fourteen bin counts and ranges for `histogram`, six values for masked assignment. All four kernels and their references pass them. What remains unseen is any combination that is not listed, and data that depends on the scalars: nothing places elements on a histogram's bin edges.
 2. **One input per size from 4,096 elements up.** Small sizes cycle through a pool of inputs; large sizes repeat one. A branch predictor memorises a repeated input, so code with data-dependent branches looks faster than it is up to about 16,384 elements. That is mostly naive C, whose mask loops branch on every element, so the speedups reported for the mask kernels at those sizes are understated. It also hides the mask kernels' own mispredictions when they switch between their dense and sparse paths.
 3. **Densities and distributions between the ones declared.** The mask kernels are timed at 50% and 5%, and are weakest near 10%. `bincount_u8` is timed on uniformly random bytes; all-equal bytes run at 2.1 ns per byte below 8,192 elements.
 4. **Paths behind a size cap.** `interp_f64` above 65,537 elements.
@@ -147,19 +153,24 @@ These are constraints on the binding, collected from the kernels.
 | `clip_*` | `lo <= hi`, neither NaN, otherwise fall back; `x` and `out` must not overlap; touches FPSR |
 | `interp_f64` | From 2^32 elements it takes the scalar path |
 | `cumsum_f32`, `cumsum_f64` | Not bit-identical to NumPy; `report()` must mark them. Adjacent outputs come from separate running sums, so non-negative input does not guarantee a non-decreasing output to the last bit |
-| `histogram_f64` | Written for uniform bins with a finite range; the judge tests 50 bins over [-3, 3] only |
-| Every kernel with a `Scalar` | Verified by the judge for one value only |
+| `histogram_f64` | Written for uniform bins with a finite range, `lo < hi` and at least one bin; the judge tests fourteen bin counts and ranges |
+| Every kernel with a `Scalar` | Verified by the judge for the combinations its spec lists, and no others |
 
 ## Decisions
 
-1. **`histogram_f64`: adopt the faster variant?** 1.30x more, at the cost of relying on an error-bound proof instead of performing NumPy's corrections on every element. Recommended: not until the judge can test other bin counts and ranges.
-2. **`maskfill_f64`: is rewriting unselected elements acceptable?** It is the whole of the gain on dense masks. Recommended: yes for arrays the caller owns exclusively, which is NumPy's normal case, with the caveat documented.
-3. **`clip`: is using FPSR acceptable?** Without it the kernel is the compare-and-select loop, which ties the C in cache. Recommended: yes, since the register is per thread and flags are only added, but it should be a stated exception to the kernel rules.
-4. **Float `cumsum`: one overflow test per block instead of four?** About 12% faster from 256 to 16,384 elements. The proof that infinities land where NumPy has them would no longer hold for a running sum within rounding distance of the largest finite value. Recommended: no.
-5. **Scalar value classes in the judge** before any kernel with a scalar ships. Recommended: yes; it is the largest gap found.
+Decided since the first version of this document:
+
+- **`histogram_f64` takes the faster path.** 1.30x more, relying on an error-bound proof instead of performing NumPy's corrections on every element. It was adopted once the judge could test other bin counts and ranges.
+- **The judge has scalar sets.** Several combinations of scalar values per spec, checked on kernel and reference alike and optionally timed.
+
+Still open:
+
+1. **`maskfill_f64`: is rewriting unselected elements acceptable?** It is the whole of the gain on dense masks. Recommended: yes for arrays the caller owns exclusively, which is NumPy's normal case, with the caveat documented.
+2. **`clip`: is using FPSR acceptable?** Without it the kernel is the compare-and-select loop, which ties the C in cache. Recommended: yes, since the register is per thread and flags are only added, but it should be a stated exception to the kernel rules.
+3. **Float `cumsum`: one overflow test per block instead of four?** About 12% faster from 256 to 16,384 elements. The proof that infinities land where NumPy has them would no longer hold for a running sum within rounding distance of the largest finite value. Recommended: no.
 
 ## What is next
 
 - Re-run every kernel locked after this is merged, record the results and generate the leaderboard.
-- Scalar values in the judge, then the zero-bound path for `clip` and the `histogram` decision.
+- The zero-bound path for `clip`, now that the judge times `np.clip(x, 0, 1)`.
 - The binding and `install()`, starting with one kernel as planned.

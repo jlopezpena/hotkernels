@@ -4,7 +4,7 @@ Fast kernels for the NumPy operations where NumPy is slow, delivered as a zero-f
 
 Kernels are written by coding agents iterating against a judge. The judge checks every kernel against NumPy and times it against NumPy and naive `clang -O3` C.
 
-**On an Apple M1 Pro, all 22 kernels are faster than NumPy at every size measured. At a million elements, 18 of them are more than 5x faster and the best is 76x. Twenty return NumPy's result bit for bit.**
+**On an Apple M1 Pro, all 22 kernels are faster than NumPy at every size measured. At a million elements, 17 of them are more than 5x faster and the best is 76x. Twenty return NumPy's result bit for bit.**
 
 ## Results
 
@@ -12,7 +12,7 @@ How many times faster each kernel is than NumPy, and than the same loop written 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/speedup-vs-numpy-dark.svg">
-  <img src="docs/images/speedup-vs-numpy-light.svg" alt="Bar chart of each kernel's speedup over NumPy at 1,048,576 elements, from 29.0x for np.cumsum on float32 down to 1.83x for np.isin with test values far apart. The table below has every value.">
+  <img src="docs/images/speedup-vs-numpy-light.svg" alt="Bar chart of each kernel's speedup over NumPy at 1,048,576 elements, from 29.0x for np.cumsum on float32 down to 1.83x for np.isin with test values far apart. Lighter bars show the more favourable of two timed cases. The table below has every value.">
 </picture>
 
 | NumPy call | Elements | vs NumPy | vs `clang -O3` |
@@ -23,22 +23,22 @@ How many times faster each kernel is than NumPy, and than the same loop written 
 | `x[mask]` | float32 | 17.3x – 41.7x | 2.70x – 5.70x |
 | `np.sum(x)` | uint8 | 15.7x | 5.07x |
 | `np.cumsum(x)` | int64 | 12.5x | 1.95x |
-| `np.clip(x, lo, hi)` | float32 | 11.3x | 1.47x |
 | `x[mask]` | float64 | 11.0x – 22.5x | 1.67x – 4.10x |
+| `np.histogram(x, bins, range)` | float64 | 9.70x | 3.59x |
 | `np.searchsorted(a, v)` | float64 | 8.84x | 8.42x |
 | `np.argmax(x)`, `np.argmin(x)` | float32 | 8.82x, 8.86x | 26.6x, 26.7x |
+| `np.clip(x, lo, hi)` | float32 | 7.70x – 11.1x | 1.00x – 1.44x |
 | `x[mask] = value` | float64 | 7.48x – 21.4x | 4.64x – 19.0x |
-| `np.histogram(x, bins, range)` | float64 | 7.18x | 2.74x |
 | `np.argmax(x)`, `np.argmin(x)` | float64 | 6.86x, 7.10x | 12.7x, 13.2x |
 | `np.bincount(x)` | uint8 | 6.74x | 1.31x |
 | `np.nonzero(mask)` | bool | 5.15x – 19.2x | 2.47x – 8.08x |
-| `np.clip(x, lo, hi)` | float64 | 5.14x | 1.35x |
 | `np.count_nonzero(x)` | float64 | 3.79x | 1.28x |
+| `np.clip(x, lo, hi)` | float64 | 3.70x – 4.88x | 1.01x – 1.30x |
 | `np.count_nonzero(x)` | int64 | 3.25x | 1.03x |
 | `x.astype(np.float32)` | uint8 | 2.68x | ships as the C |
 | `np.isin(x, test)` | int64 | 1.83x – 75.6x | 1.00x – 5.34x |
 
-Apple M1 Pro, NumPy 2.5.5, Apple clang 21, arrays of 1,048,576 elements, where the fixed cost of a call no longer matters. A range covers the two kinds of input the kernel is timed on: 5% and 50% of the elements selected for the mask kernels, and test values close together or far apart for `isin`. Results at every size from 16 to 16,777,216 elements, with confidence intervals, are in [docs/kernel-findings.md](docs/kernel-findings.md).
+Apple M1 Pro, NumPy 2.5.5, Apple clang 21, arrays of 1,048,576 elements, where the fixed cost of a call no longer matters. A range covers the two cases the kernel is timed in: 5% and 50% of the elements selected for the mask kernels, test values close together or far apart for `isin`, and bounds of (0, 1) or (-0.5, 0.5) for `clip`. Results at every size from 16 to 16,777,216 elements, with confidence intervals, are in [docs/kernel-findings.md](docs/kernel-findings.md).
 
 What stands behind the numbers:
 
@@ -49,13 +49,14 @@ What stands behind the numbers:
 What the numbers do not say:
 
 - **The kernels are not callable from Python yet.** They are timed as native functions; the NumPy figure is NumPy called the usual way.
-- **Two results depend on the arguments.** `np.isin` is fast when the test values lie within a 16-bit window and ties the C otherwise. `np.clip` takes its fast path unless the lower bound is `+0.0` or the upper bound is `-0.0`, so `np.clip(x, 0, 1)` runs at the speed of the C.
+- **Two results depend on the arguments.** `np.isin` is fast when the test values lie within a 16-bit window and ties the C otherwise. `np.clip` takes its fast path unless the lower bound is `+0.0` or the upper bound is `-0.0`, so `np.clip(x, 0, 1)` runs at the speed of the C. Both cases are timed, and are the low ends of those rows.
+- **Scalar arguments are verified for the values each spec lists.** `np.clip` is checked with twelve pairs of bounds and `np.histogram` with fourteen bin counts and ranges, not with every possible one.
 - **One machine.** Every figure is from a single Apple M1 Pro.
 
 ## What is here
 
 - **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is.
-- **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32` and `compress_scratch_f32`, used to test the judge itself.
+- **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32`, `compress_scratch_f32` and `tally_u8`, used to test the judge itself.
 - **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. Recorded results are in `survey/results/`.
 - **Kernels** (`kernels/`): 22 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an ARM64 version. They are checked and timed by the judge but not yet installable. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
 

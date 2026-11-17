@@ -52,7 +52,7 @@ If you believe the spec, the naive reference or the judge is wrong, stop and say
 
 | Command | Use it for | Time |
 |---|---|---|
-| `uv run judge check <kernel>` | After every edit. Lint and correctness. | About 5 seconds |
+| `uv run judge check <kernel>` | After every edit. Lint and correctness. | About 5 seconds, up to 15 for a kernel with many scalar sets |
 | `uv run judge compare <kernel> --against HEAD` | After `check` passes. Is this edit faster? | About 30 seconds |
 | `uv run judge run <kernel>` | The full report against naive C and NumPy. | About 30 seconds |
 | `uv run judge check <kernel> --case '<case>'` | Rerun one failing case. | Instant |
@@ -78,6 +78,7 @@ Only the first failure is shown. The case line says how the input was built:
   - `start`: the buffer starts exactly after one.
   - `mid1` to `mid3`: deliberately misaligned.
 - `x=nan_at@1` means argument `x` is random data with a NaN at index 1. Other value classes are named the same way (`max_at`, `ties`, `denormal`, `all_true`, and so on); see `judge/cases.py`.
+- `scalars=zero_lo`, when present, names the set of scalar arguments the call was made with. The sets and their values are listed in the kernel's `spec.py`; without the field the scalars had their default values. A kernel must be right for every set, and `compare` times every set marked `timed`.
 
 The failure categories:
 

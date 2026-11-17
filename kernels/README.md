@@ -19,6 +19,10 @@ A kernel without `arm64/kernel.s` is a C kernel: `uv run judge check <name>` ver
 3. Merge `spec.py` and `naive.c` to `main` through a pull request. From then on they are locked.
 4. Start a `/goal` run using [docs/goal-spec-template.md](../docs/goal-spec-template.md).
 
+## Scalar arguments
+
+A `Scalar` has a default value, and the oracle receives the scalars after the arrays: `oracle(x, lo, hi)`. A kernel is verified only for the combinations of scalar values its spec lists, so list the ones that matter in `scalar_sets`: values that select a different path through the kernel, zeros of both signs, infinities, the smallest and largest sizes. Keep every combination inside the kernel's domain, and say in the spec's docstring what that domain is. Mark a set `timed=True` when its speed can differ from the default's. `kernels/clip_f64/spec.py` and `kernels/histogram_f64/spec.py` are working examples; the design is in [docs/judge-design.md](../docs/judge-design.md#scalar-sets).
+
 ## Scratch output
 
 By default a kernel may write only the output elements it reports. Declaring an output as `Out(..., used=USED_RETURN, scratch=True)` lets the kernel and `naive.c` write anywhere inside the buffer's capacity; only the reported elements are compared with NumPy. Use it when the fast way to produce variable-length output stores more than it keeps, as mask selection does. `judge/fixtures/compress_scratch_f32/` is a working example.
