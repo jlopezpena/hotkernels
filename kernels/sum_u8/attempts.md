@@ -128,3 +128,12 @@ far below what the caches deliver.
 - **compare:** n/a (first version). `run`: 3.16x [3.14 – 3.19] vs naive C overall; 0.32x at 16, 1.89x at 64, 5.4x to 6.1x from 1,024 to 16,384, 4.4x to 4.5x at 65,536 and 262,144, 3.3x to 3.5x above.
 - **Kept:** yes
 - **Notes:** 0.0083 ns per byte at 4,096 (120 GB/s), 0.0105 at 65,536 and 262,144, 0.014 from 1,048,576 up. At 16 bytes the byte loop takes 5.8 ns against the compiler's 1.8.
+
+## x86-64 2. Four accumulators and 128 bytes per step; a masked last vector; short paths in registers
+
+- **Idea:** the baseline spends five instructions per 32 bytes and finishes with up to 31 single bytes. Unroll to 128 bytes per step into four accumulators with one end-pointer compare. Below 128 bytes take 64, 32 and a last vector as the bits of n say; the last vector is the final 32 bytes of the array, overlapping the previous one and masked from a constant table to the bytes not yet counted. 16 to 31 bytes: the same with 16-byte vectors, and no 256-bit register is written. 4 to 15 bytes: two overlapping loads into general registers, the overlap shifted out, then one `vpsadbw`. Under 4: a byte loop.
+- **check:** pass
+- **compare:** significantly faster, 1.450x [1.440 – 1.460]
+- **Kept:** yes
+- **Notes:** 5.2x at 16 (5.9 ns to 1.1 ns), 1.3x to 1.6x from 256 to 1,048,576, no significant difference at 4,194,304 and 16,777,216, and 0.90x at 64 (1.7 ns to 1.9 ns): that size takes a jump over the 128-byte loop. At 4,096 and 16,384 the loop runs at 168 bytes per ns, which is one `vpsadbw` per clock cycle: on this core the instruction runs on one port only, so 32 bytes per cycle is the limit of this scheme. From 65,536 to 1,048,576 it runs at 104 bytes per ns and above that at 75. Also checked privately, because the judge has no all-0xFF value class: every n up to 70,000 at three alignments, and six sizes up to 40 MB, on all-0xFF data give n * 255; random bytes agree with NumPy for every n up to 70,000.
+
