@@ -388,7 +388,9 @@ static HK_NOINLINE PyObject *try_clip(PyObject *self, PyObject *const *args, Py_
     static const char *const names[PARAMETERS] = {"min", "max", "out"};
     PyObject *bound[PARAMETERS];
     if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
-    if (bound[MIN] == NULL || bound[MAX] == NULL || !hk_is_absent(bound[OUT])) return NULL;
+    // A bound left out or None is the commonest call left to NumPy, and the
+    // cheapest to recognise.
+    if (hk_is_absent(bound[MIN]) || hk_is_absent(bound[MAX]) || !hk_is_absent(bound[OUT])) return NULL;
     return hk_try_clip(self, bound[MIN], bound[MAX]);
 }
 

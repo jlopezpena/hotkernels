@@ -777,7 +777,9 @@ static HK_NOINLINE PyObject *try_clip(PyObject *const *args, Py_ssize_t nargs, P
         lo = bound[MIN];
         hi = bound[MAX];
     }
-    if (lo == NULL || hi == NULL) return NULL;
+    // A bound left out or None is the commonest call left to NumPy, and the
+    // cheapest to recognise.
+    if (hk_is_absent(lo) || hk_is_absent(hi)) return NULL;
     return hk_try_clip(bound[A], lo, hi);
 }
 
