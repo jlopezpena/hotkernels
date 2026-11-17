@@ -23,6 +23,7 @@
 // The functions that are hooked, as indices into `functions`.
 enum {
     F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN, F_INTERP,
+    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE,
     F_COUNT
 };
 
@@ -521,6 +522,128 @@ static PyObject *call_interp(HK_VECTORCALL_PARAMETERS) {
     return functions[F_INTERP].original(callable, args, nargsf, kwnames);
 }
 
+// ------------------------------------------------------ the mask operations
+//
+// The function forms of x[mask], x[mask] = v and mask.nonzero(). Each takes
+// the kernel under the conditions of the indexing or method hook that serves
+// the same kernel, and under whatever more NumPy's own function requires.
+
+// np.compress(condition, a) for a one-dimensional boolean condition and a
+// contiguous float32 or float64 array of any shape and the same size, with
+// no `axis` and no `out`. Without an axis NumPy flattens `a` in C order, so
+// the result is the flat array's selected elements. NumPy raises for a
+// condition of more than one dimension, and cuts or rejects one of another
+// length; both go to NumPy. With `out=` the result would be written into the
+// caller's buffer, and a scratch kernel must only ever see a buffer of the
+// binding's own: that call is NumPy's too.
+static HK_NOINLINE PyObject *try_compress(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { CONDITION, A, AXIS, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"condition", "a", "axis", "out"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[CONDITION] == NULL || bound[A] == NULL) return NULL;
+    if (!hk_is_absent(bound[AXIS]) || !hk_is_absent(bound[OUT])) return NULL;
+    if (!hk_is_plain_array(bound[CONDITION]) || PyArray_NDIM((PyArrayObject *)bound[CONDITION]) != 1) return NULL;
+    return hk_try_compress(bound[A], bound[CONDITION]);
+}
+
+static PyObject *call_compress(HK_VECTORCALL_PARAMETERS) {
+    PyObject *result = try_compress(args, PyVectorcall_NARGS(nargsf), kwnames);
+    if (result != NULL) return result;
+    hk_pass(HK_OP_COMPRESS);
+    return functions[F_COMPRESS].original(callable, args, nargsf, kwnames);
+}
+
+// np.extract(condition, arr) for a boolean condition and a contiguous float32
+// or float64 array of the same size, each of any shape. NumPy flattens both
+// in C order and takes the elements where the flat condition is True.
+static HK_NOINLINE PyObject *try_extract(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { CONDITION, ARR, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"condition", "arr"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[CONDITION] == NULL || bound[ARR] == NULL) return NULL;
+    return hk_try_compress(bound[ARR], bound[CONDITION]);
+}
+
+// A call left to NumPy runs np.nonzero on the condition, which the method
+// hook may serve; that is counted there, under nonzero.
+static PyObject *call_extract(HK_VECTORCALL_PARAMETERS) {
+    PyObject *result = try_extract(args, PyVectorcall_NARGS(nargsf), kwnames);
+    if (result != NULL) return result;
+    hk_pass(HK_OP_COMPRESS);
+    return functions[F_EXTRACT].original(callable, args, nargsf, kwnames);
+}
+
+// np.putmask(a, mask, values) for a contiguous writable float64 `a`, a
+// contiguous boolean mask of the same size, each of any shape, and a Python
+// float or int as the value. NumPy reads both arrays in C order and requires
+// only their sizes to match. `a` can only be given by position.
+static HK_NOINLINE bool try_putmask(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { A, MASK, VALUES, PARAMETERS };
+    static const char *const names[PARAMETERS] = {NULL, "mask", "values"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return false;
+    if (bound[A] == NULL || bound[MASK] == NULL || bound[VALUES] == NULL) return false;
+    return hk_try_maskfill(bound[A], bound[MASK], bound[VALUES]);
+}
+
+// NumPy's putmask returns None.
+static PyObject *call_putmask(HK_VECTORCALL_PARAMETERS) {
+    if (try_putmask(args, PyVectorcall_NARGS(nargsf), kwnames)) Py_RETURN_NONE;
+    hk_pass(HK_OP_MASKFILL);
+    return functions[F_PUTMASK].original(callable, args, nargsf, kwnames);
+}
+
+// True when two arrays have the same shape.
+static bool same_shape(PyArrayObject *a, PyArrayObject *b) {
+    return PyArray_NDIM(a) == PyArray_NDIM(b) &&
+           PyArray_CompareLists(PyArray_DIMS(a), PyArray_DIMS(b), PyArray_NDIM(a));
+}
+
+// np.copyto(dst, src, where=mask) for a contiguous writable float64 `dst`, a
+// Python float or int as `src`, and a contiguous boolean mask of the same
+// shape, with no `casting`. NumPy broadcasts the mask against `dst`, so a
+// mask of another shape, even of the same size, is NumPy's to broadcast or
+// refuse. Sets *masked when the call has a `where` argument at all: only
+// then is it a masked assignment, and only then is a call left to NumPy
+// counted.
+static HK_NOINLINE bool try_copyto(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames, bool *masked) {
+    enum { DST, SRC, CASTING, WHERE, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"dst", "src", "casting", "where"};
+    PyObject *bound[PARAMETERS];
+    *masked = false;
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return false;
+    *masked = bound[WHERE] != NULL;
+    if (bound[DST] == NULL || bound[SRC] == NULL || bound[WHERE] == NULL || bound[CASTING] != NULL) return false;
+    if (!hk_is_plain_array(bound[DST]) || !hk_is_plain_array(bound[WHERE])) return false;
+    if (!same_shape((PyArrayObject *)bound[DST], (PyArrayObject *)bound[WHERE])) return false;
+    return hk_try_maskfill(bound[DST], bound[WHERE], bound[SRC]);
+}
+
+// NumPy's copyto returns None. A copy without `where` is not a masked
+// assignment and is passed on without being counted.
+static PyObject *call_copyto(HK_VECTORCALL_PARAMETERS) {
+    bool masked;
+    if (try_copyto(args, PyVectorcall_NARGS(nargsf), kwnames, &masked)) Py_RETURN_NONE;
+    if (masked) hk_pass(HK_OP_MASKFILL);
+    return functions[F_COPYTO].original(callable, args, nargsf, kwnames);
+}
+
+// np.where(condition) with nothing but a one-dimensional contiguous boolean
+// array: the positions that are True, as np.nonzero gives them. np.where
+// calls NumPy's C code for nonzero directly, so the method hook does not see
+// this call. With `x` and `y` it is another operation, which is passed on
+// without being counted. NumPy accepts no keywords here.
+static PyObject *call_where(HK_VECTORCALL_PARAMETERS) {
+    if (PyVectorcall_NARGS(nargsf) == 1 && kwnames == NULL) {
+        PyObject *result = hk_try_nonzero(args[0]);
+        if (result != NULL) return result;
+        hk_pass(HK_OP_NONZERO);
+    }
+    return functions[F_WHERE].original(callable, args, nargsf, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_function functions[F_COUNT] = {
@@ -532,6 +655,11 @@ static hk_function functions[F_COUNT] = {
     [F_BINCOUNT] = {"bincount", call_bincount, NULL, NULL},
     [F_ISIN] = {"isin", call_isin, NULL, NULL},
     [F_INTERP] = {"interp", call_interp, NULL, NULL},
+    [F_COMPRESS] = {"compress", call_compress, NULL, NULL},
+    [F_EXTRACT] = {"extract", call_extract, NULL, NULL},
+    [F_PUTMASK] = {"putmask", call_putmask, NULL, NULL},
+    [F_COPYTO] = {"copyto", call_copyto, NULL, NULL},
+    [F_WHERE] = {"where", call_where, NULL, NULL},
 };
 
 // Return the address of the call pointer inside a callable object, or NULL
@@ -589,5 +717,10 @@ hk_hook hk_function_hooks[] = {
     {"function.bincount", function_apply, function_remove, F_BINCOUNT, false},
     {"function.isin", function_apply, function_remove, F_ISIN, false},
     {"function.interp", function_apply, function_remove, F_INTERP, false},
+    {"function.compress", function_apply, function_remove, F_COMPRESS, false},
+    {"function.extract", function_apply, function_remove, F_EXTRACT, false},
+    {"function.putmask", function_apply, function_remove, F_PUTMASK, false},
+    {"function.copyto", function_apply, function_remove, F_COPYTO, false},
+    {"function.where", function_apply, function_remove, F_WHERE, false},
     {NULL, NULL, NULL, 0, false},
 };

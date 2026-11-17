@@ -32,7 +32,7 @@ It turned out that everything can be reached, with five kinds of hook at five de
 ```mermaid Where the five hooks sit. A deeper hook is reached by more ways of writing the same operation and needs fewer checks, because NumPy has already done its own. A shallower hook can skip NumPy's fixed costs.
 flowchart TD
   code["Your code"]
-  code --> f["np.argmax(x), np.sum(x), np.histogram(...)"]
+  code --> f["np.argmax(x), np.histogram(...), np.where(mask)"]
   code --> m["x.astype(...), x.cumsum(), mask.nonzero()"]
   code --> i["x[mask], x[mask] = v"]
   code --> c["np.clip(x, lo, hi), x.clip(lo, hi)"]
@@ -60,6 +60,8 @@ flowchart TD
 The honest reading of the last column: one hook is sanctioned, one is a grey area, and three reach into NumPy's objects in ways NumPy never invited. With the two sanctioned-or-nearly hooks alone, 3 of the 15 operations could be served. The project decided to use all five, and built the defences described below to make that safe.
 
 The rule for choosing is: **use the deepest hook that exists for an operation**, because it is reached by the most spellings and arrives after NumPy has already validated everything; **add the function hook on top where the fixed cost of the call is worth removing**.
+
+The syntax and its function forms meet different hooks. `x[mask]` and `x[mask] = v` reach the indexing hook; `np.compress(mask, x)`, `np.extract(mask, x)`, `np.putmask(x, mask, v)` and `np.copyto(x, v, where=mask)` are function objects, and each has a function hook in front of the same kernel. `np.where(mask)` needs one too: it calls NumPy's C code for `nonzero` directly and never reaches the method `np.nonzero` calls. The function forms flatten their arrays, so they take a contiguous `x` of any shape where the syntax takes one dimension.
 
 Try it. The figure below encodes the binding's actual rules.
 
@@ -172,7 +174,7 @@ NumPy releases Python's interpreter lock around long loops so that other threads
 - **Inner loop (`clip`)**: the kernel runs wherever NumPy's loop ran, lock held or released as NumPy decided.
 - **Function, method and indexing hooks**: release the lock above 8,192 elements, as a kernel is a pure function touching no Python object.
 - **Type slot (`argmax`)**: *takes* the lock, because the kernels read the array twice and are not safe against a concurrent writer.
-- **Masked assignment**: keeps the lock, because the kernel [rewrites unselected elements]([[ root ]]report/selection/#masked-assignment-write-what-you-did-not-change) with their own bits. That blocks other Python threads for about 180 µs per million elements.
+- **Masked assignment**, written as `x[mask] = v`, `np.putmask` or `np.copyto(..., where=mask)`: keeps the lock, because the kernel [rewrites unselected elements]([[ root ]]report/selection/#masked-assignment-write-what-you-did-not-change) with their own bits. That blocks other Python threads for about 180 µs per million elements.
 
 Free-threaded Python, which has no such lock, is not supported: `install()` does nothing there and says why.
 
@@ -216,7 +218,7 @@ The judge proves a kernel right as a native function. It says nothing about the 
 | Spellings | Positional, keyword, `out=`, `axis=`, method and function forms |
 | Values | The judge's value classes: NaN, infinities, signed zeros, ties |
 
-That is **77,481 calls over the 15 hooked operations**, and all agree.
+That is **85,602 calls over the 15 hooked operations**, and all agree.
 
 **Each case also states whether a kernel should have run**, and the counters are checked against it. Without that, a check that quietly stopped matching would pass every comparison, since NumPy's fallback is always right, while delivering nothing.
 

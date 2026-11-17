@@ -539,13 +539,82 @@ def _mask_makers(n: int) -> Iterator[tuple[str, Callable[[], np.ndarray]]]:
         yield label.split(" ", 1)[1], maker
 
 
+def _compress_into(x, mask):
+    """Run `np.compress(mask, x, out=o)` into an array of exactly the right size and return `o`."""
+    out = np.empty(np.count_nonzero(mask), np.asarray(x).dtype)
+    return np.compress(mask, x, out=out)
+
+
+def _reshaped(maker: Callable[[], np.ndarray], order: str = "C") -> Callable[[], np.ndarray]:
+    """Return a maker of the same values as `maker`'s, in COLUMNS columns of the given order.
+
+    Args:
+        maker: Builds a one-dimensional array whose length COLUMNS divides.
+        order: "C" or "F", the memory order of the two-dimensional result.
+
+    Returns:
+        A function that builds the two-dimensional array.
+    """
+    return lambda: np.asarray(maker().reshape(-1, COLUMNS), order=order)
+
+
+def _compress_shape_cases(dtype: str, kernel: str | None) -> Iterator[Case]:
+    """Yield the cases of `np.compress` and `np.extract` with arrays of two dimensions.
+
+    Without an axis both flatten `x` in C order, so a contiguous `x` of any
+    shape is taken; `np.extract` flattens the mask too, and `np.compress`
+    raises for one of two dimensions.
+
+    Args:
+        dtype: Element type of `x`, as a spec name.
+        kernel: The compress kernel for that type, or None.
+
+    Yields:
+        The cases.
+    """
+    n = ORDINARY_N
+    x_flat = partial(values, dtype, n)
+    mask_flat = partial(values, "bool", n, arg="mask")
+    shapes = (
+        ("x two-dimensional", _reshaped(x_flat), mask_flat, kernel, kernel),
+        ("x two-dimensional, Fortran order", _reshaped(x_flat, "F"), mask_flat, None, None),
+        ("both two-dimensional", _reshaped(x_flat), _reshaped(mask_flat), None, kernel),
+        ("mask two-dimensional, Fortran order", x_flat, _reshaped(mask_flat, "F"), None, None),
+        ("x zero-dimensional", lambda: np.array(x_flat()[0]), lambda: np.array(True), None, None),
+    )
+    for text, x_maker, mask_maker, by_compress, by_extract in shapes:
+        make = lambda x_maker=x_maker, mask_maker=mask_maker: (x_maker(), mask_maker())
+        yield Case("compress", f"np.compress(mask, x) {dtype} {text}", make, _compress_call, by_compress)
+        yield Case("compress", f"np.extract(mask, x) {dtype} {text}", make, _extract_call, by_extract)
+
+
+def _compress_call(x, mask):
+    """Return `np.compress(mask, x)`."""
+    return np.compress(mask, x)
+
+
+def _extract_call(x, mask):
+    """Return `np.extract(mask, x)`."""
+    return np.extract(mask, x)
+
+
 def compress_cases() -> Iterator[Case]:
-    """Yield the cases of `x[mask]`."""
+    """Yield the cases of `x[mask]`, `np.compress(mask, x)` and `np.extract(mask, x)`."""
     kernels = {"f32": "compress_f32", "f64": "compress_f64"}
     select = Spelling("x[mask]", lambda x, mask: x[mask], any_shape=False)
+    functions = (
+        Spelling("np.compress(mask, x)", _compress_call),
+        Spelling("np.extract(mask, x)", _extract_call),
+    )
     others = (
-        Spelling("np.compress(mask, x)", lambda x, mask: np.compress(mask, x), NEVER),
-        Spelling("np.extract(mask, x)", lambda x, mask: np.extract(mask, x), NEVER),
+        *functions,
+        Spelling("np.compress(mask, x, axis=None, out=None)", lambda x, mask: np.compress(mask, x, axis=None, out=None)),
+        Spelling("np.compress(condition=mask, a=x)", lambda x, mask: np.compress(condition=mask, a=x)),
+        Spelling("np.extract(condition=mask, arr=x)", lambda x, mask: np.extract(condition=mask, arr=x)),
+        Spelling("np.compress(mask, x, axis=0)", lambda x, mask: np.compress(mask, x, axis=0), NEVER),
+        Spelling("np.compress(mask, x, out=o)", _compress_into, NEVER),
+        Spelling("np.compress(mask.astype(int), x)", lambda x, mask: np.compress(np.asarray(mask).astype(int), x), NEVER),
+        Spelling("np.extract(mask.astype(int), x)", lambda x, mask: np.extract(np.asarray(mask).astype(int), x), NEVER),
         Spelling("x[mask,]", lambda x, mask: x[mask,], NEVER),
         Spelling("x[mask][:3]", lambda x, mask: x[mask][:3], any_shape=False),
     )
@@ -555,6 +624,9 @@ def compress_cases() -> Iterator[Case]:
                 for x_class in ("random", "nan_some"):
                     make = partial(_values_and_mask, dtype, n, x_class, mask_maker)
                     yield Case("compress", f"x[mask] {dtype} n={n} x={x_class} {mask_label}", make, select.call, kernel)
+                for spelling in functions:
+                    make = partial(_values_and_mask, dtype, n, "random", mask_maker)
+                    yield Case("compress", f"{spelling.text} {dtype} n={n} {mask_label}", make, spelling.call, kernel)
     for dtype in ("f32", "f64", "i64", "u8"):
         kernel = kernels.get(dtype)
         for n in (0, *LAYOUT_SIZES):
@@ -574,16 +646,20 @@ def compress_cases() -> Iterator[Case]:
                                partial(_x_and_mask, dtype, n, CONTIGUOUS, mask_maker), spelling.call,
                                expectation(kernel, spelling, variant, n))
             if n:
-                for byte in BAD_MASK_BYTES:
-                    yield Case("compress", f"x[mask] {dtype} n={n} mask bytes are {byte}",
-                               partial(_x_and_mask, dtype, n, CONTIGUOUS, partial(_bad_mask, n, byte)), select.call, None)
-                short = partial(values, "bool", n - 1, arg="mask")
-                yield Case("compress", f"x[mask] {dtype} n={n} mask one short",
-                           partial(_x_and_mask, dtype, n, CONTIGUOUS, short), select.call, None)
+                for spelling in (select, *functions):
+                    for byte in BAD_MASK_BYTES:
+                        yield Case("compress", f"{spelling.text} {dtype} n={n} mask bytes are {byte}",
+                                   partial(_x_and_mask, dtype, n, CONTIGUOUS, partial(_bad_mask, n, byte)),
+                                   spelling.call, None)
+                    for change, text in ((-1, "one short"), (1, "one long")):
+                        other = partial(values, "bool", n + change, arg="mask")
+                        yield Case("compress", f"{spelling.text} {dtype} n={n} mask {text}",
+                                   partial(_x_and_mask, dtype, n, CONTIGUOUS, other), spelling.call, None)
         rows = next(v for v in VARIANTS if v.name == "rows")
         yield Case("compress", f"x[mask] {dtype} two-dimensional",
                    partial(_x_and_mask, dtype, ORDINARY_N, rows, lambda: _rows(values("bool", ORDINARY_N, arg="mask"))),
                    select.call, None)
+        yield from _compress_shape_cases(dtype, kernel)
 
 
 def _values_and_mask(dtype: str, n: int, x_class: str, mask_maker: Callable[[], np.ndarray]) -> tuple:
@@ -633,46 +709,150 @@ _FILL_VALUES: tuple[tuple[str, object, bool], ...] = (
 )
 
 
+def _copyto_casting(value, x, mask):
+    """Run `np.copyto(x, value, casting='same_kind', where=mask)` and return `x`."""
+    np.copyto(x, value, casting="same_kind", where=mask)
+    return x
+
+
+def _copyto_positional(value, x, mask):
+    """Run `np.copyto(x, value, 'same_kind', mask)` and return `x`."""
+    np.copyto(x, value, "same_kind", mask)
+    return x
+
+
+def _copyto_keywords(value, x, mask):
+    """Run `np.copyto(dst=x, src=value, where=mask)` and return `x`."""
+    np.copyto(dst=x, src=value, where=mask)
+    return x
+
+
+def _copyto_unmasked(value, x, mask):
+    """Run `np.copyto(x, value)`, which has no mask, and return `x`."""
+    np.copyto(x, value)
+    return x
+
+
+def _putmask_keywords(value, x, mask):
+    """Run `np.putmask(x, mask=mask, values=value)` and return `x`."""
+    np.putmask(x, mask=mask, values=value)
+    return x
+
+
+def _putmask_list(value, x, mask):
+    """Run `np.putmask(x, mask, [value, value])`, which repeats a list of values, and return `x`."""
+    np.putmask(x, mask, [value, value])
+    return x
+
+
+def _int_mask(maker: Callable[[], np.ndarray]) -> Callable[[], np.ndarray]:
+    """Return a maker of the same mask as `maker`'s, stored as int64 0 and 1."""
+    return lambda: maker().astype(np.int64)
+
+
+# The ways to write a masked assignment of a scalar: as text, the function
+# that makes it, and whether the kernel may take it. All but the first are
+# function hooks.
+_ASSIGNMENTS: tuple[tuple[str, Callable, bool], ...] = (
+    ("x[mask] = v", _assign, True),
+    ("np.putmask(x, mask, v)", _putmask, True),
+    ("np.copyto(x, v, where=mask)", _copyto, True),
+    ("np.putmask(x, mask=mask, values=v)", _putmask_keywords, True),
+    ("np.copyto(dst=x, src=v, where=mask)", _copyto_keywords, True),
+    ("np.copyto(x, v, 'same_kind', mask)", _copyto_positional, False),
+    ("np.copyto(x, v, casting='same_kind', where=mask)", _copyto_casting, False),
+    ("np.copyto(x, v)", _copyto_unmasked, False),
+    ("np.putmask(x, mask, [v, v])", _putmask_list, False),
+)
+# The function forms among them that take the kernel under the same
+# conditions as `x[mask] = v`.
+_FUNCTION_ASSIGNMENTS = _ASSIGNMENTS[1:3]
+
+
+def _maskfill_shape_cases(dtype: str, takes: str | None) -> Iterator[Case]:
+    """Yield the masked assignments whose arrays have two dimensions or none.
+
+    `np.putmask` needs only the sizes of `x` and the mask to match and reads
+    both in C order. `np.copyto` broadcasts the mask against `x`, so the
+    kernel takes it only for matching shapes. `x[mask] = v` with more than
+    one dimension is left to NumPy.
+
+    Args:
+        dtype: Element type of `x`, as a spec name.
+        takes: The kernel for that type, or None.
+
+    Yields:
+        The cases.
+    """
+    n = ORDINARY_N
+    x_flat = partial(values, dtype, n)
+    mask_flat = partial(values, "bool", n, arg="mask")
+    shapes = (
+        # (text, x, mask, taken by x[mask] = v, by putmask, by copyto)
+        ("both two-dimensional", _reshaped(x_flat), _reshaped(mask_flat), None, takes, takes),
+        ("x two-dimensional, mask one-dimensional", _reshaped(x_flat), mask_flat, None, takes, None),
+        ("x one-dimensional, mask two-dimensional", x_flat, _reshaped(mask_flat), None, takes, None),
+        ("x two-dimensional, Fortran order", _reshaped(x_flat, "F"), _reshaped(mask_flat, "F"), None, None, None),
+        ("x zero-dimensional", lambda: np.array(x_flat()[0]), lambda: np.array(True), None, None, None),
+        ("x empty two-dimensional", lambda: np.zeros((0, COLUMNS), np_dtype(dtype)),
+         lambda: np.zeros((0, COLUMNS), np.bool_), None, takes, takes),
+    )
+    for text, x_maker, mask_maker, *expects in shapes:
+        make = lambda x_maker=x_maker, mask_maker=mask_maker: (x_maker(), mask_maker())
+        for (spelling, function, _), expect in zip(_ASSIGNMENTS[:3], expects):
+            yield Case("maskfill", f"{spelling} with v=1.5 {dtype} {text}", make, partial(function, 1.5), expect)
+
+
 def maskfill_cases() -> Iterator[Case]:
-    """Yield the cases of `x[mask] = value`."""
+    """Yield the cases of `x[mask] = value`, `np.putmask` and `np.copyto(..., where=mask)`."""
     kernel = "maskfill_f64"
     for n in VALUE_SIZES:
         for mask_label, mask_maker in _mask_makers(n):
             for text, value, _ in _FILL_VALUES[:4]:
                 yield Case("maskfill", f"x[mask] = {text} f64 n={n} {mask_label}",
                            partial(_values_and_mask, "f64", n, "random", mask_maker), partial(_assign, value), kernel)
+            for spelling, function, _ in _FUNCTION_ASSIGNMENTS:
+                yield Case("maskfill", f"{spelling} with v=1.5 f64 n={n} {mask_label}",
+                           partial(_values_and_mask, "f64", n, "random", mask_maker), partial(function, 1.5), kernel)
     for dtype in ("f64", "f32", "i64"):
+        takes = kernel if dtype == "f64" else None
         for n in (0, *LAYOUT_SIZES):
             plain_mask = partial(values, "bool", n, arg="mask")
-            takes = kernel if dtype == "f64" else None
-            for text, value, taken in _FILL_VALUES:
-                yield Case("maskfill", f"x[mask] = {text} {dtype} n={n}",
-                           partial(_x_and_mask, dtype, n, CONTIGUOUS, plain_mask), partial(_assign, value),
-                           takes if taken else None)
-            for function in (_putmask, _copyto):
-                yield Case("maskfill", f"{function.__name__[1:]} {dtype} n={n}",
-                           partial(_x_and_mask, dtype, n, CONTIGUOUS, plain_mask), partial(function, 1.5), None)
-            for variant in variants_for(dtype, n):
-                if variant.dims != 1 or variant.name == "list":
-                    continue
-                expect = takes if variant.plain and variant.writeable else None
-                if takes and (not variant.predictable or (n == 0 and not variant.plain)):
-                    expect = ANY
-                yield Case("maskfill", f"x[mask] = 1.5 {dtype} n={n} x={variant.name}",
-                           partial(_x_and_mask, dtype, n, variant, plain_mask), partial(_assign, 1.5), expect)
-            for variant in variants_for("bool", n):
-                if variant.dims != 1:
-                    continue
-                yield Case("maskfill", f"x[mask] = 1.5 {dtype} n={n} mask={variant.name}",
-                           partial(_x_and_mask, dtype, n, CONTIGUOUS, partial(_variant_of, "bool", n, variant, "mask")),
-                           partial(_assign, 1.5),
-                           takes if variant.plain else (ANY if takes and n == 0 else None))
-            if n:
-                for byte in BAD_MASK_BYTES:
-                    yield Case("maskfill", f"x[mask] = 1.5 {dtype} n={n} mask bytes are {byte}",
-                               partial(_x_and_mask, dtype, n, CONTIGUOUS, partial(_bad_mask, n, byte)),
-                               partial(_assign, 1.5), None)
-    yield Case("maskfill", "x[mask] = 1.5 where mask is a view of x", partial(_overlapping, ORDINARY_N), partial(_assign, 1.5), None)
+            for spelling, function, by_kernel in _ASSIGNMENTS:
+                for text, value, taken in _FILL_VALUES:
+                    yield Case("maskfill", f"{spelling} with v={text} {dtype} n={n}",
+                               partial(_x_and_mask, dtype, n, CONTIGUOUS, plain_mask), partial(function, value),
+                               takes if taken and by_kernel else None)
+            for spelling, function, _ in _ASSIGNMENTS[:3]:
+                for variant in variants_for(dtype, n):
+                    if variant.dims != 1 or variant.name == "list":
+                        continue
+                    expect = takes if variant.plain and variant.writeable else None
+                    if takes and (not variant.predictable or (n == 0 and not variant.plain)):
+                        expect = ANY
+                    yield Case("maskfill", f"{spelling} with v=1.5 {dtype} n={n} x={variant.name}",
+                               partial(_x_and_mask, dtype, n, variant, plain_mask), partial(function, 1.5), expect)
+                for variant in variants_for("bool", n):
+                    if variant.dims != 1:
+                        continue
+                    expect = takes if variant.plain else (ANY if takes and n == 0 else None)
+                    yield Case("maskfill", f"{spelling} with v=1.5 {dtype} n={n} mask={variant.name}",
+                               partial(_x_and_mask, dtype, n, CONTIGUOUS, partial(_variant_of, "bool", n, variant, "mask")),
+                               partial(function, 1.5), expect)
+                yield Case("maskfill", f"{spelling} with v=1.5 {dtype} n={n} mask=int64",
+                           partial(_x_and_mask, dtype, n, CONTIGUOUS, _int_mask(plain_mask)), partial(function, 1.5), None)
+                if n:
+                    for byte in BAD_MASK_BYTES:
+                        yield Case("maskfill", f"{spelling} with v=1.5 {dtype} n={n} mask bytes are {byte}",
+                                   partial(_x_and_mask, dtype, n, CONTIGUOUS, partial(_bad_mask, n, byte)),
+                                   partial(function, 1.5), None)
+                    short = partial(values, "bool", n - 1, arg="mask")
+                    yield Case("maskfill", f"{spelling} with v=1.5 {dtype} n={n} mask one short",
+                               partial(_x_and_mask, dtype, n, CONTIGUOUS, short), partial(function, 1.5), None)
+        yield from _maskfill_shape_cases(dtype, takes)
+    for spelling, function, _ in _ASSIGNMENTS[:3]:
+        yield Case("maskfill", f"{spelling} with v=1.5 where mask is a view of x", partial(_overlapping, ORDINARY_N),
+                   partial(function, 1.5), None)
 
 
 def nonzero_cases() -> Iterator[Case]:
@@ -682,14 +862,19 @@ def nonzero_cases() -> Iterator[Case]:
         Spelling("np.nonzero(mask)", np.nonzero, any_shape=False, normalises=True),
         Spelling("np.flatnonzero(mask)", np.flatnonzero, normalises=True),
         Spelling("np.argwhere(mask)", np.argwhere, MAYBE),
-        Spelling("np.where(mask)", np.where, NEVER),
+        Spelling("np.where(mask)", np.where, any_shape=False),
+        Spelling("np.where(mask, 1.0, 0.0)", lambda m: np.where(m, 1.0, 0.0), NEVER),
+        Spelling("np.where(mask, mask, mask)", lambda m: np.where(m, m, m), NEVER),
     )
     # The kernel is not called for an empty mask's sake: it takes it and returns nothing.
     yield from unary_cases("nonzero", {"bool": "nonzero_bool"}, ("u8", "f64", "i64"), spellings)
+    # The spellings that would take the kernel for a clean mask.
+    taking = (spellings[0], spellings[1], spellings[4])
     for n in LAYOUT_SIZES:
         for byte in BAD_MASK_BYTES:
-            yield Case("nonzero", f"mask.nonzero() n={n} mask bytes are {byte}",
-                       lambda n=n, byte=byte: (_bad_mask(n, byte),), spellings[0].call, None)
+            for spelling in taking:
+                yield Case("nonzero", f"{spelling.text} n={n} mask bytes are {byte}",
+                           lambda n=n, byte=byte: (_bad_mask(n, byte),), spelling.call, None)
 
 
 def cumsum_cases(inexact: bool) -> Iterator[Case]:

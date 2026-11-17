@@ -97,8 +97,10 @@ A kernel takes a call only when the array is a plain, contiguous `ndarray` of th
 | `np.argmax(x)`, `np.argmin(x)`, `x.argmax()` | float32, float64 | For these types, including strided input and `axis=` (one kernel call per row or column). Runs shorter than 128 elements reached through the method stay with NumPy, which is as fast there |
 | `np.clip(x, lo, hi)`, `x.clip(lo, hi)` | float32, float64 | Scalar bounds with `lo <= hi`; the output is not the input |
 | `x[mask]` | float32, float64 | Both one-dimensional and the same length |
-| `x[mask] = v` | float64 | As above, and `v` is a Python float or int |
-| `np.nonzero(mask)`, `mask.nonzero()` | bool | One-dimensional |
+| `np.compress(mask, x)`, `np.extract(mask, x)` | float32, float64 | `x` and `mask` the same size, `x` of any shape. For `np.compress` the mask is one-dimensional and there is no `axis` or `out` |
+| `x[mask] = v` | float64 | As for `x[mask]`, and `v` is a Python float or int |
+| `np.putmask(x, mask, v)`, `np.copyto(x, v, where=mask)` | float64 | `v` is a Python float or int, and `x` and `mask` are the same size (`np.putmask`) or the same shape (`np.copyto`, with no `casting`), of any shape |
+| `np.nonzero(mask)`, `mask.nonzero()`, `np.where(mask)` | bool | One-dimensional; `np.where` with nothing but the mask |
 | `np.cumsum(x)`, `x.cumsum()` | int64; float32 and float64 with `inexact=True` | No `axis`, `dtype` or `out` |
 | `x.astype(np.float32)` | uint8 | Other arguments at their defaults |
 | `np.sum(x)`, `x.sum()` | uint8 | No other arguments |
@@ -116,7 +118,9 @@ How much faster each one is, from Python and at three sizes, is in [the results]
 ## Things worth knowing
 
 - **Float `cumsum` is opt-in for a reason.** The fast kernels add in a different order from NumPy. The result is as accurate, but not bit-identical, and the output of a non-negative input is not guaranteed to be non-decreasing. Code such as `np.searchsorted(np.cumsum(p), r)` relies on that. Use `install(inexact=True)` only when it does not matter to you. [Why it cannot be both exact and fast]([[ root ]]report/arithmetic/#cumsum-the-chain-you-cannot-break).
-- **`x[mask] = v` rewrites elements it does not change.** On a dense mask the kernel stores unselected elements back with their own bits. The result is identical; the array must be writable throughout, which a normal array is.
+- **`x[mask] = v` rewrites elements it does not change**, and so do `np.putmask` and `np.copyto(x, v, where=mask)`. On a dense mask the kernel stores unselected elements back with their own bits. The result is identical; the array must be writable throughout, which a normal array is.
+- **A mask holding a byte other than 0 or 1 goes to NumPy.** NumPy treats any non-zero byte as True, and a boolean view of other data can hold a 2. Every mask is read once before a kernel sees it, in the indexing syntax and in the function forms alike.
+- **The mask functions are counted under the indexing syntax.** In `report()`, `np.compress` and `np.extract` count on the `x[mask]` rows, `np.putmask` and `np.copyto` on `x[mask] = v`, and `np.where(mask)` on `np.nonzero`. `np.copyto` without `where` and `np.where(mask, a, b)` are other operations and are not counted at all.
 - **`np.clip(x, 0, 1)` is faster by less than `np.clip(x, -1, 1)`.** A lower bound of exactly zero needs extra care for negative zeros. It is still several times faster than NumPy.
 - **`np.isin` is fastest when the test values are close together**: all between 0 and 65,534, or all within 32,767 of the first one. Otherwise it runs at the speed of compiled C, which is still ahead of NumPy.
 - **`np.searchsorted` and `np.interp` trust you that the array is sorted, as NumPy does.** Neither checks. On an array that is not sorted both return a meaningless result, and the kernel's is not the same meaningless result as NumPy's. Sorted data, including NaNs at the end of `a`, gives NumPy's answer bit for bit.
@@ -131,7 +135,7 @@ From a clone of the repository:
 
 ```bash
 uv run delivery demo          # run examples/workload.py with and without hotkernels, and compare
-uv run delivery check         # 77,481 NumPy calls, both ways; results, errors and warnings must agree
+uv run delivery check         # 85,602 NumPy calls, both ways; results, errors and warnings must agree
 uv run delivery time          # time each statement from Python on your machine
 uv run delivery numpy-tests   # NumPy's own test suite, both ways; about ten minutes
 ```

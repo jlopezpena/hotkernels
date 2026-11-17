@@ -109,13 +109,14 @@ static PyObject *method_sum(PyObject *self, PyObject *const *args, Py_ssize_t na
 // ----------------------------------------------------------------- nonzero
 
 // mask.nonzero() for a contiguous one-dimensional boolean array: a tuple
-// holding one int64 array of the positions that are True.
+// holding one int64 array of the positions that are True. Shared with the
+// function hook for np.where(mask).
 //
 // The kernel's output is scratch: it needs room for n indices and may write
 // anywhere in it, whatever it reports. So it runs on a buffer of the
 // binding's own, and the reported indices are copied into an array of
 // exactly that size.
-static HK_NOINLINE PyObject *try_nonzero(PyObject *self) {
+HK_NOINLINE PyObject *hk_try_nonzero(PyObject *self) {
     if (!hk_is_flat_1d(self, NPY_BOOL)) return NULL;
     PyArrayObject *mask = (PyArrayObject *)self;
     const npy_intp n = PyArray_SIZE(mask);
@@ -151,7 +152,7 @@ static HK_NOINLINE PyObject *try_nonzero(PyObject *self) {
 // Called with a tuple of positional arguments (METH_VARARGS).
 static PyObject *method_nonzero(PyObject *self, PyObject *args) {
     if (PyTuple_GET_SIZE(args) == 0) {
-        PyObject *result = try_nonzero(self);
+        PyObject *result = hk_try_nonzero(self);
         if (result != NULL) return result;
     }
     hk_pass(HK_OP_NONZERO);
