@@ -361,6 +361,28 @@ def classes(dtype_name: str) -> tuple[list[str], list[str]]:
     return ([n for n in names if n not in POSITIONAL], [n for n in names if n in POSITIONAL])
 
 
+def arg_classes(arg: In | InOut) -> tuple[list[str], list[str]]:
+    """Return the (plain, positional) value-class names for one argument.
+
+    Args:
+        arg: The input argument.
+
+    Returns:
+        The classes of the argument's type, with the classes the spec gives
+        this argument alone after the plain ones.
+
+    Raises:
+        ValueError: If one of the argument's own classes has the name of a
+            class of its type, which would make a case description ambiguous.
+    """
+    plain, positional = classes(arg.dtype)
+    own = list(arg.classes or {})
+    clash = sorted(set(own) & set(plain + positional))
+    if clash:
+        raise ValueError(f"argument {arg.name!r}: value class {clash[0]!r} already exists for {arg.dtype}")
+    return plain + own, positional
+
+
 def _crc(text: str) -> int:
     """Hash a string to an integer that is stable across runs, for seeding."""
     return zlib.crc32(text.encode())
@@ -479,7 +501,12 @@ def build_inputs(k: Kernel, case: Case, cache: dict | None = None) -> dict[str, 
         if kept is not None and kept[0] == recipe:
             inputs[a.name] = kept[1]
             continue
-        made = make(a.dtype, cls, p, count, case.seed, a.name, base_arr)
+        if a.classes and cls in a.classes:
+            # A class the spec gives this argument alone: built from the
+            # argument's default random array by the spec's own function.
+            made = a.classes[cls](base_arr)
+        else:
+            made = make(a.dtype, cls, p, count, case.seed, a.name, base_arr)
         inputs[a.name] = finish_input(a, made)
         if cache is not None and a.prepare:
             cache[(_PREPARED, a.name)] = (recipe, inputs[a.name])
@@ -579,7 +606,7 @@ def _single_argument_cases(k: Kernel, n: int, seed: int, scalars: str, thin: boo
     scalar_values = k.scalar_values(scalars)
     emitted = 0
     for a in ins:
-        plain, positional = classes(a.dtype)
+        plain, positional = arg_classes(a)
         if large:
             # Keep one class of each sort; large arrays are slow to generate.
             plain, positional = plain[:1], positional[:1]
@@ -651,8 +678,8 @@ def fixed_cases(k: Kernel, seed: int = 1) -> Iterator[Case]:
             yield from _single_argument_cases(k, n, seed, scalars, thin)
             if len(ins) == 2 and n <= CROSS_PRODUCT_MAX_N and not thin:
                 first, second = ins
-                for c1 in classes(first.dtype)[0]:
-                    for c2 in classes(second.dtype)[0]:
+                for c1 in arg_classes(first)[0]:
+                    for c2 in arg_classes(second)[0]:
                         yield _case(ins, n, ARRANGEMENTS[n % 2], seed, scalars,
                                     {first.name: (c1, 0), second.name: (c2, 0)})
 
@@ -681,7 +708,7 @@ def fresh_cases(k: Kernel, seed: int, count: int = FRESH_CASE_COUNT) -> Iterator
         scalar_values = k.scalar_values(scalars)
         picks = []
         for a in k.ins:
-            plain, positional = classes(a.dtype)
+            plain, positional = arg_classes(a)
             elements = element_count(a, n, scalars=scalar_values) if set_first else n
             # Positional classes need at least one element to place.
             pool = plain + (positional if elements > 0 else [])
