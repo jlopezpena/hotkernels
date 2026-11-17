@@ -48,8 +48,9 @@
 //     on its exact rounding, so the whole array is redone from element 0 with
 //     the plain loop (Lrestart), which is the reference computation itself.
 // A redone chunk that stayed in the first case is followed by the fast path
-// again. The price of the square test is that running sums above about 1e152
-// in size, though finite, take the slow path.
+// again. The rounding bound of point 3 needs fewer than 2^50 elements, more
+// than any array can hold. The price of the square test is that running sums
+// above about 1e153 in size, though finite, take the slow path.
 //
 // Short arrays. Fewer than SMALL elements are added strictly left to right
 // (Lsmall), which is the reference order, so nothing needs checking. That
