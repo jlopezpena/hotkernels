@@ -322,8 +322,8 @@ A fixed sweep: 16, 64, 256, 1,024, 4,096, 16,384, 65,536, 262,144, 1,048,576, 4,
 
 ### Method
 
-- **Repeat count.** For each size the loop count is calibrated so one sample takes at least 10 ms.
-- **Samples.** 30 samples per contender per size.
+- **Repeat count.** For each size the loop count is calibrated so one sample takes at least 1 ms.
+- **Samples.** 300 samples per contender per size. Where a single call of some contender lasts longer than 1 ms, fewer fit the same time, and never fewer than 30; every contender at that size gets the same number. Why the samples are short and many is under [Short samples](#short-samples).
 - **Interleaving.** Samples from the contenders are alternated, so slow drift in the machine affects all of them equally.
 - **Varied inputs.** At small sizes the loop cycles through a pool of different inputs. Timing one input repeatedly lets the processor memorise its branch pattern, which makes branchy code look faster than it is on real data.
 - **Input shapes.** Where speed depends on the data (how many mask elements are true, where the maximum sits), the spec lists a few named distributions and each is timed.
@@ -349,6 +349,28 @@ argmax_f32 (arm64, Apple M1 Pro)        vs naive C              vs NumPy (includ
   ...
   overall                   2.10x    2.05 – 2.16             ...
 ```
+
+### Short samples
+
+*Changed after the first x86-64 kernel. The method used to be 30 samples of 10 ms.*
+
+**What went wrong.** On the x86-64 machine, with a desktop session running, `compare` was given the same kernel as both contenders, seven times. Three of the seven verdicts were "significant" (0.975x, 1.011x, 0.994x). Every size up to 1,048,576 bytes read 1.00x each time. The two largest, 4,194,304 and 16,777,216, differed by up to 17% between two copies of the same code.
+
+**Why.** Those two sizes do not fit the 2 MB cache a core has to itself. They are served from the cache and the memory that all cores share, so the memory traffic of the other cores slows them, and on a desktop that traffic comes in bursts a few milliseconds long, many times a second. Single calls show it: at 4,194,304 bytes one call took 39.5 to 40.0 us nine times out of ten, while samples of 249 calls in a row averaged anything from 39.8 to 68 us. A 10 ms sample nearly always contains part of a burst, so its time is a mixture, and the median of 30 mixtures moves with how much each one caught.
+
+**What changed.** The same measuring time, cut finer: 300 samples of 1 ms. A 1 ms sample is either clear of the bursts or inside one. Most are clear, and the median is then the undisturbed time. One function timed against itself twenty times over, largest difference between the two medians:
+
+| Size | 30 samples of 10 ms | 100 samples of 3 ms | 300 samples of 1 ms |
+|---|---|---|---|
+| 4,096 | 0.11% | 0.03% | 0.03% |
+| 65,536 | 0.45% | 0.04% | 0.03% |
+| 1,048,576 | 1.02% | 0.14% | 0.14% |
+| 4,194,304 | 16.3% | 0.68% | 0.10% |
+| 16,777,216 | 16.5% | 1.27% | 0.32% |
+
+- **The statistics are unchanged:** medians, the paired bootstrap, the geometric mean. Only the samples they are computed from are shorter and more numerous.
+- **A run takes as long as before.** The time given to a size is what 300 samples of 1 ms take per contender. If one call of a contender is longer than 1 ms, fewer samples are taken of every contender at that size, down to 30.
+- **Results recorded before the change** were taken with 30 samples of 10 ms. On the Apple M1 Pro they were taken with nothing else running; whether that machine shows the same effect has not been measured.
 
 ### Where the output buffer sits
 
@@ -393,13 +415,21 @@ Before and after the sweep the judge times a small fixed reference loop. If the 
 
 ### Comparing two versions of a kernel
 
-During iteration the question is narrower: is this edit faster than what we had? `judge compare` builds the kernel from an earlier git revision alongside the working copy and times them interleaved in the same process. It reports one of three outcomes, using the same statistics as above:
+During iteration the question is narrower: is this edit faster than what we had? `judge compare` builds the kernel from an earlier git revision alongside the working copy and times the two interleaved. It reports one of three outcomes:
 
 - significantly faster
 - significantly slower
 - no significant difference
 
 An agent in a `/goal` run keeps an edit only when `compare` says significantly faster. This is bookkeeping for the iteration loop, not a decision about shipping. Whether the finished kernel is worth shipping stays with a person.
+
+**Rounds.** *Added after the first x86-64 kernel.* `compare` takes its measurement in five rounds, each in a process of its own, with a fifth of the samples in each.
+
+- **Why.** Two builds of the same source are not the same inside one process. They are loaded at different addresses, and that alone can cost one of them a mispredicted branch per call at one size. Every sample of that process carries the same offset, so an interval built from those samples does not contain it, and with [short samples](#short-samples) that interval is only a few tenths of a percent wide. On the x86-64 machine, 41 comparisons of a kernel with itself were off by up to 0.7% overall and by up to 4% at a single size, and most of them were called significant.
+- **What a round changes.** A new process loads both builds somewhere else and draws the offset again. The spread between rounds is therefore the uncertainty that matters.
+- **The statistics.** Within a round a speedup is the ratio of the two median times, as everywhere else. Across rounds it is the geometric mean of those ratios, and its 95% interval comes from how much the rounds differ (Student's t on the logarithms, four degrees of freedom). The overall figure is treated the same way: one geometric mean over the sizes per round, then the interval across rounds. No fixed margin is applied.
+- **What it costs.** The same measuring time, plus five process starts.
+- **`run` and `bench` are not changed.** They report one process. A single size of theirs can be off by a few percent for this reason, which is small against the speedups they report and is why an edit is judged by `compare`.
 
 ## Results
 
