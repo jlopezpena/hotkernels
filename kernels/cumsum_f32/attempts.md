@@ -200,3 +200,49 @@ as the judge does; naive C is 5.0 / 30 / 205 and attempt 2 is 2.9 / 19.4 /
 - **Notes:** significant only at 65,536, 1,048,576 and 16,777,216 (2.15 ms
   against 2.16 ms); every other size 1.00x and not significant. The float64
   loop gained 0.4% from the same change.
+
+## Screened in the standalone timer only, tolerance spec (not taken to the judge)
+
+- **One check per block instead of four (not provable, so not used):** see
+  the same item in `cumsum_f64/attempts.md`. It would take the float32 block
+  from 24 to 21 vector operations; it was measured on doubles only (12%
+  faster from 256 to 16,384 elements) and has the same gap: a running sum
+  within rounding distance of FLT_MAX at a position that is not squared.
+- **Second block's first shifted vector loaded from `x + 60` instead of
+  `ext`:** 3.00 against 3.07 cycles per 8 elements at 4,096, 3.09 against
+  3.06 at 1,024, 3.45 against 3.32 at 4,194,304. On doubles the same change
+  doubled the time at 262,144 elements when the two arrays sat at the same
+  offset in their pages (the load overlaps a pending store in its low
+  address bits). Not used.
+- **Ending the check with a move to a general register after two `faddp`**
+  (instead of `fsub` and `fcmp`): no difference at any size; `umaxv`
+  (attempt 6) was the one that showed at 64 elements.
+- **Relative position of the two arrays:** with `out` moved by 16 to 2,048
+  bytes relative to `x`, 3.06 cycles per 8 elements at 4,096 and 65,536 in
+  every case.
+
+## Where it stands (tolerance spec)
+
+- Final `judge run` against naive C, no noise warning: 6.10x [5.98 – 6.10]
+  overall. By size: 1.74x at 16 (2.8 ns against 5.0 ns), 3.36x at 64, 6.48x
+  at 256, 7.56x at 1,024, 7.76x at 4,096, 7.86x at 16,384 and 65,536, 7.85x
+  at 262,144, 7.83x at 1,048,576, 7.13x at 4,194,304, 7.18x at 16,777,216.
+- From 1,024 to 1,048,576 elements the kernel takes 0.119 ns per element
+  (6.1 cycles per 16 elements) against 0.93 for the chain, and 0.130 at
+  4,194,304 and 16,777,216. A block is 24 vector operations on four vector
+  pipes, so the loop is at what that count allows.
+- Outside the judge, the harness described in `cumsum_f64/attempts.md` ran
+  80,303 inputs in float32. No non-finite position or kind differed, out[0]
+  always had the bits of x[0], and no zero differed in sign. In units of
+  ulp(|x[0]| + ... + |x[i]|) * sqrt(i + 1): the kernel was within 0.90 of
+  the exact sum on every class except all-equal 0.1 (17, where the
+  left-to-right sum is off by 271). Against the left-to-right sum it was
+  within 1.2 on random and mixed-magnitude data, 2.3 on sorted data, 23 on
+  positive data spanning nine orders of magnitude and 254 on all-equal 0.1;
+  in the last three the difference is the left-to-right sum's own error
+  (2.3, 23 and 271 against the exact sum), which at 4,194,304 float32
+  elements is far larger than the kernel's.
+- The path for 2^29 elements or more was tested by assembling a copy with
+  the limit lowered to 256 elements; the chunk logic by assembling copies
+  with chunks of 32 (float32) and 16 (float64) elements. Both passed the
+  same harness.

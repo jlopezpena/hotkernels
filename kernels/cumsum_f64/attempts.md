@@ -264,3 +264,71 @@ which the table rounds to 1.00x.
   block's loads before the first block's outputs (4.14), first block's
   squares after the second block's steps (4.14), loop aligned to 64 bytes
   (4.13, and 3% slower at 64 elements).
+
+## Screened in the standalone timer only, tolerance spec (not taken to the judge)
+
+Cycles per 8 elements at n=1,024 unless said otherwise; attempt 5 was 4.22
+when these were measured and attempt 8 is 4.11.
+
+- **One check per block instead of four (not provable, so not used):** compute
+  out1 as out0 + st1 so that out0, out1 and out2 form a chain, square only
+  out2, and rely on the carry for out3. A NaN or infinity anywhere in a block
+  then always reaches a squared vector, so every non-finite output of the
+  regrouped sum is still detected, with 13 vector operations per block
+  instead of 16: 3.73, which is 12% faster from 256 to 16,384 elements. What
+  is lost is the size bound on the three outputs that are not squared. A
+  running sum can then come within rounding distance of the largest double at
+  one of those positions and fall back below 1e154 before the next squared
+  one; there the left-to-right sum may round to infinity (and stay infinite)
+  while the regrouped one stays finite, and nothing notices. It needs an
+  input within about n * 2^-52 of DBL_MAX in relative terms and a running sum
+  that lands on the overflow boundary to the last bit, so the judge's cases
+  would not find it, but "exactly where NumPy has them" could not be claimed.
+  Closing the gap needs information about each unchecked vector, which is one
+  operation per vector again (squares of the inputs, of the steps or of the
+  outputs all cost four per block).
+- **Software prefetch:** `prfm pldl1keep` 512 or 1,024 bytes ahead of the
+  loads: 0.2228 and 0.2236 against 0.2229 ns per element at 4,194,304,
+  0.1889 and 0.1904 against 0.1890 at 16,777,216, and 4% slower at 65,536.
+  With `pstl1keep` on the output as well: three times slower at 4,194,304.
+- **`stnp` for the stores:** 0.2186 against 0.2229 at 4,194,304, 0.1906
+  against 0.1890 at 16,777,216, 0.1753 against 0.1739 at 1,048,576. Noise.
+- **Second block's first shifted vector loaded from `x + 56` instead of
+  `ext`:** 4.21 at 1,024, 4.06 at 4,096, and 8.5 at 262,144 elements. The
+  load overlaps, in its low address bits, the store to `out + 32..63` of the
+  block before it when the two arrays sit at the same offset in their pages,
+  and that store is still waiting for its data. Not used.
+- **Relative position of the two arrays:** with `out` moved by 16, 64, 96,
+  128, 192 and 2,048 bytes relative to `x`, 4.13 at 4,096 and 4.39 to 4.40
+  at 65,536 in every case. The committed loop has no such sensitivity.
+
+## Where it stands (tolerance spec)
+
+- Final `judge run` against naive C, no noise warning: 4.44x [4.37 – 4.44]
+  overall. By size: 1.74x at 16 (2.8 ns against 5.0 ns), 2.62x at 64, 4.84x
+  at 256, 5.61x at 1,024, 5.76x at 4,096, 5.57x at 16,384, 5.43x at 65,536,
+  5.64x at 262,144, 5.44x at 1,048,576, 4.14x at 4,194,304, 4.77x at
+  16,777,216.
+- From 256 to 1,048,576 elements the kernel takes 0.16 to 0.17 ns per element
+  (4.1 cycles per 8 elements in the first-level cache) against 0.93 for the
+  chain. `cumsum_i64` takes 3.3 cycles: the difference is the check (four
+  `fmla` per block, about 0.6 cycles) and the 3-cycle `fadd`. The loop runs
+  16 vector operations per block on four vector pipes, so it is within 3% of
+  what that count allows; going faster means fewer operations, and the only
+  removable ones are the checks (see the first screened item).
+- At 4,194,304 and 16,777,216 elements it runs at 0.19 to 0.23 ns per
+  element, the same as `cumsum_i64`: memory speed.
+- Outside the judge, a harness compared the kernel with the left-to-right sum
+  and with a double-double reference on 80,303 inputs (22 classes: random,
+  equal, sorted, mixed magnitudes, positive, zeros, denormals, infinities,
+  NaN, largest-finite values, values that overflow, values between 1e154 and
+  the overflow range, a signalling NaN first; every n from 0 to 300 and 19
+  sizes up to 4,194,304; buffers against inaccessible pages, inputs
+  read-only). No non-finite position or kind differed, out[0] always had the
+  bits of x[0], and no zero differed in sign. In units of
+  ulp(|x[0]| + ... + |x[i]|) * sqrt(i + 1): the kernel was within 0.87 of
+  the exact sum on every class except all-equal 0.1 (33, where the
+  left-to-right sum is off by 229), and within 1.34 of the left-to-right sum
+  on every class except that one (262, the left-to-right sum's own error).
+- Not tried: a check that costs fewer vector operations and still bounds
+  every output. Everything considered needs one operation per output vector.
