@@ -214,7 +214,7 @@ The pipeline was built for one platform, macOS on ARM64. A second, Linux on x86-
 ## Out of scope
 
 - What a wheel contains, its compiler flags, and the source distribution's contents: [issue 19](https://github.com/sofeikov/hotkernels/issues/19).
-- The NumPy versions the package claims: [issue 18](https://github.com/sofeikov/hotkernels/issues/18).
+- The NumPy versions the package claims: NumPy 2.3 and later, decided in [delivery-design.md](delivery-design.md#which-numpy-versions) ([issue 18](https://github.com/sofeikov/hotkernels/issues/18)).
 - conda-forge. Worth it after PyPI works.
 - Publishing the release notes on the documentation site. A small change to `docsite/` once there are notes to show.
 

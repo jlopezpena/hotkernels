@@ -67,6 +67,7 @@ Three rows are well below the judge's figure. The mask kernels pay for a buffer 
 | `np.isin` with an int64 array of test values | Also a list or tuple of Python ints | `np.isin(x, [1, 2, 3])` is the commonest spelling, and NumPy converts such a list to int64 |
 | A scratch kernel runs on a buffer of `n` elements, then a copy | The same; the buffer is on the stack up to 2 KB | An allocation is most of a small call |
 | `meson-python`, not yet tried | `meson-python`, in a `uv` workspace | It worked as hoped. The package is installed non-editable, with the kernel and binding sources as `uv` cache keys, so `uv run` rebuilds it when they change |
+| Any NumPy 2, with the self-test as the guard (open decision 5) | NumPy 2.3 or later; `install()` refuses an older NumPy 2 | NumPy 2.0 to 2.2 answer `np.clip` and `np.count_nonzero` differently from later releases, the kernels follow the later answer, and the self-test does not see the difference. See [Which NumPy versions](#which-numpy-versions) |
 
 Two defects in the binding were found by `delivery check` while it was being written, and are fixed: `np.count_nonzero` returned a Python `int` where NumPy returns `np.intp`, and `np.histogram` issued NumPy's overflow warnings twice for a range wider than a double can hold.
 
@@ -76,7 +77,7 @@ Not built, and recorded as issues:
 |---|---|
 | The function forms of the mask operations: `np.compress`, `np.extract`, `np.putmask`, `np.copyto`, `np.where(mask)`. Done: each has a function hook; see [Which hook serves which kernel](#which-hook-serves-which-kernel) | [15](https://github.com/sofeikov/kernel-arena/issues/15) |
 | Skipping NumPy's wrapper for `np.clip` and for methods on small arrays | [17](https://github.com/sofeikov/kernel-arena/issues/17) |
-| `delivery check` against the oldest and newest NumPy 2 releases | [18](https://github.com/sofeikov/kernel-arena/issues/18) |
+| `delivery check` against the oldest and newest NumPy 2 releases. Done: it runs in CI, and it moved the floor to NumPy 2.3. See [Which NumPy versions](#which-numpy-versions) | [18](https://github.com/sofeikov/kernel-arena/issues/18) |
 | Wheels, a build that needs no checkout, `python -m hotkernels` | [19](https://github.com/sofeikov/kernel-arena/issues/19) |
 | `x[mask]` and `np.nonzero` keep about two thirds of the kernel's speed: the buffer, the copy and the mask check | [20](https://github.com/sofeikov/kernel-arena/issues/20) |
 | Free-threaded Python | [21](https://github.com/sofeikov/kernel-arena/issues/21) |
@@ -319,7 +320,33 @@ Each hook adds one to a per-kernel counter when it takes a kernel and to a per-o
 - **Order.** Hooks go in one at a time, each recording the pointer it replaced in a table.
 - **Each hook proves itself.** After applying a hook, `install()` makes one small call through NumPy's public interface with a known answer. If the kernel's counter did not move, or the answer is wrong, that hook is removed again and `report()` says so. This is the defence against a future NumPy that routes a call differently: the kernel is quietly not installed, and nothing breaks.
 - **`uninstall()` restores in reverse order**, and only a pointer that is still ours. If something else has patched the same place since, it is left alone and reported.
-- **Supported environment.** CPython with the interpreter lock and NumPy 2, on a supported platform. Today that is macOS on ARM64. Linux on x86-64 is proposed in [x86-64-design.md](x86-64-design.md#target), with a check of the processor at run time. Anywhere else `install()` is a no-op.
+- **Supported environment.** CPython with the interpreter lock and NumPy 2.3 or a later NumPy 2, on a supported platform. Today that is macOS on ARM64. Linux on x86-64 is proposed in [x86-64-design.md](x86-64-design.md#target), with a check of the processor at run time. Anywhere else `install()` is a no-op.
+
+### Which NumPy versions
+
+This was open decision 5. The recommendation was to rely on the self-test at install rather than pin to tested versions, and to run `delivery check` against the oldest and newest NumPy 2 releases ([issue 18](https://github.com/sofeikov/kernel-arena/issues/18)). Doing so showed that the self-test alone is not enough, and the package now claims NumPy 2.3 and later.
+
+**What was found.** `delivery check` on an Apple M1 Pro, CPython 3.12.7, with the extension built against NumPy 2.5.5 and each release laid over it at run time:
+
+| NumPy | Self-test at install | `delivery check` |
+|---|---|---|
+| 2.0.2 | Every hook kept, 21 of 23 kernels installed | 2,462 of 77,481 calls differ: 708 `np.clip`, 1,754 `np.count_nonzero` |
+| 2.1.0, 2.2.0 | The same | 1,754 differ, all `np.count_nonzero` |
+| 2.3.0 | The same | Pass, also on CPython 3.13.5 |
+| 2.5.5, the newest | The same | Pass, also on CPython 3.14.6 |
+
+- **`np.clip`.** NumPy 2.0 makes every zero it returns +0.0. From 2.1 a zero keeps the sign of the element or bound it came from, and so does the kernel: `np.clip(-0.0, 0.0, 1.0)` is +0.0 on 2.0 and -0.0 from 2.1.
+- **`np.count_nonzero`.** Before 2.3 the call without `axis` returns a Python `int`. From 2.3 it returns `np.intp`, and so does the binding, which was made to match NumPy 2.5.5 while it was being built ([What changed in the building](#what-changed-in-the-building)).
+- **The self-test passed on all of them.** A probe checks that its kernel ran and that the answer has the right value. It does not check the result's type, or the sign of a zero. On NumPy 2.0 to 2.2 every hook therefore stayed in place and returned what a later NumPy would, which is not what the NumPy in use returns. The self-test guards against a NumPy that routes a call elsewhere; it does not guard against one whose answer differs in a detail. That is what this check is for.
+- **A build against the newest NumPy runs on the oldest.** The build takes NumPy from the build requirements, which resolve to the newest release for the Python being built for: 2.5.5 here, as for the wheels. NumPy's headers target an old C API by default (1.25 in the 2.5 headers), and the binding uses nothing newer, so the extension imports and every hook applies on 2.0.2. The differences above are NumPy's behaviour, not the build.
+- **A hook that fails its self-test fails `delivery check`.** No release from 2.0 to 2.5.5 has a hook that does not fit, so this was shown by making one fail: with the probe of `loop.clip.f32` forced to fail, `install()` removed the hook, and `delivery check` failed 4,186 `np.clip` cases with "the kernel did not take the call", because each case states which kernel should take it.
+
+**What was decided.**
+
+- **The floor is NumPy 2.3**, the oldest release whose answers the kernels reproduce, in the package's dependencies and in its build requirements. Making the binding answer as the NumPy in use does would mean a version test in each hook for differences the self-test cannot see; raising the floor was preferred to that. NumPy 2.3 was released in June 2025.
+- **`install()` refuses an older NumPy 2**, as it refuses NumPy 1, and `report()` says why. A dependency floor is not enough on its own: installing an older NumPy afterwards replaces it, and pip only reports the conflict.
+- **No pin above.** A new NumPy is served without a release of hotkernels, guarded by the self-test, as recommended.
+- **CI runs `delivery check` at both ends** on the macOS ARM64 runner, in the `numpy-range` job of [`ci.yml`](../.github/workflows/ci.yml): exactly the floor read from `hotkernels/pyproject.toml`, on CPython 3.13, the newest Python NumPy 2.3.0 has wheels for; and the newest NumPy on PyPI, relocked at run time, on CPython 3.14. The `judge` job still checks the NumPy in `uv.lock`. A NumPy release that changes an answer fails the newest step on the next pull request, without anyone updating the lock.
 
 ### Package and build
 
@@ -426,4 +453,5 @@ Each has a recommendation. The implementation follows the recommendations until 
 | 2 | **`clip` reads and writes the floating-point status register** (open question 2 in the findings; about the ARM64 kernels) | Yes, as the findings recommend, with the flags cleared afterwards |
 | 3 | **Remove NumPy's Python wrapper for small arrays** where a deeper hook already delivers the kernel (`np.argmax` at 16 elements: 573 ns to 65 ns)? It means a second hook and a second set of checks for the same operation | Yes for `argmax` and `argmin` in step 2. `clip` after the exit criterion: its wrapper has more arguments to get right |
 | 4 | **Build system for the package** | `meson-python`: it compiles assembly sources without special handling and is what NumPy uses. Not yet tried in this repository |
-| 5 | **Which NumPy versions?** Pin to tested versions, or rely on the self-test at install? | The self-test, plus `delivery check` run against the oldest and newest NumPy 2 releases. A pin would switch hotkernels off on every NumPy release until someone updates it |
+
+Decision 5, which NumPy versions, is made: see [Which NumPy versions](#which-numpy-versions).

@@ -123,6 +123,7 @@ The pattern is consistent: the judge verifies what its generated inputs exercise
 - **No wheels.** Installing compiles the package.
 - **One platform.** macOS on Apple Silicon. Anywhere else `install()` does nothing.
 - **Free-threaded Python** is not supported.
+- **NumPy before 2.3** is not supported. Earlier NumPy 2 releases answer `np.clip` and `np.count_nonzero` slightly differently, and the kernels give the later answer.
 
 ## Decisions that are still open
 
