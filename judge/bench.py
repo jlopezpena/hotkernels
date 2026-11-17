@@ -75,18 +75,39 @@ _PMSET_TIMEOUT_SECONDS = 5
 Measurements = dict[str, dict[int, dict[str, np.ndarray]]]
 
 
-def _pool_size(n: int) -> int:
-    """Return how many different inputs to cycle through at element count `n`."""
-    return max(1, min(_POOL_MAX_INPUTS, _POOL_TOTAL_ELEMENTS // n))
+def _pool_size(elements: int) -> int:
+    """Return how many different inputs to cycle through.
+
+    Args:
+        elements: Element count of the largest buffer of one call.
+
+    Returns:
+        The number of inputs: as many as keep the pool in the fastest cache,
+        at least one and at most _POOL_MAX_INPUTS.
+    """
+    return max(1, min(_POOL_MAX_INPUTS, _POOL_TOTAL_ELEMENTS // max(elements, 1)))
 
 
-def _inputs(k: Kernel, dist: str, n: int, seed: int) -> dict[str, np.ndarray]:
-    """Build one set of timing inputs, from the spec's distribution or random data."""
+def _inputs(k: Kernel, dist: str, n: int, seed: int,
+            scalars: dict[str, int | float]) -> dict[str, np.ndarray]:
+    """Build one set of timing inputs, from the spec's distribution or random data.
+
+    Args:
+        k: The kernel's spec.
+        dist: Name of the input distribution.
+        n: The value of the kernel's Size argument.
+        seed: Seed of the random data.
+        scalars: The scalar values of the call, by argument name. They give
+            the length of any input sized by a Scalar.
+
+    Returns:
+        One contiguous array per input argument, by argument name.
+    """
     if k.distributions and dist in k.distributions:
         rng = np.random.default_rng([seed, n, cases._crc(dist)])
         made = k.distributions[dist](rng, n)
         return {a.name: np.ascontiguousarray(made[a.name], np_dtype(a.dtype)) for a in k.ins}
-    return {a.name: cases.default_input(a, n, seed) for a in k.ins}
+    return {a.name: cases.default_input(a, n, seed, scalars) for a in k.ins}
 
 
 class Harness:
@@ -176,9 +197,11 @@ def _timing_setup(k: Kernel, harness: Harness, contenders: dict[str, int | None]
     Returns:
         The timing functions and the buffers they point into.
     """
-    npool = _pool_size(n)
-    pool = [_inputs(k, dist, n, seed) for seed in range(npool)]
     scalar_values = k.scalar_values(scalars)
+    # A scalar can make a buffer longer than `n`; the pool is sized by the
+    # largest, so that all of it still fits the fastest cache.
+    npool = _pool_size(k.largest_buffer(n, scalars))
+    pool = [_inputs(k, dist, n, seed, scalar_values) for seed in range(npool)]
     outs = [{a.name: np.empty(element_count(a, n, scalars=scalar_values), np_dtype(a.dtype))
              for a in k.outs if isinstance(a, Out)} for _ in range(npool)]
     native_scalars = [scalar_values[a.name] for a in k.scalars]

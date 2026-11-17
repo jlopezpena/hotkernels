@@ -76,9 +76,12 @@ class In:
     name: str
     # Element type: a key of DTYPES.
     dtype: str
-    # Element count: SIZE_N for the kernel's Size argument, or a fixed number
-    # for a buffer whose length does not depend on it (a set of test values,
-    # for example).
+    # Element count: SIZE_N for the kernel's Size argument, a fixed number for
+    # a buffer whose length does not depend on it (a set of test values, for
+    # example), or the name of an integer Scalar argument whose value is the
+    # length (the needles of a search, whose number has nothing to do with the
+    # length of the array searched). A length given by a scalar is checked for
+    # the values the kernel's scalar sets give it, and for no others.
     len: str | int = SIZE_N
     # Applied to every generated array before the call, for kernels that are
     # only defined on some inputs: `np.sort` for one that needs sorted data,
@@ -192,6 +195,9 @@ def element_count(arg: In | Out | InOut, n: int, capacity: bool = False,
     Returns:
         `n` when the spec says SIZE_N, the scalar's value when it names a
         Scalar, otherwise the fixed element count it gives.
+
+    Raises:
+        ValueError: The size is a scalar and `scalars` was not given.
     """
     declared = arg.capacity if capacity or isinstance(arg, Out) else arg.len
     if declared == SIZE_N:
@@ -257,8 +263,8 @@ class Kernel:
             if not isinstance(a, Size) and a.name in RESERVED_NAMES:
                 raise ValueError(f"{self.name}: an argument cannot be named {a.name!r}; "
                                  "case descriptions use that word")
-        self._check_scalar_sizes()
         self._check_scalar_sets()
+        self._check_scalar_sizes()
         if len(self.outs) > 1:
             raise ValueError(f"{self.name}: at most one Out or InOut argument is supported")
         if self.out and self.out.used == USED_RETURN and self.returns != "usize":
@@ -275,19 +281,22 @@ class Kernel:
     def _check_scalar_sizes(self) -> None:
         """Reject a buffer whose size names something other than an integer Scalar.
 
-        Only an Out's capacity may be given by a scalar. An input's length
-        cannot: inputs are generated before the scalar values are chosen.
+        An Out's capacity and an In's length may be given by a scalar. The
+        scalar is then an element count, so no scalar set may make it negative.
         """
         integer_scalars = {a.name for a in self.scalars if a.dtype not in FLOAT_SCALARS}
         for a in self.buffers:
             declared = a.capacity if isinstance(a, Out) else a.len
             if not isinstance(declared, str) or declared == SIZE_N:
                 continue
-            if not isinstance(a, Out):
-                raise ValueError(f"{self.name}: the length of input {a.name} cannot be a scalar")
+            what = "capacity" if isinstance(a, Out) else "length"
             if declared not in integer_scalars:
-                raise ValueError(f"{self.name}: capacity of {a.name} is {declared!r}, "
+                raise ValueError(f"{self.name}: {what} of {a.name} is {declared!r}, "
                                  "which is not an integer Scalar argument")
+            for set_name in self.scalar_set_names:
+                if self.scalar_values(set_name)[declared] < 0:
+                    raise ValueError(f"{self.name}: scalar set {set_name!r} makes {declared} negative, "
+                                     f"and it is the {what} of {a.name}")
 
     def _check_scalar_sets(self) -> None:
         """Reject scalar sets with a bad name or a value for an unknown scalar."""
@@ -381,6 +390,23 @@ class Kernel:
         """The single buffer the kernel writes, or None for kernels that only return a value."""
         outs = self.outs
         return outs[0] if outs else None
+
+    def largest_buffer(self, n: int, set_name: str = DEFAULT_SCALARS) -> int:
+        """Return the element count of the largest buffer in one call.
+
+        Args:
+            n: The value of the kernel's Size argument.
+            set_name: The scalar set the call is made with.
+
+        Returns:
+            The largest element count among the kernel's buffers, or `n` for a
+            kernel without buffers. For a kernel whose buffers all have `n`
+            elements or fewer this is `n`; it is larger when a scalar gives a
+            buffer more elements than that.
+        """
+        scalars = self.scalar_values(set_name)
+        counts = [element_count(a, n, scalars=scalars) for a in self.buffers]
+        return max([n, *counts])
 
     @property
     def tolerance_ulp(self) -> int | None:

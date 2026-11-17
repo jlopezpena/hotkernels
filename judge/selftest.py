@@ -51,6 +51,13 @@ EXPECT = {
         "fixed_modulus": WRONG_RESULT,
         "clears_default_capacity": MEMORY_SAFETY,
     },
+    # A kernel with an input whose length is a scalar. One variant reads a
+    # byte past that input, which only a buffer placed by the scalar's value
+    # catches. The other is right for the default length alone.
+    "rank_u8": {
+        "needle_overread": MEMORY_SAFETY,
+        "fixed_count": WRONG_RESULT,
+    },
 }
 # A variant that is correct but slow: it must pass correctness and then be
 # reported as significantly slower than naive C.
