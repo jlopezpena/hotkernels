@@ -86,6 +86,11 @@
     ldnp    q6, q7, [\base, #\off + 96]
 .endm
 
+// Below this many elements (256 KB) the loop is the hybrid one. From here on
+// the array does not fit in the 128 KB L1 cache with room to spare, the loop
+// is limited by what the L2 cache delivers, and the plain loop is as fast.
+// Must not exceed 32 * BLOCK_STEPS: the hybrid loop does not flush.
+.set HYBRID_MAX_N, 32768
 // The low 63 bits of a double: everything but the sign.
 .set MAGNITUDE_BITS, 0x7fffffffffffffff
 
@@ -238,10 +243,10 @@ Lladder0:
 Lbig:
     movi    v16.2d, #0              // minus the count, 16-bit lanes
     movi    v17.2d, #0
-    cmp     x1, #(32 * BLOCK_STEPS)
+    cmp     x1, #HYBRID_MAX_N
     b.hs    Lblocks
-    // Fewer steps than one block: no lane can overflow, and the array fits
-    // in the caches.
+    // The array fits in the L1 cache, and there are too few steps for a lane
+    // to overflow.
     movi    v30.2d, #0
     mov     x8, #0                  // counts of the elements tested in general registers
     mov     x11, #0
