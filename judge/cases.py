@@ -1,8 +1,9 @@
 """Generates the inputs a kernel is checked against.
 
-A "case" is one call to the kernel: an element count, a placement in memory, and
-a "value class" for each input argument. A value class is a recipe for an array,
-such as `nan_at` (random data with a NaN at one index) or `all_true`.
+A "case" is one call to the kernel: an element count, a placement in memory, a
+set of values for the scalar arguments, and a "value class" for each input
+argument. A value class is a recipe for an array, such as `nan_at` (random data
+with a NaN at one index) or `all_true`.
 
 Every case is fully determined by its description, so a failure can always be
 rerun from the text the judge prints.
@@ -16,7 +17,7 @@ from typing import Callable, Iterator
 import numpy as np
 
 from .memory import ARRANGEMENTS
-from .spec import In, InOut, Kernel, element_count, np_dtype
+from .spec import DEFAULT_SCALARS, In, InOut, Kernel, element_count, np_dtype
 
 # --- Which sizes are tested -------------------------------------------------
 
@@ -32,6 +33,8 @@ MAX_POWER = 22
 LARGE_MIN_N = 65536
 # Kernels with two inputs get every pairing of value classes up to this size.
 CROSS_PRODUCT_MAX_N = 4096
+# The field of a case description that names its scalar set.
+SCALARS_FIELD = "scalars"
 
 # --- Fresh random cases -----------------------------------------------------
 
@@ -389,10 +392,18 @@ class Case:
     # One (argument name, value class, index) per input argument. The index
     # only matters for positional classes.
     picks: tuple[tuple[str, str, int], ...]
+    # Which of the kernel's scalar sets supplies the scalar arguments.
+    scalars: str = DEFAULT_SCALARS
 
     def __str__(self) -> str:
-        """Format as the text the judge prints and `--case` accepts."""
+        """Format as the text the judge prints and `--case` accepts.
+
+        The scalar set is left out when it is the default one, so a kernel
+        without scalar sets prints exactly what it always did.
+        """
         parts = [f"n={self.n}", f"arr={self.arr}", f"seed={self.seed}"]
+        if self.scalars != DEFAULT_SCALARS:
+            parts.append(f"{SCALARS_FIELD}={self.scalars}")
         for arg, cls, p in self.picks:
             parts.append(f"{arg}={cls}@{p}" if cls in POSITIONAL else f"{arg}={cls}")
         return " ".join(parts)
@@ -402,11 +413,12 @@ class Case:
         """Rebuild a case from the text produced by `__str__`."""
         fields = dict(part.split("=", 1) for part in text.split())
         n, arr, seed = int(fields.pop("n")), fields.pop("arr"), int(fields.pop("seed"))
+        scalars = fields.pop(SCALARS_FIELD, DEFAULT_SCALARS)
         picks = []
         for arg, value in fields.items():
             cls, _, p = value.partition("@")
             picks.append((arg, cls, int(p or 0)))
-        return Case(n, arr, seed, tuple(picks))
+        return Case(n, arr, seed, tuple(picks), scalars)
 
 
 def build_inputs(k: Kernel, case: Case, cache: dict | None = None) -> dict[str, np.ndarray]:
@@ -484,13 +496,82 @@ def sizes(min_n: int, max_n: int | None = None) -> list[int]:
     return sorted(s for s in out if s >= min_n and (max_n is None or s <= max_n))
 
 
-def _positions(n: int) -> list[int]:
-    """Return the indices at which positional classes place their element."""
-    if n <= EXHAUSTIVE_MAX_N:
+def _positions(n: int, thin: bool = False) -> list[int]:
+    """Return the indices at which positional classes place their element.
+
+    Args:
+        n: Element count of the case.
+        thin: Use the first, middle and last index even at small sizes, where
+            every index is tried otherwise.
+
+    Returns:
+        The indices, ascending and without repeats.
+    """
+    if n <= EXHAUSTIVE_MAX_N and not thin:
         return list(range(n))
     if n > LARGE_MIN_N:
         return [0, n - 1]
-    return [0, n // 2, n - 1]
+    return sorted({0, n // 2, n - 1}) if n else []
+
+
+def _single_argument_cases(k: Kernel, n: int, seed: int, scalars: str, thin: bool) -> Iterator[Case]:
+    """Yield the cases of one size in which one argument at a time leaves random data.
+
+    Args:
+        k: The kernel's spec.
+        n: Element count.
+        seed: Seed of the cases' random data.
+        scalars: Name of the scalar set the cases use.
+        thin: Yield the reduced sweep: one arrangement per case instead of
+            every one, and three indices per positional class.
+
+    Returns:
+        An iterator over the cases.
+    """
+    ins = k.ins
+    exhaustive, large = n <= EXHAUSTIVE_MAX_N, n > LARGE_MIN_N
+    # Small sizes are tried in every arrangement; larger ones only flush
+    # against each guard page.
+    arrangements = ARRANGEMENTS if exhaustive else ARRANGEMENTS[:2]
+    emitted = 0
+    for a in ins:
+        plain, positional = classes(a.dtype)
+        if large:
+            # Keep one class of each sort; large arrays are slow to generate.
+            plain, positional = plain[:1], positional[:1]
+        if large and thin:
+            positional = []
+        for cls in plain:
+            # The thin sweep rotates through the arrangements instead of trying all.
+            chosen = [arrangements[(emitted + n) % len(arrangements)]] if thin else arrangements
+            for arr in chosen:
+                yield _case(ins, n, arr, seed, scalars, {a.name: (cls, 0)})
+                emitted += 1
+        for cls in positional:
+            for i, p in enumerate(_positions(n, thin)):
+                # Rotate through arrangements so each index meets several.
+                arr = arrangements[(p + n) % len(arrangements)] if exhaustive \
+                    else arrangements[i % len(arrangements)]
+                yield _case(ins, n, arr, seed, scalars, {a.name: (cls, p)})
+
+
+def _case(ins: list, n: int, arr: str, seed: int, scalars: str, chosen: dict) -> Case:
+    """Build a case in which the arguments not in `chosen` get random data.
+
+    Args:
+        ins: The kernel's input arguments.
+        n: Element count.
+        arr: Memory arrangement.
+        seed: Seed of the case's random data.
+        scalars: Name of the scalar set.
+        chosen: Argument name -> (value class, index) for the arguments that
+            do not get random data.
+
+    Returns:
+        The case.
+    """
+    picks = tuple((a.name, *chosen.get(a.name, (RANDOM, 0))) for a in ins)
+    return Case(n, arr, seed, picks, scalars)
 
 
 def fixed_cases(k: Kernel, seed: int = 1) -> Iterator[Case]:
@@ -499,45 +580,41 @@ def fixed_cases(k: Kernel, seed: int = 1) -> Iterator[Case]:
     For each size and each input argument, every value class is tried while the
     other arguments hold random data. Kernels with two inputs also get every
     pairing of plain classes at small and medium sizes.
+
+    That full sweep runs with the default scalar values. Every further scalar
+    set gets a thinner one: the same value classes at the same sizes (less the
+    exact powers of two above 65,536), but one memory arrangement per case,
+    three indices per positional class, and no pairings.
+    A scalar chooses a path through the kernel; what has to be shown is that
+    each path handles every size and every kind of value, not that it does so
+    at every index a second time.
     """
     ins = k.ins
-
-    def case(n: int, arr: str, chosen: dict) -> Case:
-        """Build a case where unchosen arguments get random data."""
-        return Case(n, arr, seed, tuple((a.name, *chosen.get(a.name, (RANDOM, 0))) for a in ins))
-
-    for n in sizes(k.min_n, k.check_max_n):
-        exhaustive, large = n <= EXHAUSTIVE_MAX_N, n > LARGE_MIN_N
-        for a in ins:
-            plain, positional = classes(a.dtype)
-            if large:
-                # Keep one class of each sort; large arrays are slow to generate.
-                plain, positional = plain[:1], positional[:1]
-            # Small sizes are tried in every arrangement; larger ones only flush
-            # against each guard page.
-            arrangements = ARRANGEMENTS if exhaustive else ARRANGEMENTS[:2]
-            for cls in plain:
-                for arr in arrangements:
-                    yield case(n, arr, {a.name: (cls, 0)})
-            for cls in positional:
-                for i, p in enumerate(_positions(n)):
-                    # Rotate through arrangements so each index meets several.
-                    arr = arrangements[(p + n) % len(arrangements)] if exhaustive \
-                        else arrangements[i % len(arrangements)]
-                    yield case(n, arr, {a.name: (cls, p)})
-        if len(ins) == 2 and n <= CROSS_PRODUCT_MAX_N:
-            first, second = ins
-            for c1 in classes(first.dtype)[0]:
-                for c2 in classes(second.dtype)[0]:
-                    yield case(n, ARRANGEMENTS[n % 2], {first.name: (c1, 0), second.name: (c2, 0)})
+    for scalars in k.scalar_set_names:
+        thin = scalars != DEFAULT_SCALARS
+        for n in sizes(k.min_n, k.check_max_n):
+            if thin and n > LARGE_MIN_N and n % 2 == 0:
+                # Large sizes come in threes: a power of two, one less and one
+                # more. Generating them is most of what a scalar set costs, so
+                # the thin sweep keeps the two odd ones, which leave a tail.
+                continue
+            yield from _single_argument_cases(k, n, seed, scalars, thin)
+            if len(ins) == 2 and n <= CROSS_PRODUCT_MAX_N and not thin:
+                first, second = ins
+                for c1 in classes(first.dtype)[0]:
+                    for c2 in classes(second.dtype)[0]:
+                        yield _case(ins, n, ARRANGEMENTS[n % 2], seed, scalars,
+                                    {first.name: (c1, 0), second.name: (c2, 0)})
 
 
 def fresh_cases(k: Kernel, seed: int, count: int = FRESH_CASE_COUNT) -> Iterator[Case]:
     """Yield random cases from a seed that changes on every run.
 
-    These stop a kernel from passing merely by fitting the fixed cases.
+    These stop a kernel from passing merely by fitting the fixed cases. Each
+    one draws its scalar set at random from all the kernel has.
     """
     rng = np.random.default_rng(seed)
+    scalar_sets = k.scalar_set_names
     for _ in range(count):
         top = FRESH_LARGE_MAX_N if rng.random() < FRESH_LARGE_SHARE else FRESH_SMALL_MAX_N
         n = int(rng.integers(k.min_n, top))
@@ -549,4 +626,8 @@ def fresh_cases(k: Kernel, seed: int, count: int = FRESH_CASE_COUNT) -> Iterator
             cls = str(rng.choice(pool))
             p = int(rng.integers(0, n)) if cls in POSITIONAL else 0
             picks.append((a.name, cls, p))
-        yield Case(n, str(rng.choice(ARRANGEMENTS)), seed, tuple(picks))
+        arr = str(rng.choice(ARRANGEMENTS))
+        # A kernel with one scalar set draws nothing here, so its fresh cases
+        # are the ones the same seed always gave.
+        scalars = str(rng.choice(scalar_sets)) if len(scalar_sets) > 1 else DEFAULT_SCALARS
+        yield Case(n, arr, seed, tuple(picks), scalars)

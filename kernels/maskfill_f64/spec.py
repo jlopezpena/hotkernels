@@ -1,26 +1,37 @@
 """Masked assignment of a scalar: `x[mask] = VALUE`, in place.
 
-The judge passes the same value in every call.
+The judge checks the values in SCALAR_SETS as well as the default one, and times
+the default.
 """
-from judge.spec import In, InOut, Kernel, Scalar, Size
+from judge.spec import In, InOut, Kernel, Scalar, ScalarSet, Size
 
 VALUE = 0.0
+
+# Further values to assign. The kernel must store the value's bits unchanged,
+# so the ones here are those an arithmetic shortcut would get wrong.
+SCALAR_SETS = [
+    ScalarSet("negative_zero", {"value": -0.0}),
+    ScalarSet("ordinary", {"value": 1.5}),
+    ScalarSet("nan", {"value": float("nan")}),
+    ScalarSet("infinity", {"value": float("-inf")}),
+    ScalarSet("denormal", {"value": 5e-324}),
+]
 
 # Share of mask elements that are True in each timing distribution.
 HALF_SELECTED = 0.5
 FEW_SELECTED = 0.05
 
 
-def oracle(x, mask):
-    """A copy of x with VALUE written wherever mask is True."""
+def oracle(x, mask, value):
+    """A copy of x with value written wherever mask is True."""
     result = x.copy()
-    result[mask] = VALUE
+    result[mask] = value
     return result
 
 
-def assign(x, mask):
+def assign(x, mask, value):
     """The statement a user writes, timed as NumPy. Applying it twice changes nothing."""
-    x[mask] = VALUE
+    x[mask] = value
 
 
 def _masked(fraction):
@@ -37,5 +48,6 @@ KERNEL = Kernel(
     args=[InOut("x", "f64"), In("mask", "bool"), Size("n"), Scalar("value", "f64", VALUE)],
     oracle=oracle,
     numpy=assign,
+    scalar_sets=SCALAR_SETS,
     distributions={"half_selected": _masked(HALF_SELECTED), "few_selected": _masked(FEW_SELECTED)},
 )

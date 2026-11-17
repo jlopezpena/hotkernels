@@ -44,6 +44,13 @@ EXPECT = {
     "compress_scratch_f32": {
         "write_past_capacity": MEMORY_SAFETY,
     },
+    # A kernel with a scalar argument that also sizes its output. Both broken
+    # variants are right for the default scalar value and wrong for another,
+    # so they are caught only if the other scalar sets are really run.
+    "tally_u8": {
+        "fixed_modulus": WRONG_RESULT,
+        "clears_default_capacity": MEMORY_SAFETY,
+    },
 }
 # A variant that is correct but slow: it must pass correctness and then be
 # reported as significantly slower than naive C.

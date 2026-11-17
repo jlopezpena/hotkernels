@@ -8,8 +8,9 @@ typedef {{ ret }} (*kernel_fn)({{ arg_types | join(", ") }});
 
 // Calls the kernel `reps` times and returns the elapsed nanoseconds.
 // It cycles through a pool of `npool` different inputs, so the processor
-// cannot memorise the branch pattern of a single input.
-uint64_t hk_bench(void *f, uint64_t reps, uint64_t npool{% for name in pointer_names %}, void **p_{{ name }}{% endfor %}, uint64_t n) {
+// cannot memorise the branch pattern of a single input. The kernel's scalar
+// arguments are passed in, and are the same in every call.
+uint64_t hk_bench(void *f, uint64_t reps, uint64_t npool{% for name in pointer_names %}, void **p_{{ name }}{% endfor %}, uint64_t n{% for param in scalar_params %}, {{ param }}{% endfor %}) {
     kernel_fn fn = (kernel_fn)f;
     uint64_t p = 0;
 {% if ret != "void" %}

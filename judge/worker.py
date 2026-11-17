@@ -119,19 +119,20 @@ def _matches(got: np.ndarray, expected: np.ndarray, ulp: int | None,
     return np.where(special, identical, close)
 
 
-def _float_bits(scalar: Scalar) -> int:
+def _float_bits(scalar: Scalar, value: float) -> int:
     """Return the register contents for a floating-point scalar argument.
 
     Args:
         scalar: A Scalar of type f32 or f64.
+        value: The value it has in this call.
 
     Returns:
         The raw bits as an integer. A float occupies the low 32 bits of its
         64-bit register, which is where the kernel reads it as `s0`..`s7`.
     """
     if scalar.dtype == "f32":
-        return struct.unpack("<I", struct.pack("<f", scalar.value))[0]
-    return struct.unpack("<Q", struct.pack("<d", scalar.value))[0]
+        return struct.unpack("<I", struct.pack("<f", value))[0]
+    return struct.unpack("<Q", struct.pack("<d", value))[0]
 
 
 class Runner:
@@ -161,11 +162,12 @@ class Runner:
         if case.n != self.cache_n:
             self.cache, self.cache_n = {}, case.n
         inputs = build_inputs(k, case, self.cache)
-        oracle_args = [inputs[a.name] for a in k.ins]
+        scalars = k.scalar_values(case.scalars)
+        oracle_args = [inputs[a.name] for a in k.ins] + k.oracle_scalars(case.scalars)
         expected = k.oracle(*oracle_args)
         scale = k.tolerance_scale(*oracle_args) if k.tolerance_scale else None
 
-        int_args, float_args, out_addr, out_bytes, read_only = self._place_arguments(case, inputs)
+        int_args, float_args, out_addr, out_bytes, read_only = self._place_arguments(case, inputs, scalars)
         result = WrapperResult()
 
         # Record the case before calling, in case the kernel kills this process.
@@ -182,20 +184,29 @@ class Runner:
         returned = self._decode_return(result)
         if k.out is None:
             return self._check_return_value(case, returned, expected, scale)
-        return self._check_output(case, returned, expected, scale, out_addr, out_bytes)
+        capacity = element_count(k.out, case.n, capacity=True, scalars=scalars)
+        return self._check_output(case, returned, expected, scale, out_addr, out_bytes, capacity)
 
-    def _place_arguments(self, case: Case, inputs: dict) -> tuple:
+    def _place_arguments(self, case: Case, inputs: dict, scalars: dict) -> tuple:
         """Copy inputs into guarded memory and build the kernel's argument list.
 
-        Returns (integer argument registers, floating-point argument registers,
-        output address, output size in bytes, arenas made read-only). Inputs
-        are made read-only so that a kernel writing to one crashes. An output
-        buffer is filled with a known byte so that stray writes can be detected
-        afterwards; an in-place buffer starts as its input and stays writable.
+        Inputs are made read-only so that a kernel writing to one crashes. An
+        output buffer is filled with a known byte so that stray writes can be
+        detected afterwards; an in-place buffer starts as its input and stays
+        writable.
 
         The calling convention numbers integer and floating-point arguments
         separately: the third integer argument goes in the third integer
         register however many floating-point arguments precede it.
+
+        Args:
+            case: The case being run.
+            inputs: The input arrays, by argument name.
+            scalars: The value of every Scalar argument in this case, by name.
+
+        Returns:
+            (integer argument registers, floating-point argument registers,
+            output address, output size in bytes, arenas made read-only).
         """
         int_args, float_args = RegisterArgs(), RegisterArgs()
         int_slot = float_slot = 0
@@ -203,15 +214,16 @@ class Runner:
         out_addr = out_bytes = 0
         for a in self.k.args:
             if isinstance(a, Scalar) and a.dtype in FLOAT_SCALARS:
-                float_args[float_slot] = _float_bits(a)
+                float_args[float_slot] = _float_bits(a, scalars[a.name])
                 float_slot += 1
                 continue
             if isinstance(a, (Size, Scalar)):
-                int_args[int_slot] = (case.n if isinstance(a, Size) else int(a.value)) & _REGISTER_MASK
+                value = case.n if isinstance(a, Size) else int(scalars[a.name])
+                int_args[int_slot] = value & _REGISTER_MASK
                 int_slot += 1
                 continue
             itemsize = np_dtype(a.dtype).itemsize
-            nbytes = element_count(a, case.n) * itemsize
+            nbytes = element_count(a, case.n, scalars=scalars) * itemsize
             arena = self.arenas.get(a.name, nbytes)
             addr = arena.place(nbytes, case.arr, itemsize)
             int_args[int_slot] = addr
@@ -270,7 +282,7 @@ class Runner:
                              expected=_show(want), got=_show(returned))
 
     def _check_output(self, case: Case, returned, expected, scale,
-                      out_addr: int, out_bytes: int) -> dict | None:
+                      out_addr: int, out_bytes: int, capacity: int) -> dict | None:
         """Compare what the kernel wrote to its output buffer with the oracle.
 
         Checks, in order: the reported element count, the elements themselves,
@@ -288,6 +300,7 @@ class Runner:
                 expected element, or None.
             out_addr: Address of the output buffer.
             out_bytes: Size of the output buffer in bytes.
+            capacity: How many elements the output buffer holds in this case.
 
         Returns:
             None when the output is accepted, otherwise a failure description.
@@ -295,7 +308,6 @@ class Runner:
         k, out = self.k, self.k.out
         dt = np_dtype(out.dtype)
         want = np.ascontiguousarray(np.asarray(expected), dtype=dt).ravel()
-        capacity = element_count(out, case.n, capacity=True)
         used = capacity
         if out.used == USED_RETURN:
             if returned != len(want):
