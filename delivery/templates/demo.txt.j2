@@ -1,0 +1,10 @@
+{# The result of `delivery demo`: the two times, whether results agree, and hotkernels' report. #}
+examples/workload.py, an unmodified NumPy program
+
+  plain NumPy:                  {{ "%.1f" | format(demo.numpy_ms) }} ms
+  after hotkernels.install():   {{ "%.1f" | format(demo.hotkernels_ms) }} ms   ({{ demo.speedup | times }} faster)
+  results:                      {{ "identical, bit for bit" if demo.identical else "DIFFERENT" }}
+
+{{ demo.report }}
+
+RESULT: {{ "pass" if demo.identical and demo.speedup > 1 else "FAIL" }}

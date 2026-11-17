@@ -1,0 +1,318 @@
+"""Times NumPy calls from Python, with and without hotkernels installed.
+
+The judge times a kernel as a native function. This times what a user gets:
+the Python statement, through NumPy's call path and the binding, to a Python
+result. Two kinds of call are timed. A call a kernel takes shows the speedup
+that is delivered. A call that reaches a hook and is left to NumPy shows what
+the hook costs everyone else.
+
+Timings are only meaningful on native hardware and an idle machine. The load
+average is recorded with every run.
+"""
+from __future__ import annotations
+
+import importlib
+import os
+import platform
+import subprocess
+import time
+from dataclasses import asdict, dataclass
+from functools import partial
+from pathlib import Path
+from typing import Callable, Iterable
+
+import numpy as np
+
+import hotkernels
+from hotkernels.environment import BINDING_MODULE
+
+from .cases import SLOT_MIN_N
+from .check import operation_kernels
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# Element counts timed: where the cost of the call dominates, where the data
+# fits the first-level cache, and where it fits no cache.
+SIZES = (16, 4096, 1_048_576)
+# Alternating batches per measurement. The minimum of each side is reported.
+ROUNDS = 9
+# Time one batch aims for, in nanoseconds, and the limits on calls per batch.
+TARGET_BATCH_NS = 10_000_000
+MIN_CALLS = 3
+MAX_CALLS = 200_000
+# Seed of all timing data.
+SEED = 7
+# Share of a mask that is True in the two mask distributions.
+HALF = 0.5
+FEW = 0.05
+# Bounds, bin count and range used by the timed clip and histogram calls.
+LO, HI = -0.5, 0.5
+BINS = 50
+RANGE = (-3.0, 3.0)
+# Largest value of the "narrow" isin data, and its eight test values.
+ISIN_SPAN = 1000
+ISIN_TEST = [1, 50, 999, 0, 7, 500, 501, 2]
+
+
+@dataclass(frozen=True)
+class Timed:
+    """One statement to time."""
+
+    # Operation the statement belongs to.
+    operation: str
+    # The statement, as a user writes it.
+    statement: str
+    # Element type of the data, and anything else that defines the input.
+    data: str
+    # Builds the arguments for an element count.
+    make: Callable[[int], tuple]
+    # Runs the statement on the built arguments.
+    call: Callable[..., object]
+    # Kernel that must take the call, or None for a call left to NumPy.
+    kernel: str | None
+    # Whether the statement needs install(inexact=True).
+    inexact: bool = False
+    # Element count from which the kernel takes the call. Below it the
+    # statement is measured as one left to NumPy.
+    min_n: int = 0
+
+    def kernel_at(self, n: int) -> str | None:
+        """Return the kernel that takes the call at `n` elements, or None."""
+        return self.kernel if n >= self.min_n else None
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """One statement at one size."""
+
+    # Operation the statement belongs to.
+    operation: str
+    # The statement, as a user writes it.
+    statement: str
+    # Element type of the data, and anything else that defines the input.
+    data: str
+    # Kernel that took the call, or None for a call left to NumPy.
+    kernel: str | None
+    # Element count.
+    n: int
+    # Best time per call on plain NumPy, in nanoseconds.
+    numpy_ns: float
+    # Best time per call with hotkernels installed, in nanoseconds.
+    hotkernels_ns: float
+
+    @property
+    def speedup(self) -> float:
+        """Return how many times faster the call is with hotkernels."""
+        return self.numpy_ns / self.hotkernels_ns
+
+    @property
+    def extra_ns(self) -> float:
+        """Return what hotkernels adds to the call, in nanoseconds."""
+        return self.hotkernels_ns - self.numpy_ns
+
+
+def _rng(n: int) -> np.random.Generator:
+    """Return the generator for timing data of one size."""
+    return np.random.default_rng([SEED, n])
+
+
+def _floats(dtype: type, n: int) -> tuple:
+    """Build normally distributed floats."""
+    return (_rng(n).standard_normal(n).astype(dtype),)
+
+
+def _ints(dtype: type, n: int) -> tuple:
+    """Build small integers, about a tenth of them zero."""
+    return (_rng(n).integers(0, 10, n).astype(dtype),)
+
+
+def _bytes(n: int) -> tuple:
+    """Build uniformly random bytes."""
+    return (_rng(n).integers(0, 256, n, dtype=np.uint8),)
+
+
+def _masked(dtype: type, share: float, n: int) -> tuple:
+    """Build data and a mask that selects `share` of it."""
+    rng = _rng(n)
+    return (rng.standard_normal(n).astype(dtype), rng.random(n) < share)
+
+
+def _mask(share: float, n: int) -> tuple:
+    """Build a mask that is True for `share` of its elements."""
+    return (_rng(n).random(n) < share,)
+
+
+def _narrow_ints(n: int) -> tuple:
+    """Build int64 values close together, where isin's test values match often."""
+    return (_rng(n).integers(0, ISIN_SPAN, n),)
+
+
+def _assign(value: float, x: np.ndarray, mask: np.ndarray) -> None:
+    """Run `x[mask] = value`. Running it twice changes nothing more."""
+    x[mask] = value
+
+
+def _set_element(x: np.ndarray) -> None:
+    """Run `x[3] = 1.0`."""
+    x[3] = 1.0
+
+
+# Statements a kernel takes: at least one per installed kernel.
+TAKEN: tuple[Timed, ...] = (
+    Timed("argmax", "np.argmax(x)", "float32", partial(_floats, np.float32), np.argmax, "argmax_f32"),
+    Timed("argmax", "x.argmax()", "float32", partial(_floats, np.float32), lambda x: x.argmax(), "argmax_f32", min_n=SLOT_MIN_N),
+    Timed("argmax", "np.argmax(x)", "float64", partial(_floats, np.float64), np.argmax, "argmax_f64"),
+    Timed("argmin", "np.argmin(x)", "float32", partial(_floats, np.float32), np.argmin, "argmin_f32"),
+    Timed("argmin", "np.argmin(x)", "float64", partial(_floats, np.float64), np.argmin, "argmin_f64"),
+    Timed("clip", "np.clip(x, -0.5, 0.5)", "float32", partial(_floats, np.float32), lambda x: np.clip(x, LO, HI), "clip_f32"),
+    Timed("clip", "np.clip(x, -0.5, 0.5)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, LO, HI), "clip_f64"),
+    Timed("clip", "np.clip(x, 0, 1)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, 0, 1), "clip_f64"),
+    Timed("compress", "x[mask]", "float32, half selected", partial(_masked, np.float32, HALF), lambda x, m: x[m], "compress_f32"),
+    Timed("compress", "x[mask]", "float64, half selected", partial(_masked, np.float64, HALF), lambda x, m: x[m], "compress_f64"),
+    Timed("compress", "x[mask]", "float64, few selected", partial(_masked, np.float64, FEW), lambda x, m: x[m], "compress_f64"),
+    Timed("maskfill", "x[mask] = 0.0", "float64, half selected", partial(_masked, np.float64, HALF), partial(_assign, 0.0), "maskfill_f64"),
+    Timed("maskfill", "x[mask] = 0.0", "float64, few selected", partial(_masked, np.float64, FEW), partial(_assign, 0.0), "maskfill_f64"),
+    Timed("nonzero", "np.nonzero(mask)", "bool, half selected", partial(_mask, HALF), np.nonzero, "nonzero_bool"),
+    Timed("nonzero", "np.nonzero(mask)", "bool, few selected", partial(_mask, FEW), np.nonzero, "nonzero_bool"),
+    Timed("cumsum", "np.cumsum(x)", "int64", partial(_ints, np.int64), np.cumsum, "cumsum_i64"),
+    Timed("cumsum", "np.cumsum(x)", "float32", partial(_floats, np.float32), np.cumsum, "cumsum_f32", inexact=True),
+    Timed("cumsum", "np.cumsum(x)", "float64", partial(_floats, np.float64), np.cumsum, "cumsum_f64", inexact=True),
+    Timed("astype", "x.astype(np.float32)", "uint8", _bytes, lambda x: x.astype(np.float32), "cast_u8_f32"),
+    Timed("sum", "np.sum(x)", "uint8", _bytes, np.sum, "sum_u8"),
+    Timed("sum", "x.sum()", "uint8", _bytes, lambda x: x.sum(), "sum_u8"),
+    Timed("count_nonzero", "np.count_nonzero(x)", "int64", partial(_ints, np.int64), np.count_nonzero, "count_nonzero_i64"),
+    Timed("count_nonzero", "np.count_nonzero(x)", "float64", partial(_ints, np.float64), np.count_nonzero, "count_nonzero_f64"),
+    Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0))", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE), "histogram_f64"),
+    Timed("bincount", "np.bincount(x)", "uint8", _bytes, np.bincount, "bincount_u8"),
+    Timed("isin", "np.isin(x, eight_values)", "int64, values close together", _narrow_ints, lambda x: np.isin(x, ISIN_TEST), "isin_i64"),
+)
+
+# Statements that reach a hook and are left to NumPy: what a hook costs a
+# call it does not serve.
+LEFT: tuple[Timed, ...] = (
+    Timed("argmax", "np.argmax(x)", "int64", partial(_ints, np.int64), np.argmax, None),
+    Timed("clip", "np.clip(x[::2], -0.5, 0.5)", "float64, strided", partial(_floats, np.float64), lambda x: np.clip(x[::2], LO, HI), None),
+    Timed("astype", "x.astype(np.float64)", "uint8", _bytes, lambda x: x.astype(np.float64), None),
+    Timed("sum", "np.sum(x)", "float64", partial(_floats, np.float64), np.sum, None),
+    Timed("sum", "x.sum()", "float64", partial(_floats, np.float64), lambda x: x.sum(), None),
+    Timed("count_nonzero", "np.count_nonzero(x)", "int32", partial(_ints, np.int32), np.count_nonzero, None),
+    Timed("cumsum", "np.cumsum(x)", "float64, exact kernels only", partial(_floats, np.float64), np.cumsum, None),
+    Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0), density=False)", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE, density=False), None),
+    Timed("bincount", "np.bincount(x)", "int64", partial(_ints, np.int64), np.bincount, None),
+    Timed("isin", "np.isin(x, nine_values)", "int64", _narrow_ints, lambda x: np.isin(x, ISIN_TEST + [3]), None),
+    Timed("nonzero", "x.nonzero()", "int64", partial(_ints, np.int64), lambda x: x.nonzero(), None),
+    Timed("compress", "x[3]", "float64", partial(_floats, np.float64), lambda x: x[3], None),
+    Timed("compress", "x[1:5]", "float64", partial(_floats, np.float64), lambda x: x[1:5], None),
+    Timed("compress", "x[mask]", "int64, half selected", partial(_masked, np.int64, HALF), lambda x, m: x[m], None),
+    Timed("maskfill", "x[3] = 1.0", "float64", partial(_floats, np.float64), _set_element, None),
+    Timed("maskfill", "x[mask] = 0.0", "float32, half selected", partial(_masked, np.float32, HALF), partial(_assign, 0.0), None),
+)
+
+
+def _batch(call: Callable, arguments: tuple, calls: int) -> float:
+    """Time `calls` calls and return nanoseconds per call."""
+    clock = time.perf_counter_ns
+    repeats = range(calls)
+    start = clock()
+    for _ in repeats:
+        call(*arguments)
+    return (clock() - start) / calls
+
+
+def _calls_per_batch(call: Callable, arguments: tuple) -> int:
+    """Choose how many calls make a batch of about TARGET_BATCH_NS."""
+    call(*arguments)
+    once = max(_batch(call, arguments, 1), 1.0)
+    return int(min(max(TARGET_BATCH_NS / once, MIN_CALLS), MAX_CALLS))
+
+
+def _kernel_ran(entry: Timed, arguments: tuple, kernel: str | None) -> bool:
+    """Make one call with hotkernels installed and say whether the expected thing happened.
+
+    Args:
+        entry: The statement.
+        arguments: Its arguments.
+        kernel: The kernel expected to take the call, or None.
+
+    Returns:
+        For a statement with a kernel, whether that kernel took the call; for
+        one left to NumPy, whether none of its operation's kernels did.
+    """
+    binding = importlib.import_module(BINDING_MODULE)
+    before = binding.counters()[0]
+    entry.call(*arguments)
+    after = binding.counters()[0]
+    if kernel:
+        return after[kernel] > before[kernel]
+    return all(after[k] == before[k] for k in operation_kernels(entry.operation))
+
+
+def measure(entry: Timed, n: int) -> Measurement:
+    """Time one statement at one size, alternating plain NumPy and hotkernels.
+
+    Args:
+        entry: The statement.
+        n: Element count.
+
+    Returns:
+        The best time of each side over ROUNDS alternating batches.
+
+    Raises:
+        RuntimeError: If the call was not routed as the entry says, in which
+            case the timing would describe something else.
+    """
+    arguments = entry.make(n)
+    kernel = entry.kernel_at(n)
+    hotkernels.uninstall()
+    calls = _calls_per_batch(entry.call, arguments)
+    plain, installed = [], []
+    for _ in range(ROUNDS):
+        hotkernels.uninstall()
+        plain.append(_batch(entry.call, arguments, calls))
+        hotkernels.install(inexact=entry.inexact)
+        if not _kernel_ran(entry, arguments, kernel):
+            raise RuntimeError(f"{entry.statement} ({entry.data}, n={n}) was not routed as expected")
+        installed.append(_batch(entry.call, arguments, calls))
+    hotkernels.uninstall()
+    return Measurement(entry.operation, entry.statement, entry.data, kernel, n, min(plain), min(installed))
+
+
+def run(entries: Iterable[Timed], sizes: tuple[int, ...] = SIZES) -> list[Measurement]:
+    """Time every entry at every size."""
+    return [measure(entry, n) for entry in entries for n in sizes]
+
+
+def _output_of(command: list[str]) -> str:
+    """Return a command's standard output, stripped, or an empty string if it fails."""
+    try:
+        return subprocess.run(command, capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def describe_machine() -> dict:
+    """Record what a run was measured on.
+
+    Returns:
+        Processor, operating system, NumPy and Python versions, git revision,
+        and the one-minute load average when the run started. A load average
+        well above zero means the timings were taken on a busy machine.
+    """
+    return {
+        "cpu": _output_of(["sysctl", "-n", "machdep.cpu.brand_string"]),
+        "os": platform.platform(),
+        "numpy": np.__version__,
+        "python": platform.python_version(),
+        "git": _output_of(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"]),
+        "load_average": round(os.getloadavg()[0], 2),
+    }
+
+
+def as_rows(measurements: list[Measurement]) -> list[dict]:
+    """Convert measurements to plain dictionaries for a JSON file."""
+    return [asdict(m) for m in measurements]
+
+
+def from_rows(rows: list[dict]) -> list[Measurement]:
+    """Rebuild measurements from the dictionaries of a JSON file."""
+    return [Measurement(**row) for row in rows]

@@ -1,0 +1,40 @@
+{# The table hotkernels.report() prints: a status line, one row per kernel, and any hooks that failed. #}
+{% set call_width = 19 %}
+{% set type_width = 9 %}
+{% set kind_width = 10 %}
+{% set result_width = 17 %}
+{% set count_width = 13 %}
+{% if report.unsupported %}
+hotkernels: not installed: {{ report.unsupported }}
+{% elif not report.installed %}
+hotkernels: not installed (NumPy {{ report.numpy_version }}). Call hotkernels.install().
+{% else %}
+hotkernels: installed, {{ report.installed_count }} of {{ report.kernels | length }} kernels (NumPy {{ report.numpy_version }})
+{% endif %}
+{% if report.installed %}
+
+{{ "NumPy call" | ljust(call_width) }}{{ "Elements" | ljust(type_width) }}{{ "Kernel" | ljust(kind_width) }}{{ "Result" | ljust(result_width) }}{{ "Kernel calls" | rjust(count_width) }}{{ "Left to NumPy" | rjust(count_width + 2) }}
+{% for kernel in report.kernels %}
+{{ kernel.numpy_call | ljust(call_width) }}{{ kernel.elements | ljust(type_width) }}{{ kernel.implementation | ljust(kind_width) }}{{ kernel.result | ljust(result_width) }}
+{%- if kernel.installed %}
+{{ kernel.calls | thousands | rjust(count_width) }}{{ (kernel.left_to_numpy | thousands if kernel.left_to_numpy is not none else "") | rjust(count_width + 2) }}
+{% else %}
+{{ kernel.note }}
+{% endif %}
+{% endfor %}
+
+"Left to NumPy" counts calls that reached a hook and did not meet a kernel's
+conditions: another element type, a strided array, an argument the kernel does
+not implement. It is counted per NumPy call and shown on its first row.
+{% if not report.inexact %}
+Kernels marked "within tolerance" are not bit-identical to NumPy and are
+installed only by install(inexact=True).
+{% endif %}
+{% endif %}
+{% for problem in report.problems %}
+{% if loop.first %}
+
+Hooks that are not in place:
+{% endif %}
+  {{ problem }}
+{% endfor %}

@@ -1,6 +1,6 @@
 # Working in this repository
 
-hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project and [docs/judge-design.md](docs/judge-design.md) for the judge.
+hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project, [docs/judge-design.md](docs/judge-design.md) for the judge and [docs/delivery-design.md](docs/delivery-design.md) for how the kernels reach NumPy.
 
 This file is for coding agents. The first half applies to any work here; the second half applies when you are writing or tuning a kernel.
 
@@ -9,6 +9,7 @@ This file is for coding agents. The first half applies to any work here; the sec
 - Design changes go through a pull request with a document in `docs/` before any code is written.
 - Run everything through `uv`: `uv run judge <command>`. There is no other setup.
 - `uv run judge selftest` must pass before any change to `judge/` is proposed.
+- `uv run delivery check` must pass before any change to `hotkernels/` or to a kernel that is installed is proposed. It runs every hooked NumPy call with and without hotkernels and compares them.
 - Timings are only meaningful on native hardware. Never report numbers taken under emulation.
 - READMEs describe the present state only: what exists and how to use it. No phases, status, roadmap or development history. Plans belong in `docs/`, and history belongs in git. When a change makes a README inaccurate, update it in the same change.
 

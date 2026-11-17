@@ -1,0 +1,27 @@
+[project]
+name = "hotkernels"
+version = "0.1.0"
+description = "Faster kernels for NumPy operations, installed with one line."
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "jinja2>=3.1.6",
+    "numpy>=2.0",
+]
+
+[build-system]
+requires = ["meson-python>=0.17", "numpy>=2.0", "jinja2>=3.1.6", "typer>=0.29.1"]
+build-backend = "mesonpy"
+
+# The extension is compiled from the kernels in ../kernels, so a change there
+# or in the binding's sources must rebuild the package.
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "meson.build" },
+    { file = "tools/**" },
+    { file = "src/**" },
+    { file = "../kernels/*/spec.py" },
+    { file = "../kernels/*/naive.c" },
+    { file = "../kernels/*/*/kernel.s" },
+]

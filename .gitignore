@@ -8,3 +8,5 @@ dist/
 *.egg-info/
 .DS_Store
 .judge/
+# Build directories meson-python leaves behind when a build is interrupted.
+.mesonpy-*/

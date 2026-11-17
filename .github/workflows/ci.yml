@@ -13,3 +13,5 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       # Shared runners are too noisy to time anything, so the speed fixture is skipped.
       - run: uv run judge selftest --no-speed
+      # Every hooked NumPy call, with and without hotkernels installed.
+      - run: uv run delivery check
