@@ -165,7 +165,7 @@ That mask check is one of several places where binding the kernels to real calls
 | A NaN among the sample points of `np.interp` | Read before the start of its buffers, or return something other than NumPy | Reads the sample points once; sends the call to NumPy. Only worth doing when there are enough queries to pay for the pass, so a call with more than 64 sample points per query goes to NumPy as well |
 | Floating-point status flags left set by a kernel | NumPy would turn them into spurious warnings | Clears them after `clip`; for float `cumsum`, discards the kernel's output if any flag was raised and lets NumPy compute and warn |
 
-Each row is tracked as an issue against the kernel. The lesson generalises: a function verified in isolation is verified *on the inputs its tests can express*. Integrating it is a second round of verification, against what real callers can actually pass.
+The binding's check is what handles each row today. Fixing the kernels themselves, so that the check is no longer needed, is still open for the mask, in-place and `argmax` rows. The lesson generalises: a function verified in isolation is verified *on the inputs its tests can express*. Integrating it is a second round of verification, against what real callers can actually pass.
 
 ## Threads
 
