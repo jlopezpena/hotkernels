@@ -49,6 +49,9 @@
 // A tail that is not a whole 8-element block is one more block that ends
 // exactly at the end of the array and overlaps the previous one. It is
 // computed from the input again, never from output already written.
+//
+// x and out must not overlap, as the spec declares: the tail block and the
+// second pass after a signalling NaN both read the input again.
 
 // Below this many elements the two FPSR reads cost more than the fast path saves.
 .set FAST_MIN_N, 96
