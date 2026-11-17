@@ -186,3 +186,17 @@ as the judge does; naive C is 5.0 / 30 / 205 and attempt 2 is 2.9 / 19.4 /
   exclude 1.0 at 256, 1,024, 16,384, 65,536 and from 1,048,576 up. In the
   standalone timer: 0.1386 against 0.1404 ns per element at 64, 0.1268
   against 0.1271 at 128, no difference from 256.
+
+## 7. Both blocks' carry-independent work before the additions that wait for the carry
+
+- **Idea:** as in `cumsum_f64` attempt 8. The W of the second block of an
+  iteration go to their own registers (v22, v28, v29, v30) and the iteration
+  is ordered as: loads, p, W and block sums of both blocks, then outputs,
+  stores and squares of the first block, then of the second.
+- **check:** pass (18,136 cases)
+- **compare:** significantly faster, 1.001x [1.000 – 1.001]; rerun, the same
+  figures
+- **Kept:** yes, by the rule; the gain is a tenth of a percent
+- **Notes:** significant only at 65,536, 1,048,576 and 16,777,216 (2.15 ms
+  against 2.16 ms); every other size 1.00x and not significant. The float64
+  loop gained 0.4% from the same change.

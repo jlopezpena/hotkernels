@@ -67,7 +67,8 @@
 // Registers: x0 x, x1 out, x2 elements after this chunk, x3 chunk counter,
 // x7 start of out, x9 elements in this chunk, w11 bits of x[0],
 // v16 last output vector, v17 last input vector, v23 last p, v18-v21 sums of
-// squares.
+// squares, v0-v7 inputs and p of the block being done, v24-v27 its W and
+// outputs (v22, v28-v30 for the second block of a loop iteration).
 .set CHUNK, 1024
 // Arrays of at least 2^LONG_LOG2 elements use the plain loop (point 3 above).
 .set LONG_LOG2, 29
@@ -98,6 +99,8 @@ Lchunk:
     subs    x3, x9, #32
     b.lo    Lrest
 Lmain:
+    // Both blocks' loads and block sums come first (the W of the second block
+    // in v22, v28, v29, v30); the additions that wait for the carry follow.
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
     ext     v4.16b, v17.16b, v0.16b, #12    // x[i-1..i+2]
@@ -119,16 +122,6 @@ Lmain:
     fadd    v25.4s, v25.4s, v24.4s  // W0 + W1
     fadd    v27.4s, v27.4s, v26.4s  // W2 + W3
     fadd    v27.4s, v27.4s, v25.4s  // block total
-    fadd    v24.4s, v24.4s, v16.4s  // out0
-    fadd    v25.4s, v25.4s, v16.4s  // out1
-    fadd    v16.4s, v16.4s, v27.4s  // out3, the next carry
-    fadd    v26.4s, v26.4s, v25.4s  // out2
-    stp     q24, q25, [x1]
-    stp     q26, q16, [x1, #32]
-    fmla    v18.4s, v24.4s, v24.4s
-    fmla    v19.4s, v25.4s, v25.4s
-    fmla    v20.4s, v26.4s, v26.4s
-    fmla    v21.4s, v16.4s, v16.4s
     ldp     q0, q1, [x0, #64]
     ldp     q2, q17, [x0, #96]
     ext     v4.16b, v3.16b, v0.16b, #12
@@ -139,26 +132,36 @@ Lmain:
     fadd    v5.4s, v5.4s, v1.4s
     fadd    v6.4s, v6.4s, v2.4s
     fadd    v23.4s, v23.4s, v17.4s
-    ext     v24.16b, v7.16b, v4.16b, #8
-    ext     v25.16b, v4.16b, v5.16b, #8
-    ext     v26.16b, v5.16b, v6.16b, #8
-    ext     v27.16b, v6.16b, v23.16b, #8
-    fadd    v24.4s, v24.4s, v4.4s
-    fadd    v25.4s, v25.4s, v5.4s
-    fadd    v26.4s, v26.4s, v6.4s
-    fadd    v27.4s, v27.4s, v23.4s
-    fadd    v25.4s, v25.4s, v24.4s
-    fadd    v27.4s, v27.4s, v26.4s
-    fadd    v27.4s, v27.4s, v25.4s
-    fadd    v24.4s, v24.4s, v16.4s
-    fadd    v25.4s, v25.4s, v16.4s
-    fadd    v16.4s, v16.4s, v27.4s
-    fadd    v26.4s, v26.4s, v25.4s
-    stp     q24, q25, [x1, #64]
-    stp     q26, q16, [x1, #96]
+    ext     v22.16b, v7.16b, v4.16b, #8
+    ext     v28.16b, v4.16b, v5.16b, #8
+    ext     v29.16b, v5.16b, v6.16b, #8
+    ext     v30.16b, v6.16b, v23.16b, #8
+    fadd    v22.4s, v22.4s, v4.4s
+    fadd    v28.4s, v28.4s, v5.4s
+    fadd    v29.4s, v29.4s, v6.4s
+    fadd    v30.4s, v30.4s, v23.4s
+    fadd    v28.4s, v28.4s, v22.4s
+    fadd    v30.4s, v30.4s, v29.4s
+    fadd    v30.4s, v30.4s, v28.4s
+    fadd    v24.4s, v24.4s, v16.4s  // out0
+    fadd    v25.4s, v25.4s, v16.4s  // out1
+    fadd    v16.4s, v16.4s, v27.4s  // out3, the next carry
+    fadd    v26.4s, v26.4s, v25.4s  // out2
+    stp     q24, q25, [x1]
+    stp     q26, q16, [x1, #32]
     fmla    v18.4s, v24.4s, v24.4s
     fmla    v19.4s, v25.4s, v25.4s
     fmla    v20.4s, v26.4s, v26.4s
+    fmla    v21.4s, v16.4s, v16.4s
+    fadd    v22.4s, v22.4s, v16.4s
+    fadd    v28.4s, v28.4s, v16.4s
+    fadd    v16.4s, v16.4s, v30.4s
+    fadd    v29.4s, v29.4s, v28.4s
+    stp     q22, q28, [x1, #64]
+    stp     q29, q16, [x1, #96]
+    fmla    v18.4s, v22.4s, v22.4s
+    fmla    v19.4s, v28.4s, v28.4s
+    fmla    v20.4s, v29.4s, v29.4s
     fmla    v21.4s, v16.4s, v16.4s
     add     x0, x0, #128
     add     x1, x1, #128
