@@ -36,7 +36,7 @@
 // From this many elements, and below HUGE_MIN_N, the main loop is the hybrid
 // one (see Lhybrid). Below it, the leftover elements a step of 18 leaves
 // behind cost more than the hybrid loop saves.
-.set HYBRID_MIN_N, 128
+.set HYBRID_MIN_N, 512
 // Elements per step of the hybrid loop: one group of sixteen in vector
 // registers and two in general registers.
 .set HYBRID_STEP, 18
@@ -161,7 +161,7 @@ Lbig:
     movi    v16.2d, #0              // minus the count, 16-bit lanes
     movi    v17.2d, #0
     cmp     x1, #HYBRID_MIN_N
-    b.hs    Lge128
+    b.hs    Lhybridmin
 Lvector:
     lsr     x4, x1, #5              // steps left
 Lblock:
@@ -212,8 +212,8 @@ Lhugestep:
     b.ne    Lhugestep
     b       Lblockdone
 
-    // ---- 128 elements or more.
-Lge128:
+    // ---- HYBRID_MIN_N elements or more.
+Lhybridmin:
     cmp     x1, #HUGE_MIN_N
     b.hs    Lvector
 
