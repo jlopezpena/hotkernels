@@ -57,6 +57,18 @@
 // Below this many elements, clearing and restoring a flag the caller left set
 // costs more than the fast path saves.
 .set STALE_MIN_N, 1536
+// Below this many elements the lo = +0.0 path is not tried.
+.set ZERO_MIN_N, 512
+// The lo = +0.0 path works in chunks of this many 16-element blocks at least ...
+.set ZMIN_BLOCKS, 8
+// ... and at most.
+.set ZMAX_BLOCKS, 64
+// A chunk is the clean run so far shifted right by this much, within those limits.
+.set STAKE_SHIFT, 2
+// The very first chunk is this short, so that data full of -0.0 is found out early.
+.set ZPROBE_BLOCKS, 4
+// What a chunk with a -0.0 costs beyond three times its length, in blocks.
+.set ZSTRIKE_FIXED, 200
 // FPSR.IOC, the cumulative invalid-operation flag, is bit 0.
 .set IOC_BIT, 0
 // Every FPCR bit except the rounding mode (bits 22 and 23).
@@ -74,17 +86,22 @@ _clip_f32:
     b.lo    Lexact
     fcmp    s0, s1
     b.hi    Lexact                  // lo > hi, or a NaN bound
-    fmov    w8, s0
+    fmov    w8, s0                  // w8 = 0 exactly when lo is +0.0; kept until Lclean
     fmov    w9, s1
-    cbz     w8, Lexact              // lo is +0.0
     eor     w9, w9, #SIGN_BIT
     cbz     w9, Lexact              // hi is -0.0
+    cbnz    w8, Lmodes
+    cmp     x2, #ZERO_MIN_N
+    b.lo    Lexact                  // lo is +0.0 and the array is too short for that path
+Lmodes:
     mrs     x10, fpcr
     tst     w10, #FPCR_NOT_ROUNDING
     b.ne    Lexact                  // flush-to-zero, default-NaN or anything else unusual
     mrs     x11, fpsr
     mov     w16, #0                 // w16 = 1 when IOC has to be set again on return
     tbnz    w11, #IOC_BIT, Lstale
+Lclean:
+    cbz     w8, Lzero               // lo is +0.0: the path that watches for -0.0 elements
 Lfast:
     // x0, x1, x2, v2 and v3 are left as they are, for the exact path to start over.
     mov     x14, x0
@@ -135,7 +152,142 @@ Lstale:
     and     x9, x11, #~(1 << IOC_BIT)
     msr     fpsr, x9
     mov     w16, #1
-    b       Lfast
+    b       Lclean
+
+// ---- lo is +0.0 --------------------------------------------------------------
+// x14, x15 = input and output cursors, x8 = elements left, x12 = credit in
+// blocks, x7 = blocks done since the last -0.0 (or the start), x13 = blocks in
+// the current chunk, x10, x11 = where the chunk began, x17 = block counter,
+// v16-v19 = running minima of the element bit patterns.
+Lzero:
+    mov     x14, x0
+    mov     x15, x1
+    mov     x8, x2
+    mov     x12, #0
+    mov     x7, #0
+    mov     x13, #ZPROBE_BLOCKS     // ZERO_MIN_N guarantees this many blocks
+    b       Lzrun
+Lzchunk:
+    lsr     x9, x8, #4              // whole blocks left
+    cbz     x9, Lztail
+    lsr     x13, x7, #STAKE_SHIFT   // a fraction of the clean run so far ...
+    mov     x17, #ZMIN_BLOCKS
+    cmp     x13, x17
+    csel    x13, x17, x13, lo       // ... but at least ZMIN_BLOCKS
+    mov     x17, #ZMAX_BLOCKS
+    cmp     x13, x17
+    csel    x13, x17, x13, hi       // ... at most ZMAX_BLOCKS
+    cmp     x13, x9
+    csel    x13, x9, x13, hi        // ... and no more than there is
+Lzrun:
+    mov     x10, x14
+    mov     x11, x15
+    mov     x17, x13
+    movi.16b v16, #0
+    movi.16b v17, #0
+    movi.16b v18, #0
+    movi.16b v19, #0
+Lzblock:
+    ldnp    q4, q5, [x14]
+    ldnp    q6, q7, [x14, #32]
+    // Signed minimum of the bit patterns. -0.0 is 0x80000000, the smallest
+    // value there is, so it survives to the check.
+    // Four accumulators, so each waits for one smin per block and not four.
+    smin.4s v16, v16, v4
+    smin.4s v17, v17, v5
+    smin.4s v18, v18, v6
+    smin.4s v19, v19, v7
+    fmax.4s v4, v4, v2
+    fmax.4s v5, v5, v2
+    fmax.4s v6, v6, v2
+    fmax.4s v7, v7, v2
+    fmin.4s v4, v4, v3
+    fmin.4s v5, v5, v3
+    fmin.4s v6, v6, v3
+    fmin.4s v7, v7, v3
+    stp     q4, q5, [x15]
+    stp     q6, q7, [x15, #32]
+    add     x14, x14, #64
+    add     x15, x15, #64
+    subs    x17, x17, #1
+    b.ne    Lzblock
+    smin.4s v16, v16, v17
+    smin.4s v18, v18, v19
+    smin.4s v16, v16, v18
+    sminv.4s s16, v16
+    fmov    w9, s16
+    negs    w9, w9                  // overflows exactly when w9 is 0x80000000
+    b.vs    Lzstrike
+    add     x12, x12, x13           // a clean chunk earns its length
+    add     x7, x7, x13
+Lznext:
+    sub     x8, x8, x13, lsl #4
+    b       Lzchunk
+Lztail:
+    cbz     x8, Lfend
+    // 1 to 15 elements left: step back so that one more block, a chunk of its
+    // own, ends exactly at the end.
+    add     x14, x14, x8, lsl #2
+    add     x15, x15, x8, lsl #2
+    sub     x14, x14, #64
+    sub     x15, x15, #64
+    mov     x8, #16
+    mov     x13, #1
+    b       Lzrun
+
+Lzstrike:
+    // The chunk held a -0.0.
+    mrs     x9, fpsr
+    tbnz    w9, #IOC_BIT, Lexact    // a signalling NaN went through earlier: start over, exactly
+    sub     x12, x12, x13           // a strike costs three times the chunk ...
+    sub     x12, x12, x13, lsl #1
+    subs    x12, x12, #ZSTRIKE_FIXED // ... and a fixed amount
+    b.mi    Lzgiveup
+    mov     x7, #0
+    mov     x17, x13
+Lzfix:                              // the chunk again, by compare and select
+    ldp     q4, q5, [x10]
+    ldp     q6, q7, [x10, #32]
+    fcmgt.4s v16, v2, v4
+    fcmgt.4s v17, v2, v5
+    fcmgt.4s v18, v2, v6
+    fcmgt.4s v19, v2, v7
+    fcmgt.4s v20, v4, v3
+    fcmgt.4s v21, v5, v3
+    fcmgt.4s v22, v6, v3
+    fcmgt.4s v23, v7, v3
+    bit.16b v4, v3, v20
+    bit.16b v5, v3, v21
+    bit.16b v6, v3, v22
+    bit.16b v7, v3, v23
+    bit.16b v4, v2, v16
+    bit.16b v5, v2, v17
+    bit.16b v6, v2, v18
+    bit.16b v7, v2, v19
+    stp     q4, q5, [x11]
+    stp     q6, q7, [x11, #32]
+    add     x10, x10, #64
+    add     x11, x11, #64
+    subs    x17, x17, #1
+    b.ne    Lzfix
+    mrs     x9, fpsr
+    tbz     w9, #IOC_BIT, Lznext
+    // fcmgt raises IOC for a quiet NaN too, and the chunk held one. The flag
+    // can no longer single out a signalling NaN, so the rest is done exactly.
+    // IOC is set, which also covers a flag the caller had left set.
+    sub     x2, x8, x13, lsl #4
+    mov     x0, x14
+    mov     x1, x15
+    b       Lexact
+Lzgiveup:
+    // Out of credit: everything from the start of this chunk is done exactly.
+    mov     x0, x10
+    mov     x1, x11
+    mov     x2, x8
+    cbz     w16, Lexact
+    orr     x9, x9, #(1 << IOC_BIT) // x9 is FPSR as read in Lzstrike
+    msr     fpsr, x9
+    b       Lexact
 
 Lexact:
     subs    x8, x2, #16             // x8 = elements left after this block
