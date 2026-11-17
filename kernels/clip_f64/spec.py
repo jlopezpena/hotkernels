@@ -6,7 +6,10 @@ bound) and `naive.c` does not, so whatever calls the kernel must send such
 calls to NumPy.
 
 The judge checks the pairs of bounds in SCALAR_SETS as well as the default pair,
-and times the default pair and `zero_lo`.
+and times the default pair and `zero_lo`, each on the three kinds of data in
+DISTRIBUTIONS. Negative zeros are among them because a zero lower bound is the one
+case where NumPy's result depends on the sign of a zero element, and a kernel
+that is fast for such a bound has to do something about them.
 """
 import numpy as np
 
@@ -35,6 +38,38 @@ SCALAR_SETS = [
 ]
 
 
+# Share of elements that are -0.0 in the "sparse_negative_zeros" timing data.
+SPARSE_NEGATIVE_ZERO_SHARE = 0.001
+
+
+def _random(rng, n):
+    """Timing data: normally distributed values, none of them a zero."""
+    return {"x": rng.standard_normal(n).astype(np.float64)}
+
+
+def _sparse_negative_zeros(rng, n):
+    """Timing data: normally distributed values with an occasional -0.0."""
+    x = rng.standard_normal(n).astype(np.float64)
+    x[rng.random(n) < SPARSE_NEGATIVE_ZERO_SHARE] = -0.0
+    return {"x": x}
+
+
+def _rounded(rng, n):
+    """Timing data: normal values rounded to integers, as counts or labels are.
+
+    Rounding a value between -0.5 and 0 gives -0.0, so about a fifth of the
+    elements are negative zeros and another fifth positive zeros.
+    """
+    return {"x": np.round(rng.standard_normal(n)).astype(np.float64)}
+
+
+DISTRIBUTIONS = {
+    "random": _random,
+    "sparse_negative_zeros": _sparse_negative_zeros,
+    "rounded": _rounded,
+}
+
+
 def oracle(x, lo, hi):
     """x with every element below lo raised to lo and every element above hi lowered to hi."""
     return np.clip(x, lo, hi)
@@ -46,4 +81,5 @@ KERNEL = Kernel(
     args=[In("x", "f64"), Out("out", "f64"), Size("n"), Scalar("lo", "f64", LO), Scalar("hi", "f64", HI)],
     oracle=oracle,
     scalar_sets=SCALAR_SETS,
+    distributions=DISTRIBUTIONS,
 )
