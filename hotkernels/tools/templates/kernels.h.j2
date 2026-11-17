@@ -1,0 +1,15 @@
+// Generated at build time from kernels/*/spec.py. Do not edit.
+// Force-included when a naive.c is compiled as a shipped kernel, so a
+// signature that disagrees with its spec is a compile error.
+#ifndef HOTKERNELS_KERNELS_H
+#define HOTKERNELS_KERNELS_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+{% for prototype in prototypes %}
+{{ prototype }};
+{% endfor %}
+
+#endif

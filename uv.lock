@@ -6,6 +6,12 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[manifest]
+members = [
+    "hotkernels",
+    "hotkernels-judge",
+]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.6"
@@ -34,10 +40,27 @@ wheels = [
 ]
 
 [[package]]
+name = "hotkernels"
+version = "0.1.0"
+source = { directory = "hotkernels" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "numpy", specifier = ">=2.0" },
+]
+
+[[package]]
 name = "hotkernels-judge"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "hotkernels" },
     { name = "jinja2" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -46,6 +69,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "hotkernels", directory = "hotkernels" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.29.1" },
