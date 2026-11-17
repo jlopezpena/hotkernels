@@ -23,25 +23,22 @@
 // The accumulators hold minus the count. A lane changes by at most 2 per
 // group, and the counts are moved to a general register before a lane can
 // reach 65,536.
+//
+// Two per vector still leaves the four vector ports as the limit, while the
+// core can start eight instructions per cycle. So while the array fits in the
+// caches, each step of 32 elements sends only 28 of them through the vector
+// registers and tests the other four in general registers, which use no
+// vector port (see HYBRID32).
 
-// Steps of a main loop (at most 32 elements, one group into each accumulator)
+// Steps of a main loop (32 elements, one group into each accumulator)
 // between flushes. Each lane is then at most 2 * 8192 = 16,384 and the two
 // accumulators added together at most 32,768, which fits in 16 bits.
 .set BLOCK_STEPS, 8192
 // From this many elements (16 MB) the array is larger than the 12 MB L2 cache
-// and the loop prefetches (see Lhuge). Below it the prefetches only cost time.
+// and the main loop also prefetches. Below it the prefetches only cost time.
 .set HUGE_MIN_N, 2097152
 // How far ahead of the loads the prefetches reach, in bytes.
 .set PREFETCH_AHEAD, 262144
-// From this many elements, and below HUGE_MIN_N, the loop is the hybrid one
-// (see Lhybrid). Below it, the leftover elements a step of 18 leaves behind
-// cost more than the hybrid loop saves.
-.set HYBRID_MIN_N, 512
-// Elements per step of the hybrid loop: one group of sixteen in vector
-// registers and two in general registers.
-.set HYBRID_STEP, 18
-// The low 63 bits of a double: everything but the sign.
-.set MAGNITUDE_BITS, 0x7fffffffffffffff
 
 // v0-v7 = eight vectors (sixteen elements; absent ones must be zero),
 // v31 = the 63-bit mask.
@@ -80,13 +77,58 @@
 .endm
 
 // The same with `ldnp`, the load that hints the data will not be needed again
-// soon. Used from HYBRID_MIN_N elements: it costs nothing while the array fits
-// in the caches and is a few percent faster once it does not.
+// soon. Used from one block up: it costs nothing while the array fits in the
+// caches and is a few percent faster once it does not.
 .macro LOAD16_STREAM base, off
     ldnp    q0, q1, [\base, #\off]
     ldnp    q2, q3, [\base, #\off + 32]
     ldnp    q4, q5, [\base, #\off + 64]
     ldnp    q6, q7, [\base, #\off + 96]
+.endm
+
+// The low 63 bits of a double: everything but the sign.
+.set MAGNITUDE_BITS, 0x7fffffffffffffff
+
+// x\count += 1 if the double whose bits are in x\bits is not zero.
+.macro COUNT1 bits, count
+    tst     x\bits, #MAGNITUDE_BITS
+    cinc    x\count, x\count, ne
+.endm
+
+// One step of the loop for arrays that fit in the caches: counts the 32
+// elements at x0 and advances x0. Elements 0-15 go through COUNT16 into v16,
+// elements 16-27 (six vectors, the tree padded with the zero in v30) into
+// v17, and elements 28-31 are loaded into general registers and counted in
+// x8 and x11. The vector part is 29 instructions on the four vector ports
+// instead of 32, and the general-register part fits in the instruction slots
+// the vector part leaves unused. The order matters: with the general-register
+// instructions all at the end of the step it is slower than the plain loop.
+.macro HYBRID32
+    ldp     x9, x10, [x0, #224]
+    LOAD16  x0, 0
+    COUNT16 16
+    COUNT1  9, 8
+    COUNT1  10, 11
+    ldp     x12, x13, [x0, #240]
+    ldp     q0, q1, [x0, #128]
+    ldp     q2, q3, [x0, #160]
+    ldp     q4, q5, [x0, #192]
+    add     x0, x0, #256
+    cmtst   v0.2d, v0.2d, v31.2d
+    cmtst   v1.2d, v1.2d, v31.2d
+    cmtst   v2.2d, v2.2d, v31.2d
+    cmtst   v3.2d, v3.2d, v31.2d
+    cmtst   v4.2d, v4.2d, v31.2d
+    cmtst   v5.2d, v5.2d, v31.2d
+    uzp1    v0.4s, v0.4s, v1.4s
+    uzp1    v2.4s, v2.4s, v3.4s
+    uzp1    v4.4s, v4.4s, v5.4s
+    uzp1    v0.8h, v0.8h, v2.8h
+    uzp1    v4.8h, v4.8h, v30.8h
+    uzp1    v0.16b, v0.16b, v4.16b
+    sadalp  v17.8h, v0.16b
+    COUNT1  12, 8
+    COUNT1  13, 11
 .endm
 
 // \dst = minus the sum of the 16-bit lanes of v16 and v17, plus x6.
@@ -160,18 +202,19 @@ Lladder0:
 Lbig:
     movi    v16.2d, #0              // minus the count, 16-bit lanes
     movi    v17.2d, #0
-    cmp     x1, #HYBRID_MIN_N
-    b.hs    Lhybridmin
-    // 32..511 elements: two groups per step. Too few for a lane to overflow.
+    cmp     x1, #(32 * BLOCK_STEPS)
+    b.hs    Lblocks
+    // Fewer steps than one block: no lane can overflow, and the array fits
+    // in the caches.
+    movi    v30.2d, #0
+    mov     x8, #0                  // counts of the elements tested in general registers
+    mov     x11, #0
     lsr     x5, x1, #5              // steps
 Lstep:
-    LOAD16  x0, 0
-    COUNT16 16
-    LOAD16  x0, 128
-    add     x0, x0, #256
-    COUNT16 17
+    HYBRID32
     subs    x5, x5, #1
     b.ne    Lstep
+    add     x6, x8, x11
 Lstepsdone:
     tst     x1, #31
     b.ne    Lbigtail
@@ -181,61 +224,36 @@ Lbigtail:
     REDUCE  x6
     b       Ltail
 
-    // ---- HYBRID_MIN_N elements or more.
-Lhybridmin:
-    cmp     x1, #HUGE_MIN_N
-    b.hs    Lhuge
-
-    // Hybrid loop, for arrays that fit in the caches. The vector loop is
-    // limited by the four vector ports (sixteen instructions per group, four
-    // cycles) while the core can start eight instructions per cycle, and a
-    // group with its loads and loop control uses only 26 of those 32. The
-    // rest is spent on two more elements per step, loaded into general
-    // registers and tested there, which use no vector port: 18 elements in
-    // the time of 16.
-Lhybrid:
-    mov     x7, #HYBRID_STEP
-    udiv    x4, x1, x7              // steps left
-    msub    x2, x4, x7, x1          // elements left after the last step, 0..17
-    mov     x8, #0                  // count of the elements tested in general registers
-Lhblock:
-    mov     x5, #BLOCK_STEPS
-    cmp     x4, x5
-    csel    x5, x4, x5, lo          // steps in this block
-    sub     x4, x4, x5
-Lhstep:
-    ldp     x9, x10, [x0, #128]
-    LOAD16_STREAM x0, 0
-    add     x0, x0, #(8 * HYBRID_STEP)
-    COUNT16 16
-    tst     x9, #MAGNITUDE_BITS
-    cinc    x8, x8, ne
-    tst     x10, #MAGNITUDE_BITS
-    cinc    x8, x8, ne
-    subs    x5, x5, #1
-    b.ne    Lhstep
-    REDUCE  x6                      // v17 is zero here
-    cbnz    x4, Lhflush
-    add     x6, x6, x8
-    mov     x1, x2                  // Ltail reads the count from the low bits of x1
-    b       Ltail
-Lhflush:
-    movi    v16.2d, #0
-    b       Lhblock
-
-    // ---- HUGE_MIN_N elements or more: the array does not fit in the L2
-    //      cache. Two groups per step, and every step also asks for two of
-    //      the four cache lines it will read PREFETCH_AHEAD bytes later (the
-    //      hardware prefetcher brings their neighbours). Near the end of the
-    //      array these addresses lie beyond it; a prefetch never faults and
-    //      reads nothing the program can see.
-Lhuge:
+    // ---- One block or more: the counts are flushed after every block.
+Lblocks:
     lsr     x4, x1, #5              // steps left
-Lhugeblock:
+Lblock:
     mov     x5, #BLOCK_STEPS
     cmp     x4, x5
     csel    x5, x4, x5, lo          // steps in this block
     sub     x4, x4, x5
+    cmp     x1, #HUGE_MIN_N
+    b.hs    Lhugestep
+Lblockstep:
+    LOAD16_STREAM x0, 0
+    COUNT16 16
+    LOAD16_STREAM x0, 128
+    add     x0, x0, #256
+    COUNT16 17
+    subs    x5, x5, #1
+    b.ne    Lblockstep
+Lblockdone:
+    cbz     x4, Lstepsdone
+    REDUCE  x6
+    movi    v16.2d, #0
+    movi    v17.2d, #0
+    b       Lblock
+
+    // The same loop for arrays that do not fit in the L2 cache: every step
+    // also asks for two of the four cache lines it will read PREFETCH_AHEAD
+    // bytes later (the hardware prefetcher brings their neighbours). Near the
+    // end of the array these addresses lie beyond it; a prefetch never
+    // faults and reads nothing the program can see.
 Lhugestep:
     add     x7, x0, #PREFETCH_AHEAD
     prfm    pldl2keep, [x7]
@@ -247,8 +265,4 @@ Lhugestep:
     COUNT16 17
     subs    x5, x5, #1
     b.ne    Lhugestep
-    cbz     x4, Lstepsdone
-    REDUCE  x6
-    movi    v16.2d, #0
-    movi    v17.2d, #0
-    b       Lhugeblock
+    b       Lblockdone
