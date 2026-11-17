@@ -17,9 +17,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # The one file that holds the package's version. meson-python reads it from the
 # `project()` call, and `hotkernels/pyproject.toml` declares the version dynamic.
 MESON_BUILD = ROOT / "hotkernels" / "meson.build"
-# The version argument of that `project()` call: `version: '0.1.0'`. Group 1 is
-# the text before the number, group 2 the number.
-VERSION_PATTERN = re.compile(r"(project\('hotkernels',\s*'c',\s*version:\s*')([^']+)'")
+# The version argument of that `project()` call: `version: '0.1.0'`, with or
+# without a language before it. Group 1 is the text before the number, group 2
+# the number.
+VERSION_PATTERN = re.compile(r"(project\('hotkernels',(?:\s*'c',)?\s*version:\s*')([^']+)'")
 
 # Configuration of towncrier, which also lists the note types.
 PYPROJECT = ROOT / "pyproject.toml"
