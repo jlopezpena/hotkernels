@@ -3,7 +3,7 @@
 <div class="hero-grid">
 <div>
 <h1>The slow parts of NumPy, <em>rewritten underneath it</em>.</h1>
-<p class="lede">hotkernels replaces the loops inside 13 NumPy operations with hand-written ARM64 kernels. Your code does not change. Every kernel is checked against NumPy's own output, and a call no kernel takes costs about a nanosecond more than before.</p>
+<p class="lede">hotkernels replaces the loops inside 15 NumPy operations with hand-written ARM64 kernels. Your code does not change. Every kernel is checked against NumPy's own output, and a call no kernel takes costs about a nanosecond more than before.</p>
 <div class="cta">
 <a class="btn primary" href="[[ root ]]start/">Get started</a>
 <a class="btn" href="[[ root ]]report/">Read how it works</a>
@@ -22,7 +22,7 @@ np.argmax(x)       <span class="c"># 7x faster</span></code></pre>
 </section>
 
 <div class="stats">
-<div><b>22</b><span>kernels for 15 NumPy operations, 20 of them bound to NumPy today</span></div>
+<div><b>22</b><span>kernels for 15 NumPy operations, all of them bound to NumPy</span></div>
 <div><b>5x+</b><span>faster than NumPy for 17 of the 22, at a million elements</span></div>
 <div><b>20 / 22</b><span>return NumPy's result bit for bit; the other two are opt-in</span></div>
 <div><b>~1 ns</b><span>added to a call that no kernel takes</span></div>

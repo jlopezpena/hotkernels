@@ -932,6 +932,254 @@ def isin_cases() -> Iterator[Case]:
                            expectation(kernel if dtype == "i64" else None, spelling, variant, n))
 
 
+# ---------------------------------------------------- searchsorted and interp
+
+# Lengths of the sorted array, and numbers of needles, either side of every
+# boundary at which the search kernels change path: 16, 64 and 128 needles at
+# once, and one much longer array.
+TABLE_SIZES = (0, 1, 2, 15, 16, 17, 63, 64, 65, 1000, 4097)
+NEEDLE_COUNTS = (0, 1, 2, 15, 16, 17, 63, 64, 65, 127, 128, 129, 1000)
+# Length from which `searchsorted_f64` takes its path for arrays beyond the
+# cache, and a length above it.
+LARGE_TABLE_N = 1_048_576
+BEYOND_LARGE_TABLE_N = LARGE_TABLE_N + 3
+# Value classes for the sorted array of a search: ordinary values, repeated
+# values, infinities at both ends, and NaNs, which NumPy sorts last.
+TABLE_CLASSES = ("random", "ties", "inf_mix", "nan_some")
+# Value classes for the needles.
+NEEDLE_CLASSES = ("random", "ties", "inf_mix", "nan_some", "nan_all", "extremes", "zeros")
+# Value classes for the sample points of interp. A NaN is not among them:
+# NumPy's answer then depends on which elements its search probes.
+POINT_CLASSES = ("random", "ties", "inf_mix", "equal", "zeros")
+# Value classes for the values at the sample points.
+FP_CLASSES = ("random", "nan_some", "inf_mix", "extremes", "equal")
+# Mirrors INTERP_MAX_POINTS_PER_QUERY in the binding: with more sample points
+# than this per query, np.interp is left to NumPy.
+INTERP_MAX_POINTS_PER_QUERY = 64
+
+
+def _table(n: int, cls: str = judge_cases.RANDOM) -> np.ndarray:
+    """Build a sorted float64 array of `n` elements from a value class, NaNs last."""
+    return np.sort(values("f64", n, cls, arg="a"))
+
+
+def _hits(table: np.ndarray, count: int) -> np.ndarray:
+    """Build `count` needles that are elements of `table`, so every search is an exact hit.
+
+    Args:
+        table: The array the needles are drawn from.
+        count: Number of needles.
+
+    Returns:
+        A float64 array of `count` elements; zeros when the table is empty.
+    """
+    if len(table) == 0:
+        return np.zeros(count)
+    picks = np.random.default_rng([SEED, len(table), count]).integers(0, len(table), count)
+    return table[picks].copy()
+
+
+def _search_arguments(n: int, table_class: str, count: int, needle_class: str) -> tuple:
+    """Build the sorted array and the needles of a searchsorted case.
+
+    Args:
+        n: Length of the sorted array.
+        table_class: Value class of the sorted array.
+        count: Number of needles.
+        needle_class: Value class of the needles, or "hits" for needles taken
+            from the array itself.
+
+    Returns:
+        (sorted array, needles).
+    """
+    table = _table(n, table_class)
+    if needle_class == "hits":
+        return table, _hits(table, count)
+    return table, values("f64", count, needle_class, arg="v")
+
+
+def _search_layout_expectation(kernel: str, variant: Variant, n: int, any_shape: bool) -> str | None:
+    """Say whether a search kernel takes a call in which one array is a variant.
+
+    Args:
+        kernel: The kernel the call would reach.
+        variant: How the array in question is laid out.
+        n: Its element count.
+        any_shape: Whether the kernel accepts the array with two or more
+            dimensions: true for needles and queries, false for the sorted
+            array and the sample points.
+
+    Returns:
+        The kernel name, None, or ANY.
+    """
+    if not variant.predictable:
+        return ANY
+    if variant.plain and (variant.dims == 1 or (variant.dims > 1 and any_shape)):
+        return kernel
+    # NumPy flags every empty array as contiguous, whatever its strides say.
+    return ANY if n == 0 else None
+
+
+def searchsorted_cases() -> Iterator[Case]:
+    """Yield the cases of `searchsorted` on float64."""
+    kernel = "searchsorted_f64"
+    search = np.searchsorted
+    for n, count in itertools.product(TABLE_SIZES, NEEDLE_COUNTS):
+        # Every class of needle on an ordinary array, then every class of array.
+        pairs = [("random", needle_class) for needle_class in (*NEEDLE_CLASSES, "hits")]
+        pairs += [(table_class, needle_class) for table_class in TABLE_CLASSES[1:] for needle_class in ("random", "hits")]
+        for table_class, needle_class in pairs:
+            yield Case("searchsorted", f"np.searchsorted(a, v) a={table_class} n={n} v={needle_class} needles={count}",
+                       partial(_search_arguments, n, table_class, count, needle_class), search, kernel)
+    for n in (LARGE_TABLE_N, BEYOND_LARGE_TABLE_N):
+        for count in (1, 64, 127, 128, 129, 1000):
+            yield Case("searchsorted", f"np.searchsorted(a, v) a=random n={n} v=nan_some needles={count}",
+                       partial(_search_arguments, n, "random", count, "nan_some"), search, kernel)
+
+    n, count = ORDINARY_N, 100
+    arguments = partial(_search_arguments, n, "random", count, "random")
+    spellings = (
+        ("a.searchsorted(v)", lambda a, v: a.searchsorted(v), kernel),
+        ("np.searchsorted(a, v, 'left')", lambda a, v: np.searchsorted(a, v, "left"), kernel),
+        ("np.searchsorted(a, v, side='left', sorter=None)", lambda a, v: np.searchsorted(a, v, side="left", sorter=None), kernel),
+        ("a.searchsorted(v=v)", lambda a, v: a.searchsorted(v=v), kernel),
+        ("np.searchsorted(a, v, side='right')", lambda a, v: np.searchsorted(a, v, side="right"), None),
+        ("np.searchsorted(a, v, sorter=np.arange(len(a)))", lambda a, v: np.searchsorted(a, v, sorter=np.arange(len(a))), None),
+        ("np.digitize(v, a)", lambda a, v: np.digitize(v, a), None),
+        ("np.digitize(v, a, right=True)", lambda a, v: np.digitize(v, a, right=True), kernel),
+        ("np.searchsorted(a, 0.25)", lambda a, v: np.searchsorted(a, 0.25), kernel),
+        ("np.searchsorted(a, float('nan'))", lambda a, v: np.searchsorted(a, float("nan")), kernel),
+        ("np.searchsorted(a, 1)", lambda a, v: np.searchsorted(a, 1), kernel),
+        ("np.searchsorted(a, 2**60 + 1)", lambda a, v: np.searchsorted(a, 2**60 + 1), None),
+        ("np.searchsorted(a, True)", lambda a, v: np.searchsorted(a, True), None),
+        ("np.searchsorted(a, np.float64(0.25))", lambda a, v: np.searchsorted(a, np.float64(0.25)), None),
+        ("np.searchsorted(a, np.array(0.25))", lambda a, v: np.searchsorted(a, np.array(0.25)), None),
+        ("np.searchsorted(a, v.tolist())", lambda a, v: np.searchsorted(a, v.tolist()), None),
+        ("np.searchsorted(a, v.astype(np.float32))", lambda a, v: np.searchsorted(a, v.astype(np.float32)), None),
+        ("np.searchsorted(a, v.astype(np.int64))", lambda a, v: np.searchsorted(a, v.astype(np.int64)), None),
+        ("np.searchsorted(a.astype(np.float32), v)", lambda a, v: np.searchsorted(a.astype(np.float32), v), None),
+        ("np.searchsorted(a.astype(np.int64), v)", lambda a, v: np.searchsorted(a.astype(np.int64), v), None),
+        ("np.searchsorted(a, a)", lambda a, v: np.searchsorted(a, a), kernel),
+        ("np.searchsorted(a, v, side='up')", lambda a, v: np.searchsorted(a, v, side="up"), None),
+    )
+    for text, call, expect in spellings:
+        yield Case("searchsorted", f"{text} n={n} needles={count}", arguments, call, expect)
+
+    for size in (0, *LAYOUT_SIZES):
+        for variant in variants_for("f64", size):
+            # A list has no method of its own: NumPy converts it and calls the
+            # method of the array it made.
+            expect = ANY if variant.name == "list" else _search_layout_expectation(kernel, variant, size, any_shape=False)
+            yield Case("searchsorted", f"np.searchsorted(a, v) n={size} needles={count} a layout={variant.name}",
+                       lambda size=size, variant=variant: (variant.build(_table(size)), values("f64", count, arg="v")),
+                       search, expect)
+            expect = None if variant.name == "list" else _search_layout_expectation(kernel, variant, size, any_shape=True)
+            yield Case("searchsorted", f"np.searchsorted(a, v) n={n} needles={size} v layout={variant.name}",
+                       lambda size=size, variant=variant: (_table(n), variant.build(values("f64", size, arg="v"))),
+                       search, expect)
+
+
+def _interp_arguments(n: int, count: int, x_class: str, xp_class: str, fp_class: str) -> tuple:
+    """Build the queries, sample points and values of an interp case.
+
+    Args:
+        n: Number of sample points.
+        count: Number of queries.
+        x_class: Value class of the queries, or "hits" for queries that are
+            sample points.
+        xp_class: Value class of the sample points, which are sorted.
+        fp_class: Value class of the values at the sample points.
+
+    Returns:
+        (x, xp, fp).
+    """
+    xp = np.sort(values("f64", n, xp_class, arg="xp"))
+    x = _hits(xp, count) if x_class == "hits" else values("f64", count, x_class, arg="x")
+    return x, xp, values("f64", n, fp_class, arg="fp")
+
+
+def _interp_with_nan(n: int, count: int, position: int) -> tuple:
+    """Build an interp call whose sample points hold a NaN at `position`."""
+    x, xp, fp = _interp_arguments(n, count, "random", "random", "random")
+    xp[position] = np.nan
+    return x, xp, fp
+
+
+def _interp_takes(n: int, count: int) -> bool:
+    """Say whether the binding gives an interp call to the kernel by its two lengths.
+
+    Args:
+        n: Number of sample points.
+        count: Number of queries.
+
+    Returns:
+        True when there are few enough sample points per query for the pass
+        over them to be worth making.
+    """
+    return n // INTERP_MAX_POINTS_PER_QUERY <= count
+
+
+def interp_cases() -> Iterator[Case]:
+    """Yield the cases of `interp` on float64."""
+    kernel = "interp_f64"
+    for n, count in itertools.product(TABLE_SIZES[1:], NEEDLE_COUNTS):
+        expect = kernel if _interp_takes(n, count) else None
+        triples = [(x_class, "random", "random") for x_class in (*NEEDLE_CLASSES, "hits")]
+        triples += [(x_class, xp_class, "random") for xp_class in POINT_CLASSES[1:] for x_class in ("random", "hits")]
+        triples += [("random", "random", fp_class) for fp_class in FP_CLASSES[1:]]
+        triples += [("hits", "ties", "inf_mix"), ("inf_mix", "inf_mix", "inf_mix"), ("nan_some", "ties", "nan_some")]
+        for x_class, xp_class, fp_class in triples:
+            yield Case("interp", f"np.interp(x, xp, fp) n={n} queries={count} x={x_class} xp={xp_class} fp={fp_class}",
+                       partial(_interp_arguments, n, count, x_class, xp_class, fp_class), np.interp, expect)
+    for n, count in ((1, 100), (2, 100), (ORDINARY_N, 100), (ORDINARY_N, ORDINARY_N)):
+        for position in sorted({0, n // 2, n - 1}):
+            yield Case("interp", f"np.interp(x, xp, fp) n={n} queries={count} xp has a NaN at {position}",
+                       partial(_interp_with_nan, n, count, position), np.interp, None)
+
+    n, count = ORDINARY_N, 100
+    arguments = partial(_interp_arguments, n, count, "random", "random", "random")
+    spellings = (
+        ("np.interp(x, xp, fp, None, None, None)", lambda x, xp, fp: np.interp(x, xp, fp, None, None, None), kernel),
+        ("np.interp(x, xp, fp, left=None, right=None, period=None)", lambda x, xp, fp: np.interp(x, xp, fp, left=None, right=None, period=None), kernel),
+        ("np.interp(x=x, xp=xp, fp=fp)", lambda x, xp, fp: np.interp(x=x, xp=xp, fp=fp), kernel),
+        ("np.interp(x, xp, fp, left=0.0)", lambda x, xp, fp: np.interp(x, xp, fp, left=0.0), None),
+        ("np.interp(x, xp, fp, right=0.0)", lambda x, xp, fp: np.interp(x, xp, fp, right=0.0), None),
+        ("np.interp(x, xp, fp, period=1.0)", lambda x, xp, fp: np.interp(x, xp, fp, period=1.0), None),
+        ("np.interp(0.25, xp, fp)", lambda x, xp, fp: np.interp(0.25, xp, fp), None),
+        ("np.interp(x.tolist(), xp, fp)", lambda x, xp, fp: np.interp(x.tolist(), xp, fp), None),
+        ("np.interp(x[:5], xp, fp)", lambda x, xp, fp: np.interp(x[:5], xp, fp), None),
+        ("np.interp(x[:0], xp, fp)", lambda x, xp, fp: np.interp(x[:0], xp, fp), None),
+        ("np.interp(x, xp, fp[:-1])", lambda x, xp, fp: np.interp(x, xp, fp[:-1]), None),
+        ("np.interp(x, xp[:0], fp[:0])", lambda x, xp, fp: np.interp(x, xp[:0], fp[:0]), None),
+        ("np.interp(x, xp, fp.astype(np.float32))", lambda x, xp, fp: np.interp(x, xp, fp.astype(np.float32)), None),
+        ("np.interp(x, xp, fp.astype(np.complex128))", lambda x, xp, fp: np.interp(x, xp, fp.astype(np.complex128)), None),
+        ("np.interp(x, xp.astype(np.float32), fp)", lambda x, xp, fp: np.interp(x, xp.astype(np.float32), fp), None),
+        ("np.interp(x.astype(np.float32), xp, fp)", lambda x, xp, fp: np.interp(x.astype(np.float32), xp, fp), None),
+        ("np.interp(x.astype(np.int64), xp, fp)", lambda x, xp, fp: np.interp(x.astype(np.int64), xp, fp), None),
+        ("np.interp(x, xp, xp)", lambda x, xp, fp: np.interp(x, xp, xp), kernel),
+        ("np.interp(xp, xp, fp)", lambda x, xp, fp: np.interp(xp, xp, fp), kernel),
+    )
+    for text, call, expect in spellings:
+        yield Case("interp", f"{text} n={n} queries={count}", arguments, call, expect)
+
+    for size in (0, *LAYOUT_SIZES):
+        for variant in variants_for("f64", size):
+            expect = None if variant.name == "list" else _search_layout_expectation(kernel, variant, size, any_shape=True)
+            yield Case("interp", f"np.interp(x, xp, fp) n={n} queries={size} x layout={variant.name}",
+                       lambda size=size, variant=variant: (variant.build(values("f64", size, arg="x")), _table(n), values("f64", n, arg="fp")),
+                       np.interp, expect if _interp_takes(n, size) else None)
+            if size == 0:
+                continue
+            for which in ("xp", "fp"):
+                expect = None if variant.name == "list" else _search_layout_expectation(kernel, variant, size, any_shape=False)
+                yield Case("interp", f"np.interp(x, xp, fp) n={size} queries={size} {which} layout={variant.name}",
+                           lambda size=size, variant=variant, which=which: (
+                               values("f64", size, arg="x"),
+                               variant.build(_table(size)) if which == "xp" else _table(size),
+                               variant.build(values("f64", size, arg="fp")) if which == "fp" else values("f64", size, arg="fp")),
+                           np.interp, expect)
+
+
 # Every operation that has a hook, with its exact cases.
 OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "argmax": partial(argext_cases, "argmax"),
@@ -947,6 +1195,8 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "histogram": histogram_cases,
     "bincount": bincount_cases,
     "isin": isin_cases,
+    "searchsorted": searchsorted_cases,
+    "interp": interp_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the

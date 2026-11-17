@@ -176,6 +176,6 @@ These are the only kernels whose advantage *grows* at the largest sizes, because
 
 **What limits it.** In cache, the instruction count is not the limit; *which elements get probed* is. A variant in which every search probed the same elements ran 1.25x to 1.33x faster with identical instructions. Beyond the cache, the limit is the number of cache and address-translation misses, which the kernel overlaps but cannot reduce.
 
-::: warning Not installed yet
-Both kernels take a single length for the sorted array and the needles, which was enough to develop and judge them and is not enough to serve a real call, where the two lengths differ. They are complete, checked and timed, and they are not bound to NumPy until they take a second size. `interp_f64` is also only checked by the judge up to 65,537 elements, because NumPy's `interp` is too slow to act as an oracle beyond that; its large-array path was compared with the reference separately.
+::: note Two lengths
+The figures above were taken with as many needles as elements, which is how these kernels were first written: one length for the sorted array and the needles. That was enough to develop and judge them and not enough to serve a real call, where the two lengths differ, so for a while they were complete and not installed. They now take the two lengths separately. The length of the sorted array chooses the path; a call with fewer needles than a path handles at once takes a narrower one, down to one needle at a time. `interp_f64` is only checked by the judge up to 65,537 sample points, because NumPy's `interp` is too slow to act as an oracle beyond that; its large-array path was compared with the reference separately.
 :::

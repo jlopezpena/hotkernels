@@ -18,13 +18,14 @@ static const char *const HK_KERNEL_NAMES[HK_KERNEL_COUNT] = {
     "cumsum_i64", "cumsum_f32", "cumsum_f64",
     "cast_u8_f32", "sum_u8", "count_nonzero_i64", "count_nonzero_f64",
     "histogram_f64", "bincount_u8", "isin_i64",
+    "searchsorted_f64", "interp_f64",
 };
 
 // Operation names, in the order of hk_operation.
 static const char *const HK_OPERATION_NAMES[HK_OPERATION_COUNT] = {
     "argmax", "argmin", "clip", "compress", "maskfill",
     "nonzero", "cumsum", "astype", "sum", "count_nonzero",
-    "histogram", "bincount", "isin",
+    "histogram", "bincount", "isin", "searchsorted", "interp",
 };
 
 // Every table of hooks, in the order hooks are listed to Python: deepest first.

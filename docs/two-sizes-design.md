@@ -1,6 +1,8 @@
 # Two sizes: `np.searchsorted` and `np.interp` served by their kernels
 
-This is a proposal. It closes [issue 16](https://github.com/sofeikov/hotkernels/issues/16): `searchsorted_f64` and `interp_f64` exist, pass the judge and are faster than NumPy, and no call ever reaches them. It follows from "What the kernels need first" in [delivery-design.md](delivery-design.md#what-the-kernels-need-first).
+This began as a proposal and is now implemented. Where the building departed from it, [What changed in the building](#what-changed-in-the-building) says so, and [Status](#status) holds the result against the exit criterion. The rest of the text stands as proposed.
+
+It closes [issue 16](https://github.com/sofeikov/hotkernels/issues/16): `searchsorted_f64` and `interp_f64` exist, pass the judge and are faster than NumPy, and no call ever reaches them. It follows from "What the kernels need first" in [delivery-design.md](delivery-design.md#what-the-kernels-need-first).
 
 The kernels and every figure here are ARM64's, measured on an Apple M1 Pro.
 
@@ -12,6 +14,53 @@ The kernels and every figure here are ARM64's, measured on an Apple M1 Pro.
 - **Two hooks.** `ndarray.searchsorted` as a method hook, which `np.searchsorted` and `np.digitize` reach, and `np.interp` as a function hook.
 - **One thing the binding must screen for.** A NaN among `np.interp`'s sample points makes the kernel read before its buffer ([issue 9](https://github.com/sofeikov/hotkernels/issues/9)). The binding reads `xp` once before the kernel sees it.
 
+## Status
+
+Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with NumPy 2.5.5:
+
+| Criterion | Result |
+|---|---|
+| `judge selftest` passes, including the new fixture | Met. `rank_u8` passes, and both of its broken variants are caught for the reason they were built to trigger |
+| `judge check` passes for both kernels with the new specs | Met, with `--unlocked`: `searchsorted_f64` 141,872 cases, `interp_f64` 155,063. All 22 kernels pass under the changed judge |
+| `delivery check` passes with the new cases | Met. 2,132 cases for `searchsorted` and 3,144 for `interp`; 75,307 in all, none failing |
+| NumPy's test suite gives the same outcome | STATUS_NUMPY_TESTS |
+| `report()` shows both kernels installed and counting | Met: 20 of 22 kernels, 22 with `inexact=True` |
+| From Python, at a million needles against a million elements, both are faster than NumPy by a factor in the judge's range | Met: `np.searchsorted` 7.76x, `np.interp` 30.5x. The judge's earlier figures in that shape were 8.84x and 22.7x |
+
+From Python, on a machine in use (load average 3.9), so rough:
+
+| Statement | Sorted array | Needles | NumPy | hotkernels | Faster by |
+|---|---|---|---|---|---|
+| `np.searchsorted(a, v)` | 16 | 16 | 569 ns | 418 ns | 1.36x |
+| `np.searchsorted(a, v)` | 4,096 | 4,096 | 255 µs | 13.4 µs | 19.1x |
+| `np.searchsorted(a, v)` | 1,048,576 | 1,048,576 | 148 ms | 19.1 ms | 7.76x |
+| `np.searchsorted(a, v)` | 1,000 | 4,096 | 207 µs | 8.79 µs | 23.5x |
+| `np.searchsorted(a, v)` | 1,000 | 1,048,576 | 60.7 ms | 2.24 ms | 27.2x |
+| `np.interp(x, xp, fp)` | 16 | 16 | 592 ns | 109 ns | 5.44x |
+| `np.interp(x, xp, fp)` | 4,096 | 4,096 | 256 µs | 13.3 µs | 19.2x |
+| `np.interp(x, xp, fp)` | 1,048,576 | 1,048,576 | 571 ms | 18.7 ms | 30.5x |
+| `np.interp(x, xp, fp)` | 1,000 | 4,096 | 216 µs | 11.2 µs | 19.3x |
+| `np.interp(x, xp, fp)` | 1,000 | 1,048,576 | 55.6 ms | 2.91 ms | 19.2x |
+
+Not done, and owed: every judge run here was made with `--unlocked`, because the work changes locked files, and on a machine in use. The published figures for these two kernels have not been replaced. A locked run on a quiet machine, a recorded `delivery time`, and the README's chart follow once this is in `main` ([issue ISSUE_RERUN](https://github.com/sofeikov/hotkernels/issues/ISSUE_RERUN)).
+
+## What changed in the building
+
+| Proposed | Built | Why |
+|---|---|---|
+| The fixture's broken variants read the input using `n`, and write `n` outputs | One reads a byte past the scalar-sized input; one handles the default count whatever the scalar says | A variant that confuses the two lengths fails on the first case, where `n` is 0, as a wrong result whichever way the judge sized the buffer. These two are caught only if the buffer is placed by the scalar's value and the other sets are run |
+| `np.interp` takes the kernel for fewer than 2^32 sample points | No upper limit | The kernel already sends a longer table down its one-at-a-time path |
+| The needle of `searchsorted` may be a Python float | Or a Python int that a double holds exactly | `np.searchsorted(a, 3)` is as common, and NumPy converts the int the same way |
+| Nothing about what a call costs when it is passed on | Keyword names are compared in place instead of through a library call | `side='right'` and `left=` reach the hooks' argument matching before being passed on, which cost about 35 ns per call. It is now 10 to 25 ns, on calls of 300 ns and up. A call rejected by its element type still costs under 2 ns |
+| Check time not discussed | `judge check searchsorted_f64` takes 22 seconds, down from about two minutes, with three times the cases | Reusing prepared inputs, which the proposal introduced to keep the scalar sets affordable, removed most of what the check cost before |
+
+| Left for later | Issue |
+|---|---|
+| A locked re-run of both kernels on a quiet machine, a recorded `delivery time`, and the README's chart | [ISSUE_RERUN](https://github.com/sofeikov/hotkernels/issues/ISSUE_RERUN) |
+| A path for fewer than 64 needles against an array of 64 or more, which go one at a time | [ISSUE_SHORT](https://github.com/sofeikov/hotkernels/issues/ISSUE_SHORT) |
+| A judge check that the search kernels stay inside their buffers on unsorted input | [ISSUE_UNSORTED](https://github.com/sofeikov/hotkernels/issues/ISSUE_UNSORTED) |
+| `side='right'` for `np.searchsorted`, which `np.digitize` asks for by default | [ISSUE_RIGHT](https://github.com/sofeikov/hotkernels/issues/ISSUE_RIGHT) |
+
 ## What is wrong today
 
 ```c
@@ -19,7 +68,7 @@ void searchsorted_f64(const double *a, const double *v, int64_t *out, size_t n);
 void interp_f64(const double *x, const double *xp, const double *fp, double *out, size_t n);
 ```
 
-`n` is the length of `a` and of `v`; of `xp`, `fp` and of `x`. `np.searchsorted(a, v)` with a table of 1,000 values and a million needles cannot be expressed. `hotkernels.report()` lists both kernels as "not bound".
+(This section and the ones after it describe the state before the work, as proposed.) `n` is the length of `a` and of `v`; of `xp`, `fp` and of `x`. `np.searchsorted(a, v)` with a table of 1,000 values and a million needles cannot be expressed. `hotkernels.report()` lists both kernels as "not bound".
 
 The cause is in the judge. A spec has one `Size`, and `judge/spec.py` rejects an input whose length is anything else ("the length of input ... cannot be a scalar"). The kernels were written to the only shape the judge could check.
 
@@ -148,7 +197,7 @@ A method hook on `ndarray.searchsorted`, which uses the fast calling convention 
 The kernel takes `a.searchsorted(v, side, sorter)` when:
 
 - `a` is a plain one-dimensional contiguous float64 array;
-- `v` is a plain contiguous float64 array of any shape, or a Python float. The result has `v`'s shape; for a Python float it is the `np.intp` scalar NumPy returns;
+- `v` is a plain contiguous float64 array of any shape, or a Python float or int. The result has `v`'s shape; for a Python float it is the `np.intp` scalar NumPy returns;
 - `side` is absent or `'left'`, and `sorter` is absent or `None`.
 
 `np.digitize(x, bins)` asks for `side='right'` by default and stays with NumPy. `np.digitize(x, bins, right=True)` on increasing bins asks for `'left'` and is served.
@@ -157,7 +206,7 @@ The kernel takes `a.searchsorted(v, side, sorter)` when:
 
 A function hook on `np.interp`. The kernel takes `np.interp(x, xp, fp)` when:
 
-- `x` is a plain contiguous float64 array of any shape; `xp` and `fp` are plain one-dimensional contiguous float64 arrays of the same length, at least 1 and below 2^32;
+- `x` is a plain contiguous float64 array of any shape; `xp` and `fp` are plain one-dimensional contiguous float64 arrays of the same length, at least 1;
 - `left`, `right` and `period` are absent or `None`;
 - `xp` holds no NaN (below).
 
@@ -168,7 +217,7 @@ A function hook on `np.interp`. The kernel takes `np.interp(x, xp, fp)` when:
 | A NaN in `xp` ([issue 9](https://github.com/sofeikov/hotkernels/issues/9), item 1) | At `xp[0]` it reads `xp[-1]` and `fp[-1]`. Elsewhere it returns something other than NumPy, whose answer then depends on which elements its own search happens to probe | Reads `xp` once. Any NaN sends the call to NumPy |
 | `xp` not increasing, or `a` not sorted | Stays inside the buffers: every probe index is bounded by the length, whatever the data. The result is as meaningless as NumPy's and is not the same meaningless result | Nothing. NumPy documents both functions for sorted input only and does not check; a check here would cost a pass over the table on every call |
 
-**The cost of reading `xp`.** About 0.13 ns per sample point, measured: 130 µs for a million. NumPy's `interp` takes 150 to 500 ns per query on a table that size. So the pass is noise when there are many queries and the whole cost when there are few. The kernel is taken only when `len(xp) <= 64 * len(x)`; with fewer queries than that the call goes to NumPy, which is not slow there in absolute terms. The factor is confirmed or changed by `uv run delivery time` before the hook is merged.
+**The cost of reading `xp`.** About 0.13 ns per sample point, measured: 130 µs for a million. NumPy's `interp` takes 150 to 500 ns per query on a table that size. So the pass is noise when there are many queries and the whole cost when there are few. The kernel is taken only when `len(xp) <= 64 * len(x)`; with fewer queries than that the call goes to NumPy, which is not slow there in absolute terms. Confirmed: with 1,000 sample points and 16 queries, right at the limit, the call is 3.8x faster than NumPy from Python.
 
 `searchsorted` needs no pass: a NaN in `a` is ordered last by NumPy and by the kernel, and the judge checks it.
 

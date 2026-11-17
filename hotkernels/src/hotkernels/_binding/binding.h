@@ -42,6 +42,7 @@ typedef enum {
     HK_CUMSUM_I64, HK_CUMSUM_F32, HK_CUMSUM_F64,
     HK_CAST_U8_F32, HK_SUM_U8, HK_COUNT_NONZERO_I64, HK_COUNT_NONZERO_F64,
     HK_HISTOGRAM_F64, HK_BINCOUNT_U8, HK_ISIN_I64,
+    HK_SEARCHSORTED_F64, HK_INTERP_F64,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -51,7 +52,7 @@ typedef enum {
 typedef enum {
     HK_OP_ARGMAX, HK_OP_ARGMIN, HK_OP_CLIP, HK_OP_COMPRESS, HK_OP_MASKFILL,
     HK_OP_NONZERO, HK_OP_CUMSUM, HK_OP_ASTYPE, HK_OP_SUM, HK_OP_COUNT_NONZERO,
-    HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN,
+    HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN, HK_OP_SEARCHSORTED, HK_OP_INTERP,
     HK_OPERATION_COUNT
 } hk_operation;
 
@@ -151,6 +152,15 @@ static inline bool hk_mask_is_clean(const uint8_t *mask, size_t n) {
     return seen <= 1;
 }
 
+// True when any of the `n` doubles at `values` is a NaN. A NaN is the only
+// value that differs from itself, and OR-ing the comparisons leaves a loop the
+// compiler turns into vector code: about 0.13 ns per element.
+static inline bool hk_has_nan(const double *values, size_t n) {
+    bool seen = false;
+    for (size_t i = 0; i < n; i++) seen |= values[i] != values[i];
+    return seen;
+}
+
 // Convert a Python float or a Python int to a double, as NumPy does when such
 // a value is stored into a float64 array: an int is rounded to the nearest
 // double. Returns false, with no exception set, for anything else, including
@@ -203,6 +213,35 @@ PyObject *hk_try_argext(PyObject *array, bool want_max);
 // Build a NumPy scalar of type `type_num` from the value at `value`. Returns
 // NULL with no exception set if it cannot be built.
 PyObject *hk_scalar(int type_num, void *value);
+
+// Match the arguments of a call to parameter names.
+//
+// `names` lists the function's parameters in order; a NULL entry is a
+// parameter that can only be given by position. At most `max_positional`
+// arguments may be positional. On success `bound[i]` is the argument given
+// for parameter i, as a borrowed reference, or NULL when it was not given.
+// Returns false for a call NumPy would reject or that names a parameter not
+// listed: too many positional arguments, an unknown keyword, or a parameter
+// given twice. No exception is set.
+bool hk_bind_arguments(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames,
+                       const char *const *names, Py_ssize_t count,
+                       Py_ssize_t max_positional, PyObject **bound);
+
+// True when the Python string `text` is exactly the ASCII string `ascii`.
+// Keyword names and short option strings are compact ASCII objects, whose
+// characters can be compared in place: this runs on every call that reaches a
+// hook with keywords, where a library call per comparison is most of what a
+// call left to NumPy costs.
+static inline bool hk_text_is(PyObject *text, const char *ascii) {
+    const size_t length = strlen(ascii);
+    return PyUnicode_IS_COMPACT_ASCII(text) && (size_t)PyUnicode_GET_LENGTH(text) == length &&
+           memcmp(PyUnicode_DATA(text), ascii, length) == 0;
+}
+
+// True when an argument was not given or is None.
+static inline bool hk_is_absent(PyObject *value) {
+    return value == NULL || value == Py_None;
+}
 
 // ------------------------------------------------------------------- hooks
 

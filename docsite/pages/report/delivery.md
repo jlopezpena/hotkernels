@@ -160,6 +160,7 @@ That mask check is one of several places where binding the kernels to real calls
 | Another thread writes the array during `argmax` | Reads it twice; may read past the end | Holds the interpreter lock while the kernel runs |
 | A histogram range whose bin edges are not strictly increasing | Returns counts where NumPy raises an error | Builds the edges first, as NumPy does; sends the call to NumPy if they are not increasing |
 | `clip` bounds that are arrays, reversed, or NaN | Matches only NumPy's scalar, ordered case | Takes the kernel for ordered scalar bounds only |
+| A NaN among the sample points of `np.interp` | Read before the start of its buffers, or return something other than NumPy | Reads the sample points once; sends the call to NumPy. Only worth doing when there are enough queries to pay for the pass, so a call with more than 64 sample points per query goes to NumPy as well |
 | Floating-point status flags left set by a kernel | NumPy would turn them into spurious warnings | Clears them after `clip`; for float `cumsum`, discards the kernel's output if any flag was raised and lets NumPy compute and warn |
 
 Each row is tracked as an issue against the kernel. The lesson generalises: a function verified in isolation is verified *on the inputs its tests can express*. Integrating it is a second round of verification, against what real callers can actually pass.
@@ -215,7 +216,7 @@ The judge proves a kernel right as a native function. It says nothing about the 
 | Spellings | Positional, keyword, `out=`, `axis=`, method and function forms |
 | Values | The judge's value classes: NaN, infinities, signed zeros, ties |
 
-That is **70,031 calls over the 13 hooked operations**, and all agree.
+That is **75,307 calls over the 15 hooked operations**, and all agree.
 
 **Each case also states whether a kernel should have run**, and the counters are checked against it. Without that, a check that quietly stopped matching would pass every comparison, since NumPy's fallback is always right, while delivering nothing.
 
@@ -229,6 +230,6 @@ The binding runs without guard pages. A wrong length passed to a correct kernel 
 
 ## Where that leaves things
 
-Of the 22 kernels, 18 are installed by `install()`, 2 more with `install(inexact=True)`, and 2 (`searchsorted` and `interp`) are not bound until they accept a second length. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
+Of the 22 kernels, 20 are installed by `install()` and the other 2 with `install(inexact=True)`. The last two to be bound were `searchsorted` and `interp`: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
 
 The last chapter collects every number, and is candid about which of them mean less than they appear to.

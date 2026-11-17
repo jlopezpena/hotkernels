@@ -22,7 +22,7 @@
 
 // The functions that are hooked, as indices into `functions`.
 enum {
-    F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN,
+    F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN, F_INTERP,
     F_COUNT
 };
 
@@ -46,6 +46,12 @@ static hk_function functions[F_COUNT];
 #define BYTE_VALUES 256
 // Number of test values `isin_i64` reads. Fewer are padded by repeating one.
 #define ISIN_TEST_VALUES 8
+// Most sample points per query for which `np.interp` takes the kernel. The
+// sample points are read once for NaN before the kernel sees them, at about
+// 0.13 ns each, and NumPy spends at least 30 ns on a query. At 64 sample
+// points per query the pass costs under a third of what NumPy would have
+// spent; with fewer queries than that it would be most of the call.
+#define INTERP_MAX_POINTS_PER_QUERY 64
 
 // numpy.linspace and the float64 type descriptor, fetched on first use.
 static PyObject *numpy_linspace;
@@ -61,34 +67,20 @@ PyObject *hk_scalar(int type_num, void *value) {
     return scalar;
 }
 
-// Match the arguments of a call to parameter names.
-//
-// `names` lists the function's parameters in order; a NULL entry is a
-// parameter that can only be given by position. At most `max_positional`
-// arguments may be positional. On success `bound[i]` is the argument given
-// for parameter i, as a borrowed reference, or NULL when it was not given.
-// Returns false for a call NumPy would reject or that names a parameter not
-// listed: too many positional arguments, an unknown keyword, or a parameter
-// given twice. No exception is set.
-static bool bind_arguments(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames,
-                           const char *const *names, Py_ssize_t count,
-                           Py_ssize_t max_positional, PyObject **bound) {
+bool hk_bind_arguments(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames,
+                       const char *const *names, Py_ssize_t count,
+                       Py_ssize_t max_positional, PyObject **bound) {
     if (nargs > max_positional) return false;
     for (Py_ssize_t i = 0; i < count; i++) bound[i] = i < nargs ? args[i] : NULL;
     const Py_ssize_t keywords = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
     for (Py_ssize_t k = 0; k < keywords; k++) {
         PyObject *name = PyTuple_GET_ITEM(kwnames, k);
         Py_ssize_t i = 0;
-        while (i < count && !(names[i] && PyUnicode_CompareWithASCIIString(name, names[i]) == 0)) i++;
+        while (i < count && !(names[i] && hk_text_is(name, names[i]))) i++;
         if (i == count || bound[i] != NULL) return false;
         bound[i] = args[nargs + k];
     }
     return true;
-}
-
-// True when `value` was not given or is None.
-static bool is_absent(PyObject *value) {
-    return value == NULL || value == Py_None;
 }
 
 // ------------------------------------------------------ argmax and argmin
@@ -238,7 +230,7 @@ static bool prepare_linspace(void) {
 static bool histogram_range(PyObject *array, PyObject *range, PyObject **first, PyObject **last,
                             double *lo, double *hi) {
     *first = *last = NULL;
-    if (is_absent(range)) {
+    if (hk_is_absent(range)) {
         if (PyArray_SIZE((PyArrayObject *)array) == 0) return false;
         *first = PyObject_CallMethod(array, "min", NULL);
         *last = PyObject_CallMethod(array, "max", NULL);
@@ -302,9 +294,9 @@ static HK_NOINLINE PyObject *try_histogram(PyObject *const *args, Py_ssize_t nar
     enum { A, BINS, RANGE, DENSITY, WEIGHTS, PARAMETERS };
     static const char *const names[PARAMETERS] = {"a", "bins", "range", "density", "weights"};
     PyObject *bound[PARAMETERS];
-    if (!bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
     if (bound[A] == NULL || !hk_is_flat(bound[A], NPY_DOUBLE)) return NULL;
-    if (!is_absent(bound[DENSITY]) || !is_absent(bound[WEIGHTS])) return NULL;
+    if (!hk_is_absent(bound[DENSITY]) || !hk_is_absent(bound[WEIGHTS])) return NULL;
 
     Py_ssize_t bins = HISTOGRAM_DEFAULT_BINS;
     if (bound[BINS] != NULL) {
@@ -363,8 +355,8 @@ static HK_NOINLINE PyObject *try_bincount(PyObject *const *args, Py_ssize_t narg
     // `x` can only be given by position.
     static const char *const names[PARAMETERS] = {NULL, "weights", "minlength"};
     PyObject *bound[PARAMETERS];
-    if (!bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
-    if (bound[X] == NULL || !hk_is_flat_1d(bound[X], NPY_UINT8) || !is_absent(bound[WEIGHTS])) return NULL;
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[X] == NULL || !hk_is_flat_1d(bound[X], NPY_UINT8) || !hk_is_absent(bound[WEIGHTS])) return NULL;
 
     Py_ssize_t minimum = 0;
     if (bound[MINLENGTH] != NULL) {
@@ -465,6 +457,70 @@ static PyObject *call_isin(HK_VECTORCALL_PARAMETERS) {
     return functions[F_ISIN].original(callable, args, nargsf, kwnames);
 }
 
+// ------------------------------------------------------------------ interp
+
+// np.interp(x, xp, fp) for a contiguous float64 array of queries and two
+// one-dimensional contiguous float64 arrays of sample points, with `left`,
+// `right` and `period` left alone. The result has the shape of `x`.
+//
+// The kernel requires sample points without a NaN. With one at xp[0] it reads
+// before the start of xp and fp, and with one anywhere it returns something
+// other than NumPy, whose own answer then depends on which elements its
+// search happens to probe (issue 9). So xp is read once first, and a NaN
+// sends the call to NumPy. That pass is only worth making when there are
+// enough queries to pay for it; see INTERP_MAX_POINTS_PER_QUERY.
+//
+// Sample points that are not increasing are not detected. NumPy does not
+// detect them either; both give a meaningless result, not the same one, and
+// the kernel stays inside its buffers whatever the data.
+static HK_NOINLINE PyObject *try_interp(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { X, XP, FP, LEFT, RIGHT, PERIOD, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"x", "xp", "fp", "left", "right", "period"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[X] == NULL || bound[XP] == NULL || bound[FP] == NULL) return NULL;
+    if (!hk_is_absent(bound[LEFT]) || !hk_is_absent(bound[RIGHT]) || !hk_is_absent(bound[PERIOD])) return NULL;
+    if (!hk_is_flat(bound[X], NPY_DOUBLE) || !hk_is_flat_1d(bound[XP], NPY_DOUBLE) ||
+        !hk_is_flat_1d(bound[FP], NPY_DOUBLE)) return NULL;
+
+    PyArrayObject *x = (PyArrayObject *)bound[X];
+    PyArrayObject *xp = (PyArrayObject *)bound[XP];
+    const npy_intp queries = PyArray_SIZE(x);
+    const npy_intp points = PyArray_SIZE(xp);
+    // NumPy raises on empty sample points and on lengths that differ.
+    if (points < 1 || points != PyArray_SIZE((PyArrayObject *)bound[FP])) return NULL;
+    if (points / INTERP_MAX_POINTS_PER_QUERY > queries) return NULL;
+
+    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), NPY_DOUBLE);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    bool clean;
+    {
+        HK_BEGIN_NOGIL(queries)
+        clean = !hk_has_nan(PyArray_DATA(xp), (size_t)points);
+        if (clean) {
+            interp_f64(PyArray_DATA(x), PyArray_DATA(xp), PyArray_DATA((PyArrayObject *)bound[FP]),
+                       PyArray_DATA((PyArrayObject *)result), (size_t)points, (size_t)queries);
+        }
+        HK_END_NOGIL
+    }
+    if (!clean) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    hk_take(HK_INTERP_F64);
+    return result;
+}
+
+static PyObject *call_interp(HK_VECTORCALL_PARAMETERS) {
+    PyObject *result = try_interp(args, PyVectorcall_NARGS(nargsf), kwnames);
+    if (result != NULL) return result;
+    hk_pass(HK_OP_INTERP);
+    return functions[F_INTERP].original(callable, args, nargsf, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_function functions[F_COUNT] = {
@@ -475,6 +531,7 @@ static hk_function functions[F_COUNT] = {
     [F_HISTOGRAM] = {"histogram", call_histogram, NULL, NULL},
     [F_BINCOUNT] = {"bincount", call_bincount, NULL, NULL},
     [F_ISIN] = {"isin", call_isin, NULL, NULL},
+    [F_INTERP] = {"interp", call_interp, NULL, NULL},
 };
 
 // Return the address of the call pointer inside a callable object, or NULL
@@ -531,5 +588,6 @@ hk_hook hk_function_hooks[] = {
     {"function.histogram", function_apply, function_remove, F_HISTOGRAM, false},
     {"function.bincount", function_apply, function_remove, F_BINCOUNT, false},
     {"function.isin", function_apply, function_remove, F_ISIN, false},
+    {"function.interp", function_apply, function_remove, F_INTERP, false},
     {NULL, NULL, NULL, 0, false},
 };

@@ -46,8 +46,9 @@ PROBE_BYTE = 7
 # Value the masked-assignment probe writes.
 PROBE_FILL = 2.5
 
-# Why the two search kernels have no hook.
-NEEDS_SECOND_SIZE = "not bound: the kernel takes one length for both of its inputs"
+# Element count of the sorted array the search probes look in. It differs
+# from PROBE_N so that a kernel which confused its two lengths would fail.
+PROBE_TABLE_N = 37
 
 
 @dataclass(frozen=True)
@@ -211,6 +212,24 @@ def _isin() -> bool:
     return int(result.sum()) == 2 and bool(result[PROBE_INDEX]) and bool(result[SMALL_PROBE_INDEX])
 
 
+def _searchsorted() -> bool:
+    """Probe the method hook: `np.searchsorted` for needles between whole numbers."""
+    table = np.arange(PROBE_TABLE_N, dtype=np.float64)
+    needles = (np.arange(PROBE_N) % PROBE_TABLE_N) + 0.5
+    expected = (np.arange(PROBE_N) % PROBE_TABLE_N) + 1
+    return bool(np.array_equal(np.searchsorted(table, needles), expected))
+
+
+def _interp() -> bool:
+    """Probe the function hook: `np.interp` through points on the line y = 2x.
+
+    Halves and doubles of small whole numbers are exact, so the answer is too.
+    """
+    points = np.arange(PROBE_TABLE_N, dtype=np.float64)
+    queries = (np.arange(PROBE_N) % (PROBE_TABLE_N - 1)) + 0.5
+    return bool(np.array_equal(np.interp(queries, points, 2.0 * points), 2.0 * queries))
+
+
 # Every hook, in the order install() applies them: the deepest first.
 HOOKS: tuple[Hook, ...] = (
     Hook("slot.argmax.f32", TYPE_SLOT, (Probe("argmax_f32", partial(_argext_method, np.float32, "argmax", 1.0)),)),
@@ -235,6 +254,7 @@ HOOKS: tuple[Hook, ...] = (
     Hook("function.histogram", FUNCTION, (Probe("histogram_f64", _histogram),)),
     Hook("function.bincount", FUNCTION, (Probe("bincount_u8", _bincount),)),
     Hook("function.isin", FUNCTION, (Probe("isin_i64", _isin),)),
+    Hook("function.interp", FUNCTION, (Probe("interp_f64", _interp),)),
     Hook("method.astype", METHOD, (Probe("cast_u8_f32", _astype),)),
     Hook("method.sum", METHOD, (Probe("sum_u8", _sum_method),)),
     Hook("method.nonzero", METHOD, (Probe("nonzero_bool", _nonzero),)),
@@ -243,6 +263,7 @@ HOOKS: tuple[Hook, ...] = (
         Probe("cumsum_f32", partial(_cumsum, np.float32), inexact=True),
         Probe("cumsum_f64", partial(_cumsum, np.float64), inexact=True),
     )),
+    Hook("method.searchsorted", METHOD, (Probe("searchsorted_f64", _searchsorted),)),
     Hook("index.get", INDEXING, (
         Probe("compress_f32", partial(_compress, np.float32)),
         Probe("compress_f64", partial(_compress, np.float64)),
@@ -273,6 +294,6 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("histogram_f64", "np.histogram", "float64", "histogram", ("function.histogram",)),
     KernelInfo("bincount_u8", "np.bincount", "uint8", "bincount", ("function.bincount",)),
     KernelInfo("isin_i64", "np.isin", "int64", "isin", ("function.isin",)),
-    KernelInfo("searchsorted_f64", "np.searchsorted", "float64", None, (), NEEDS_SECOND_SIZE),
-    KernelInfo("interp_f64", "np.interp", "float64", None, (), NEEDS_SECOND_SIZE),
+    KernelInfo("searchsorted_f64", "np.searchsorted", "float64", "searchsorted", ("method.searchsorted",)),
+    KernelInfo("interp_f64", "np.interp", "float64", "interp", ("function.interp",)),
 )

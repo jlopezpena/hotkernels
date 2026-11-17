@@ -285,7 +285,11 @@ These are constraints on the binding, collected from the kernels. The last colum
 | `maskfill_f64` | Rewrites unselected elements with their own bits in dense blocks | ARM64 |
 | `clip_*` | `lo <= hi`, neither NaN, otherwise fall back | Every architecture: the reference is defined for ordered bounds only |
 | `clip_*` | `x` and `out` must not overlap; touches FPSR; with `lo = +0.0`, data with a negative zero in its first few thousand elements runs at the speed of the C | ARM64 |
-| `interp_f64` | From 2^32 elements it takes the scalar path | ARM64 |
+| `interp_f64` | The sample points must hold no NaN: with one at `xp[0]` the kernel and the reference read before the start of `xp` and `fp`, and with one anywhere the result is not NumPy's. The binding reads `xp` first | Every architecture: the spec and the reference exclude it |
+| `searchsorted_f64`, `interp_f64` | Sorted input is assumed and not checked. On unsorted input the result is meaningless, differs from NumPy's, and the kernel stays inside its buffers | Every architecture for the result; ARM64 for staying inside the buffers, which the judge does not test |
+| `searchsorted_f64` | `side='left'` only | Every architecture: the spec declares it |
+| `searchsorted_f64`, `interp_f64` | Fewer needles than a path handles at once take a narrower path; fewer than 64 against an array of 64 or more are searched one at a time | ARM64 |
+| `interp_f64` | From 2^32 sample points it takes the scalar path | ARM64 |
 | `cumsum_f32`, `cumsum_f64` | Not bit-identical to NumPy; `report()` must mark them | Every architecture: the spec declares a tolerance |
 | `cumsum_f32`, `cumsum_f64` | Adjacent outputs come from separate running sums, so non-negative input does not give a non-decreasing output, and the steps back are not confined to the last bit: on uniform [0, 1) float32 data at a million elements about one adjacent pair in six decreases, by up to about 5, and after `2^24, 0.9, 0.2` a run of zeros alternates between 2^24 and 2^24 + 2 | ARM64. Any kernel that regroups the additions can do the same |
 | `histogram_f64` | Written for uniform bins with a finite range, `lo < hi` and at least one bin; the judge tests sixteen bin counts and ranges | Every architecture |
