@@ -23,7 +23,8 @@ import typer
 
 from .cases import Case, build_inputs, fixed_cases, fresh_cases
 from .memory import ArenaPool
-from .spec import USED_RETURN, In, Kernel, Size, load_spec, np_dtype
+from .spec import (FLOAT_SCALARS, USED_RETURN, In, InOut, Kernel, Scalar, Size, element_count,
+                   load_spec, np_dtype)
 
 # Failure categories reported to the parent.
 WRONG_RESULT = "wrong result"
@@ -67,6 +68,8 @@ _INT_RETURN_BITS = {
 }
 _FLOAT_RETURNS = ("f32", "f64")
 _F32_BITS_MASK = 0xFFFFFFFF
+# An integer register holds 64 bits; negative values are passed in two's complement.
+_REGISTER_MASK = 0xFFFFFFFFFFFFFFFF
 
 app = typer.Typer(add_completion=False)
 
@@ -76,16 +79,28 @@ def _show(value) -> str:
     return repr(value.item() if isinstance(value, np.generic) else value)
 
 
-def _matches(got: np.ndarray, expected: np.ndarray, ulp: int | None) -> np.ndarray:
+def _matches(got: np.ndarray, expected: np.ndarray, ulp: int | None,
+             scale: np.ndarray | None = None) -> np.ndarray:
     """Return an elementwise mask of where `got` matches `expected`.
 
-    In exact mode (ulp is None), and always for non-float data, elements match
-    when their bytes are equal. That distinguishes +0.0 from -0.0 and treats
-    two NaNs with the same bits as equal.
+    In exact mode, and always for non-float data, elements match when their
+    bytes are equal. That distinguishes +0.0 from -0.0 and treats two NaNs
+    with the same bits as equal.
 
     In tolerance mode, finite floats match when they differ by at most `ulp`
     units in the last place. NaN and infinity must still appear in exactly the
     same positions.
+
+    Args:
+        got: What the kernel produced.
+        expected: The oracle's answer, same shape and dtype as `got`.
+        ulp: Allowed error in units in the last place, or None for exact mode.
+        scale: Per element, the magnitude at which the unit in the last place
+            is taken, or None to take it at the larger of the two values
+            compared. Only used in tolerance mode.
+
+    Returns:
+        A boolean array, True where the element is accepted.
     """
     if ulp is None or got.dtype.kind != "f":
         unsigned = f"u{got.dtype.itemsize}"
@@ -93,9 +108,31 @@ def _matches(got: np.ndarray, expected: np.ndarray, ulp: int | None) -> np.ndarr
     special = ~np.isfinite(expected) | ~np.isfinite(got)
     identical = (got == expected) | (np.isnan(got) & np.isnan(expected))
     with np.errstate(invalid="ignore", over="ignore"):
-        magnitude = np.maximum(np.abs(got), np.abs(expected))
+        if scale is None:
+            magnitude = np.maximum(np.abs(got), np.abs(expected))
+        else:
+            # A scale beyond the largest finite value would have no unit in the
+            # last place, so it is capped there. A NaN scale accepts nothing.
+            largest = np.finfo(got.dtype).max
+            magnitude = np.minimum(np.abs(np.asarray(scale, dtype=np.float64)), largest).astype(got.dtype)
         close = np.abs(got - expected) <= ulp * np.spacing(magnitude)
     return np.where(special, identical, close)
+
+
+def _float_bits(scalar: Scalar, value: float) -> int:
+    """Return the register contents for a floating-point scalar argument.
+
+    Args:
+        scalar: A Scalar of type f32 or f64.
+        value: The value it has in this call.
+
+    Returns:
+        The raw bits as an integer. A float occupies the low 32 bits of its
+        64-bit register, which is where the kernel reads it as `s0`..`s7`.
+    """
+    if scalar.dtype == "f32":
+        return struct.unpack("<I", struct.pack("<f", value))[0]
+    return struct.unpack("<Q", struct.pack("<d", value))[0]
 
 
 class Runner:
@@ -125,10 +162,13 @@ class Runner:
         if case.n != self.cache_n:
             self.cache, self.cache_n = {}, case.n
         inputs = build_inputs(k, case, self.cache)
-        expected = k.oracle(*[inputs[a.name] for a in k.ins])
+        scalars = k.scalar_values(case.scalars)
+        oracle_args = [inputs[a.name] for a in k.ins] + k.oracle_scalars(case.scalars)
+        expected = k.oracle(*oracle_args)
+        scale = k.tolerance_scale(*oracle_args) if k.tolerance_scale else None
 
-        int_args, out_addr, out_bytes, read_only = self._place_arguments(case, inputs)
-        float_args, result = RegisterArgs(), WrapperResult()
+        int_args, float_args, out_addr, out_bytes, read_only = self._place_arguments(case, inputs, scalars)
+        result = WrapperResult()
 
         # Record the case before calling, in case the kernel kills this process.
         os.pwrite(self.progress_fd, str(case).ljust(_PROGRESS_WIDTH).encode(), 0)
@@ -143,38 +183,61 @@ class Runner:
 
         returned = self._decode_return(result)
         if k.out is None:
-            return self._check_return_value(case, returned, expected)
-        return self._check_output(case, returned, expected, out_addr, out_bytes)
+            return self._check_return_value(case, returned, expected, scale)
+        capacity = element_count(k.out, case.n, capacity=True, scalars=scalars)
+        return self._check_output(case, returned, expected, scale, out_addr, out_bytes, capacity)
 
-    def _place_arguments(self, case: Case, inputs: dict) -> tuple:
+    def _place_arguments(self, case: Case, inputs: dict, scalars: dict) -> tuple:
         """Copy inputs into guarded memory and build the kernel's argument list.
 
-        Returns (integer argument registers, output address, output size in
-        bytes, arenas made read-only). Inputs are made read-only so that a
-        kernel writing to one crashes. The output buffer is filled with a
-        known byte so that stray writes can be detected afterwards.
+        Inputs are made read-only so that a kernel writing to one crashes. An
+        output buffer is filled with a known byte so that stray writes can be
+        detected afterwards; an in-place buffer starts as its input and stays
+        writable.
+
+        The calling convention numbers integer and floating-point arguments
+        separately: the third integer argument goes in the third integer
+        register however many floating-point arguments precede it.
+
+        Args:
+            case: The case being run.
+            inputs: The input arrays, by argument name.
+            scalars: The value of every Scalar argument in this case, by name.
+
+        Returns:
+            (integer argument registers, floating-point argument registers,
+            output address, output size in bytes, arenas made read-only).
         """
-        int_args = RegisterArgs()
+        int_args, float_args = RegisterArgs(), RegisterArgs()
+        int_slot = float_slot = 0
         read_only = []
         out_addr = out_bytes = 0
-        for slot, a in enumerate(self.k.args):
-            if isinstance(a, Size):
-                int_args[slot] = case.n
+        for a in self.k.args:
+            if isinstance(a, Scalar) and a.dtype in FLOAT_SCALARS:
+                float_args[float_slot] = _float_bits(a, scalars[a.name])
+                float_slot += 1
+                continue
+            if isinstance(a, (Size, Scalar)):
+                value = case.n if isinstance(a, Size) else int(scalars[a.name])
+                int_args[int_slot] = value & _REGISTER_MASK
+                int_slot += 1
                 continue
             itemsize = np_dtype(a.dtype).itemsize
-            nbytes = case.n * itemsize
+            nbytes = element_count(a, case.n, scalars=scalars) * itemsize
             arena = self.arenas.get(a.name, nbytes)
             addr = arena.place(nbytes, case.arr, itemsize)
-            int_args[slot] = addr
+            int_args[int_slot] = addr
+            int_slot += 1
+            if isinstance(a, (In, InOut)) and nbytes:
+                ctypes.memmove(addr, inputs[a.name].ctypes.data, nbytes)
             if isinstance(a, In):
-                if nbytes:
-                    ctypes.memmove(addr, inputs[a.name].ctypes.data, nbytes)
                 arena.protect(read_only=True)
                 read_only.append(arena)
-            else:
-                out_addr, out_bytes = addr, nbytes
+                continue
+            out_addr, out_bytes = addr, nbytes
+            if not isinstance(a, InOut):
                 ctypes.memset(addr, _FILL_BYTE, nbytes)
-        return int_args, out_addr, out_bytes, read_only
+        return int_args, float_args, out_addr, out_bytes, read_only
 
     def _decode_return(self, result) -> object:
         """Convert the raw return registers into a Python value of the kernel's return type."""
@@ -194,12 +257,22 @@ class Runner:
             return np.float64(struct.unpack("<d", raw)[0])
         return None  # void
 
-    def _check_return_value(self, case: Case, returned, expected) -> dict | None:
-        """Compare the return value of a kernel that has no output buffer."""
+    def _check_return_value(self, case: Case, returned, expected, scale) -> dict | None:
+        """Compare the return value of a kernel that has no output buffer.
+
+        Args:
+            case: The case that was run, for the failure message.
+            returned: The decoded return value.
+            expected: The oracle's answer.
+            scale: The spec's tolerance scale for this case, or None.
+
+        Returns:
+            None when the value is accepted, otherwise a failure description.
+        """
         k = self.k
         if k.returns in _FLOAT_RETURNS:
             want = np.asarray(expected, dtype=returned.dtype)
-            ok = bool(_matches(np.asarray(returned), want, k.tolerance_ulp).all())
+            ok = bool(_matches(np.asarray(returned), want, k.tolerance_ulp, scale).all())
         else:
             want = bool(expected) if k.returns == "bool" else int(expected)
             ok = returned == want
@@ -208,7 +281,8 @@ class Runner:
         return self._failure(WRONG_RESULT, "wrong return value", case,
                              expected=_show(want), got=_show(returned))
 
-    def _check_output(self, case: Case, returned, expected, out_addr: int, out_bytes: int) -> dict | None:
+    def _check_output(self, case: Case, returned, expected, scale,
+                      out_addr: int, out_bytes: int, capacity: int) -> dict | None:
         """Compare what the kernel wrote to its output buffer with the oracle.
 
         Checks, in order: the reported element count, the elements themselves,
@@ -216,11 +290,24 @@ class Runner:
         is skipped for a scratch buffer, where the kernel may leave anything
         between the reported elements and the capacity. A write past the
         capacity never reaches this function: it faults on the guard page.
+
+        Args:
+            case: The case that was run, for the failure message.
+            returned: The decoded return value, which is the element count
+                when the output reports how much of it was used.
+            expected: The oracle's answer.
+            scale: The spec's tolerance scale for this case, one magnitude per
+                expected element, or None.
+            out_addr: Address of the output buffer.
+            out_bytes: Size of the output buffer in bytes.
+            capacity: How many elements the output buffer holds in this case.
+
+        Returns:
+            None when the output is accepted, otherwise a failure description.
         """
         k, out = self.k, self.k.out
         dt = np_dtype(out.dtype)
         want = np.ascontiguousarray(np.asarray(expected), dtype=dt).ravel()
-        capacity = case.n
         used = capacity
         if out.used == USED_RETURN:
             if returned != len(want):
@@ -232,7 +319,9 @@ class Runner:
 
         raw = ctypes.string_at(out_addr, out_bytes) if out_bytes else b""
         got = np.frombuffer(raw, dtype=dt)
-        matches = _matches(got[:used], want, k.tolerance_ulp)
+        if scale is not None:
+            scale = np.asarray(scale).ravel()
+        matches = _matches(got[:used], want, k.tolerance_ulp, scale)
         if not matches.all():
             i = int(np.argmin(matches))  # first mismatch
             return self._failure(WRONG_RESULT, f"wrong value in {out.name}[{i}]", case,

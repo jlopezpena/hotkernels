@@ -169,17 +169,22 @@ def run_bench(built: Built, quick: bool, locked: bool) -> dict:
     """Time the kernel against naive C and NumPy and return the full report."""
     k = built.k
     harness = B.Harness(k, built.harness)
-    kernel_fn, _kernel_lib = B.function_address(built.kernel, k.name)
     naive_fn, _naive_lib = B.function_address(built.naive, k.name)
+    contenders: dict[str, int | None] = {NAIVE: naive_fn, NUMPY: None}
+    # A kernel without assembly is its naive C, measured against NumPy alone.
+    subject, baselines = NAIVE, [NUMPY]
+    if built.kernel:
+        kernel_fn, _kernel_lib = B.function_address(built.kernel, k.name)
+        contenders = {KERNEL: kernel_fn, **contenders}
+        subject, baselines = KERNEL, [NAIVE, NUMPY]
     sizes, samples = _sweep(quick)
 
     canary_before = harness.canary()
-    data = B.measure(k, harness, {KERNEL: kernel_fn, NAIVE: naive_fn, NUMPY: None},
-                     sizes, samples, _log_progress)
+    data = B.measure(k, harness, contenders, sizes, samples, _log_progress)
     canary_after = harness.canary()
 
-    report = B.analyse(data, KERNEL, [NAIVE, NUMPY])
-    report.update(kernel=k.name, samples=samples,
+    report = B.analyse(data, subject, baselines)
+    report.update(kernel=k.name, samples=samples, subject=subject, baselines=baselines,
                   warnings=B.noise_warnings(canary_before, canary_after),
                   environment=environment(locked))
     return report
@@ -191,7 +196,7 @@ def log_bench(report: dict) -> None:
     title = (f"{report['kernel']} ({env['arch']}, {env['machine']}), NumPy {env['numpy']}, "
              f"{report['samples']} samples per point")
     log.info(render("timing.txt.j2", title=title, warnings=report["warnings"], report=report,
-                    kernel=KERNEL, baselines=[NAIVE, NUMPY], labels=_BENCH_LABELS,
+                    kernel=report["subject"], baselines=report["baselines"], labels=_BENCH_LABELS,
                     notes=[f"* {NUMPY_NOTE}"], verdict=None).rstrip())
 
 
@@ -317,6 +322,9 @@ def compare(
     guard(kernel, is_fixture, unlocked)
     built = _checked(kernel, kernel_dir).built
     k = built.k
+    if not built.kernel:
+        log.error("\ncannot compare: %s has no %s assembly", kernel, ARCH)
+        raise typer.Exit(EXIT_REFUSED)
     old_dylib = _build_old_version(built, against)
 
     harness = B.Harness(k, built.harness)

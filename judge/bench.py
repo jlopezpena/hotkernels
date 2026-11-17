@@ -19,7 +19,7 @@ from typing import Callable
 import numpy as np
 
 from . import cases
-from .spec import In, Kernel, Size, np_dtype
+from .spec import DEFAULT_SCALARS, Kernel, Out, element_count, np_dtype
 
 # Array sizes timed by default: from data that fits in the fastest cache to
 # data far larger than any cache.
@@ -63,6 +63,9 @@ _CANARY_REPEATS = 5
 CANARY_TOLERANCE = 0.03
 
 DEFAULT_DISTRIBUTION = "random"
+# The ctypes type that carries each scalar type into the C timing loop.
+_SCALAR_CTYPES = {"usize": ctypes.c_size_t, "i64": ctypes.c_int64,
+                  "f32": ctypes.c_float, "f64": ctypes.c_double}
 # `pmset -g` lines that report Low Power Mode, and the value meaning "on".
 _LOW_POWER_KEYS = ("lowpowermode", "powermode")
 _LOW_POWER_ON = "1"
@@ -83,7 +86,7 @@ def _inputs(k: Kernel, dist: str, n: int, seed: int) -> dict[str, np.ndarray]:
         rng = np.random.default_rng([seed, n, cases._crc(dist)])
         made = k.distributions[dist](rng, n)
         return {a.name: np.ascontiguousarray(made[a.name], np_dtype(a.dtype)) for a in k.ins}
-    return {a.name: np.ascontiguousarray(cases.base(a.dtype, n, seed, a.name)) for a in k.ins}
+    return {a.name: cases.default_input(a, n, seed) for a in k.ins}
 
 
 class Harness:
@@ -95,11 +98,12 @@ class Harness:
         self.lib = ctypes.CDLL(str(path))
         # The kernel's buffer arguments, in order. The timing loop takes one
         # array of pointers per buffer argument, indexed by pool entry.
-        self.pointer_args = [a for a in k.args if not isinstance(a, Size)]
+        self.pointer_args = k.buffers
         self.lib.hk_bench.argtypes = (
             [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64]
             + [ctypes.POINTER(ctypes.c_void_p)] * len(self.pointer_args)
             + [ctypes.c_uint64]
+            + [_SCALAR_CTYPES[a.dtype] for a in k.scalars]
         )
         self.lib.hk_bench.restype = ctypes.c_uint64
         self.lib.hk_canary.restype = ctypes.c_uint64
@@ -142,34 +146,65 @@ class _TimingSetup:
     buffers: list
 
 
+def timing_label(dist: str, scalars: str) -> str:
+    """Name one timing table: an input distribution timed with one scalar set.
+
+    Args:
+        dist: Name of the input distribution.
+        scalars: Name of the scalar set.
+
+    Returns:
+        The distribution's name alone for the default scalar set, so kernels
+        without timed scalar sets are reported as before; otherwise both.
+    """
+    return dist if scalars == DEFAULT_SCALARS else f"{dist}, scalars={scalars}"
+
+
 def _timing_setup(k: Kernel, harness: Harness, contenders: dict[str, int | None],
-                  dist: str, n: int) -> _TimingSetup:
+                  dist: str, n: int, scalars: str = DEFAULT_SCALARS) -> _TimingSetup:
     """Build one timing function per contender for a given distribution and size.
 
-    A contender is a native function address, or None for the NumPy oracle.
+    Args:
+        k: The kernel's spec.
+        harness: The compiled timing loop.
+        contenders: Contender name -> native function address, or None for the
+            NumPy oracle.
+        dist: Name of the input distribution.
+        n: Element count.
+        scalars: Name of the scalar set whose values every call is given.
+
+    Returns:
+        The timing functions and the buffers they point into.
     """
     npool = _pool_size(n)
     pool = [_inputs(k, dist, n, seed) for seed in range(npool)]
-    outs = [{a.name: np.empty(n, np_dtype(a.dtype)) for a in k.outs} for _ in range(npool)]
+    scalar_values = k.scalar_values(scalars)
+    outs = [{a.name: np.empty(element_count(a, n, scalars=scalar_values), np_dtype(a.dtype))
+             for a in k.outs if isinstance(a, Out)} for _ in range(npool)]
+    native_scalars = [scalar_values[a.name] for a in k.scalars]
 
     # One array of pointers per buffer argument, one pointer per pool entry.
+    # An in-place buffer points at its input, which the kernel then modifies:
+    # every later repeat sees the result of the first. That is only a fair
+    # timing for operations that give the same result when applied twice.
     pointer_arrays = []
     for a in harness.pointer_args:
-        source = pool if isinstance(a, In) else outs
+        source = outs if isinstance(a, Out) else pool
         addresses = [entry[a.name].ctypes.data for entry in source]
         pointer_arrays.append((ctypes.c_void_p * npool)(*addresses))
-    numpy_args = [tuple(entry[a.name] for a in k.ins) for entry in pool]
+    oracle_scalars = k.oracle_scalars(scalars)
+    numpy_args = [(*(entry[a.name] for a in k.ins), *oracle_scalars) for entry in pool]
 
     def native(fn: int) -> Callable[[int], int]:
         """Time a compiled function through the C timing loop."""
         def run(reps: int) -> int:
             """Call the function `reps` times and return elapsed nanoseconds."""
-            return harness.lib.hk_bench(fn, reps, npool, *pointer_arrays, n)
+            return harness.lib.hk_bench(fn, reps, npool, *pointer_arrays, n, *native_scalars)
         return run
 
     def numpy_oracle(reps: int) -> int:
         """Time the NumPy oracle from Python, including its call overhead."""
-        oracle, p = k.oracle, 0
+        oracle, p = k.numpy or k.oracle, 0
         start = time.perf_counter_ns()
         for _ in range(reps):
             oracle(*numpy_args[p])
@@ -188,29 +223,58 @@ def measure(k: Kernel, harness: Harness, contenders: dict[str, int | None],
     """Time every contender at every size, for each input distribution.
 
     Samples from the contenders are interleaved, and the starting contender
-    rotates, so slow drift in the machine affects all of them equally.
-    `progress` is called with (distribution, size) after each size finishes.
+    rotates, so slow drift in the machine affects all of them equally. A
+    kernel with timed scalar sets gets every distribution once per set; the
+    tables are named by `timing_label`.
+
+    Args:
+        k: The kernel's spec.
+        harness: The compiled timing loop.
+        contenders: Contender name -> native function address, or None for the
+            NumPy oracle.
+        sizes: Element counts to time. Those below the kernel's `min_n` are skipped.
+        samples: Timing samples per contender per size.
+        progress: Called with (table name, size) after each size finishes.
+
+    Returns:
+        The samples, in nanoseconds per call, by table name, size and contender.
     """
     dists = list(k.distributions) if k.distributions else [DEFAULT_DISTRIBUTION]
     data: Measurements = {}
     for dist in dists:
-        data[dist] = {}
-        for n in sizes:
-            if n < k.min_n:
-                continue
-            setup = _timing_setup(k, harness, contenders, dist, n)
-            runners = setup.runners
-            reps = {name: _calibrate(run) for name, run in runners.items()}
-            times: dict[str, list[float]] = {name: [] for name in runners}
-            order = list(runners)
-            for sample in range(samples):
-                shift = sample % len(order)
-                for name in order[shift:] + order[:shift]:
-                    times[name].append(runners[name](reps[name]) / reps[name])
-            data[dist][n] = {name: np.array(t) for name, t in times.items()}
-            if progress:
-                progress(dist, n)
+        for scalars in k.timed_scalar_sets:
+            label = timing_label(dist, scalars)
+            data[label] = {}
+            for n in sizes:
+                if n < k.min_n:
+                    continue
+                setup = _timing_setup(k, harness, contenders, dist, n, scalars)
+                data[label][n] = _sample(setup.runners, samples)
+                if progress:
+                    progress(label, n)
     return data
+
+
+def _sample(runners: dict[str, Callable[[int], int]], samples: int) -> dict[str, np.ndarray]:
+    """Take interleaved timing samples of several contenders on the same inputs.
+
+    Args:
+        runners: Contender name -> function that takes a repeat count and
+            returns elapsed nanoseconds.
+        samples: How many samples to take of each contender.
+
+    Returns:
+        Contender name -> array of nanoseconds per call, one entry per sample.
+    """
+    reps = {name: _calibrate(run) for name, run in runners.items()}
+    times: dict[str, list[float]] = {name: [] for name in runners}
+    order = list(runners)
+    for sample in range(samples):
+        # Rotate which contender goes first, so none always follows the same one.
+        shift = sample % len(order)
+        for name in order[shift:] + order[:shift]:
+            times[name].append(runners[name](reps[name]) / reps[name])
+    return {name: np.array(t) for name, t in times.items()}
 
 
 def _ratio(base: np.ndarray, kern: np.ndarray, rng: np.random.Generator) -> tuple[float, np.ndarray]:

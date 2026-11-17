@@ -93,10 +93,63 @@ KERNEL = Kernel(
 ```
 
 - `oracle` is a Python function over the inputs. Its result is the correct answer.
-- `mode` is `"exact"` or a tolerance in units in the last place, as defined in the core design.
+- `mode` is `"exact"` or a tolerance in units in the last place, as defined in the core design, optionally with the scale the unit is taken at.
 - A spec can also supply its own input generators when the standard ones are not enough.
 
 From the signature the judge generates the C glue it needs to call the kernel. Kernel authors never write harness code.
+
+### What a spec can express
+
+The first real kernels needed more than the two fixtures do. Each addition below exists because a surveyed kernel could not be written without it.
+
+| Feature | What it does | Needed by |
+|---|---|---|
+| `Scalar("lo", "f64", -0.5)` | A scalar argument and its default value. Integers go in the integer argument registers and floats in the floating-point ones. The oracle receives the scalars after the arrays: `oracle(x, lo, hi)` | `clip` (bounds), `histogram` (bin count and range), masked assignment (the value) |
+| `Kernel(scalar_sets=[ScalarSet("zero_lo", {"lo": 0.0, "hi": 1.0})])` | Further combinations of scalar values to check, and optionally time. See [Scalar sets](#scalar-sets) | `clip`, `histogram`, masked assignment |
+| `In("test", "i64", len=8)` | An input whose length is fixed and does not follow `n` | `isin` (the set of test values) |
+| `Out("counts", "i64", capacity=256)` | An output whose size is fixed | `bincount` |
+| `Out("counts", "i64", capacity="nbins")` | An output whose size is the value of an integer scalar, so it changes with the scalar set | `histogram` |
+| `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs | `searchsorted` and `interp` (sorted data) |
+| `InOut("x", "f64")` | A buffer the kernel modifies in place. It starts as an input and is compared in full with the oracle's result | masked assignment |
+| `Kernel(numpy=fn)` | What is timed as NumPy when that is not the oracle. An in-place oracle has to copy its input; the statement a user writes does not | masked assignment |
+| `mode={"tolerance_ulp": 4, "scale": fn}` | A tolerance measured at a magnitude the spec computes from the inputs, instead of at the size of the result. See [Comparison](#comparison) | float `cumsum` |
+| `Kernel(check_max_n=65537)` | Caps the sizes used for correctness, for an oracle too slow to run on millions of elements per case. Timing still uses the full sweep | `interp` |
+| No `arm64/kernel.s` | The kernel is its naive C. `check` verifies the C against NumPy and `run` reports C against NumPy | every kernel before its assembly exists, and kernels shipped as C |
+
+Two limits follow from these and are deliberate:
+
+- **A scalar is tested with the values the spec lists and no others.** The judge has value classes for arrays and none for scalars. A kernel's behaviour for a combination that is not in the default set or in `scalar_sets` is not verified.
+- **An in-place buffer is timed on its own output.** After the first repeat the kernel sees the result of the previous one. That is only a fair timing for operations that give the same result when applied twice, which masked assignment is.
+
+### Scalar sets
+
+A scalar often chooses a path through the kernel. `clip` takes a two-operation path unless a bound is a zero of the wrong sign, and `histogram` trusts its first bin estimate only when the bin count and range pass a check at entry. A kernel tested with one value of its scalars is tested on one of those paths. The first version of the judge did that, and it hid two things in `clip` that were found by other means: the reference disagrees with NumPy for reversed and NaN bounds, and the kernel is fast for some bounds only.
+
+A spec therefore lists further combinations:
+
+```python
+KERNEL = Kernel(
+    name="clip_f64",
+    returns="void",
+    args=[In("x", "f64"), Out("out", "f64"), Size("n"), Scalar("lo", "f64", -0.5), Scalar("hi", "f64", 0.5)],
+    oracle=lambda x, lo, hi: np.clip(x, lo, hi),
+    scalar_sets=[
+        ScalarSet("zero_lo", {"lo": 0.0, "hi": 1.0}, timed=True),
+        ScalarSet("neg_zero_hi", {"lo": -1.0, "hi": -0.0}),
+        ScalarSet("infinite", {"lo": float("-inf"), "hi": float("inf")}),
+    ],
+)
+```
+
+- **Sets, not value classes.** Scalars are rarely independent: a lower bound must not exceed the upper one, and a bin count belongs to a range. Classes drawn per scalar would mostly produce combinations outside the kernel's domain. A set names one valid combination; a scalar it leaves out keeps its default.
+- **The default set** is every `Scalar`'s own value. It always exists and gets the full sweep of cases, exactly as before, so a kernel without scalar sets runs the cases it always ran.
+- **Every further set gets a thinner sweep:** every value class at the same sizes (less the exact powers of two above 65,536), but one memory arrangement per case instead of five, three indices per positional class instead of all, and no pairings of classes. What has to be shown is that each path handles every size and every kind of value; the default sweep has already shown the rest. A set costs about 2,700 cases and under a second for a one-input kernel.
+- **Fresh cases** draw their set at random from all of them.
+- **A case names its set:** `n=17 arr=end seed=1 scalars=zero_lo x=zeros`. The field is left out for the default set.
+- **The reference is checked on every set too.** A `naive.c` that disagrees with NumPy for a listed combination fails as `reference`, which is how a wrong reference for some bounds would now be caught, provided the combination is listed.
+- **`timed=True`** adds a full timing sweep with that set, reported as its own table (`random, scalars=zero_lo`) and included in the overall figure. `compare` times it as well, so an edit that helps one set of scalars and hurts another shows both. Each timed set adds about half a minute to `run` and `compare`, so they should be few. The timing loop takes the scalars as arguments; they are not compiled into it.
+
+What this does not give: a combination nobody listed is still untested, and the array data does not follow the scalars. `histogram` is checked with sixteen bin counts and ranges, but the judge's data is random and seldom lands within rounding distance of a bin edge, which is where a histogram goes wrong. Evidence about edges still comes from a differential test outside the judge.
 
 ### Why a Python file
 
@@ -138,7 +191,7 @@ Every case is generated from a fixed seed, so a failure can always be reproduced
   - sorted ascending and descending
   - floating point: NaN, both infinities, both signed zeros, denormals
   - integers: the minimum and maximum values
-- **Positions.** For sizes up to 65, the interesting element (the maximum, a NaN, the only `True` in a mask) is placed at every possible index in turn. This catches a kernel that is right except in one lane of one vector.
+- **Positions.** For sizes up to 65, the interesting element (the maximum, a NaN, a single negative zero, the only `True` in a mask) is placed at every possible index in turn. This catches a kernel that is right except in one lane of one vector. At larger sizes it is placed at the start, the middle and the end, which is what reaches code that only runs once a kernel is well into an array: `clip` with a zero lower bound redoes a chunk when it meets a negative zero among ordinary values, and nothing but a single one far into the array gets it there.
 - **Ties.** Duplicates of the winning value at several positions, since NumPy defines which one wins.
 - **Alignment.** Each case runs with the buffers at several different offsets from an aligned address.
 - **Fresh random cases.** After the fixed cases, a batch generated from a new seed on every run. The seed is printed. This stops a kernel from passing by fitting the fixed cases.
@@ -201,6 +254,7 @@ Assembly can corrupt its caller in ways that tests pass by luck. The judge calls
 
 - **Exact mode:** the output bytes must equal the oracle's bytes.
 - **Tolerance mode:** each value must be within the declared number of units in the last place. NaN and infinity must appear in exactly the same positions.
+- **Tolerance with a scale:** by default the unit in the last place is taken at the size of the value itself. That is wrong for a running sum: terms that cancel leave a small result carrying the rounding error of the large terms, and a reordered float `cumsum` then differs from NumPy's by millions of units of the result while being exactly as accurate. A spec can therefore supply a scale function with its tolerance, `mode={"tolerance_ulp": 4, "scale": fn}`, which returns per output element the magnitude the unit is taken at. For `cumsum` that is `(i + 1) * (|x[0]| + ... + |x[i]|)`, the standard bound on the error of adding in any order. The price is a weaker check where the bound is wide: for float32 beyond some tens of thousands of elements it no longer notices a single skipped element. Small sizes, where every length and alignment is tried, are not affected.
 - The return value is compared the same way as output buffers.
 
 ### Crashes
@@ -308,6 +362,8 @@ There are two fixture kernels, matching the two spec examples above: `argmax_f32
 
 A third fixture, `compress_scratch_f32`, covers [scratch output](#scratch-output-writing-inside-the-capacity). It is the same operation as `compress_f32` with the output declared `scratch=True`. Its correct kernel and its naive C both leave a stray element past the reported output, and must pass. The same assembly is a broken variant of `compress_f32`, where it must fail, so the two fixtures together prove the rule applies only where the spec asks for it.
 
+A fourth, `tally_u8`, covers [scalar sets](#scalar-sets). It counts elements by their remainder modulo a scalar bucket count, which also sizes its output. Both of its broken variants are correct for the default bucket count and wrong for another, so they are caught only if the other sets are really run and the output is really sized by the scalar of the case.
+
 | Broken variant | Must be caught by |
 |---|---|
 | Skips the last element when the size is not a multiple of the vector width | Correctness |
@@ -318,6 +374,8 @@ A third fixture, `compress_scratch_f32`, covers [scratch output](#scratch-output
 | Writes one element past the used output | Memory safety |
 | Writes one element past the capacity of a scratch output | Memory safety |
 | Writes to an input buffer | Memory safety |
+| Hard-codes the default value of a scalar | Correctness, in a non-default scalar set |
+| Clears as many output elements as the default scalar value gives, when the case gives fewer | Memory safety, in a non-default scalar set |
 | Overwrites a register it must preserve | Calling convention |
 | Uses `x18` | Lint |
 | Correct but slower than naive C | Speed report: shown as significantly slower |

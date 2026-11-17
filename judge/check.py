@@ -66,10 +66,11 @@ class Built:
     k: Kernel
     # Directory holding spec.py and naive.c.
     kernel_dir: Path
-    # Assembly source the kernel was built from.
-    asm: Path
-    # Shared library containing the assembly kernel.
-    kernel: Path
+    # Assembly source the kernel was built from. None for a kernel that has no
+    # assembly for this architecture and consists of its naive C alone.
+    asm: Path | None
+    # Shared library containing the assembly kernel. None when there is no assembly.
+    kernel: Path | None
     # Shared library containing the naive C reference.
     naive: Path
     # Shared library with the timing loop and the calling-convention wrapper.
@@ -92,6 +93,8 @@ class CheckResult:
     fresh_seed: int = 0
     # The compiled artefacts, when the build got that far.
     built: Built | None = None
+    # True when the kernel has no assembly, so only its naive C was checked.
+    c_only: bool = False
 
 
 def build_all(kernel_dir: Path, asm: Path | None = None, tag: str = KERNEL,
@@ -101,8 +104,19 @@ def build_all(kernel_dir: Path, asm: Path | None = None, tag: str = KERNEL,
     `asm` overrides the default source path, and `tag` names the build outputs;
     the selftest uses both to build broken variants. Returns (artefacts,
     failure, spec), where exactly one of artefacts and failure is None.
+
+    A kernel directory without assembly for this architecture is a C kernel:
+    its naive reference is the implementation. It builds without an assembly
+    library. An explicitly named `asm` that does not exist is still an error.
     """
     k = load_spec(kernel_dir)
+    if asm is None and not (kernel_dir / ARCH / "kernel.s").exists():
+        try:
+            return Built(k, kernel_dir, None, None, build_naive(k, kernel_dir / "naive.c"),
+                         build_harness(k)), None, k
+        except BuildError as e:
+            lines = str(e).splitlines() or ["build failed"]
+            return None, Failure(BUILD_FAILED, lines[0], lines[1:_MAX_BUILD_DETAIL_LINES]), k
     asm = asm or kernel_dir / ARCH / "kernel.s"
     if not asm.exists():
         return None, Failure(BUILD_FAILED, f"no {ARCH} kernel at {asm}"), k
@@ -208,18 +222,19 @@ def check(kernel_dir: Path, asm: Path | None = None, case: str | None = None,
     if fresh_seed is None:
         fresh_seed = int.from_bytes(os.urandom(_SEED_BYTES), "little")
 
-    workers = [
-        _start_worker(built, built.naive, NAIVE, fresh_seed, case),
-        _start_worker(built, built.kernel, KERNEL, fresh_seed, case),
-    ]
+    workers = [_start_worker(built, built.naive, NAIVE, fresh_seed, case)]
+    if built.kernel:
+        workers.append(_start_worker(built, built.kernel, KERNEL, fresh_seed, case))
     outcomes = {worker.who: _collect(worker) for worker in workers}
 
-    naive_failure, _ = outcomes[NAIVE]
+    naive_failure, naive_cases = outcomes[NAIVE]
     if naive_failure:
         if naive_failure.category != JUDGE_ERROR:
             naive_failure = Failure(REFERENCE, f"naive.c is wrong: {naive_failure.message}",
                                     naive_failure.details, naive_failure.case, NAIVE)
         return CheckResult(k.name, False, naive_failure, fresh_seed=fresh_seed, built=built)
+    if not built.kernel:
+        return CheckResult(k.name, True, None, naive_cases, fresh_seed, built, c_only=True)
     kernel_failure, cases = outcomes[KERNEL]
     return CheckResult(k.name, kernel_failure is None, kernel_failure, cases, fresh_seed, built)
 

@@ -1,6 +1,6 @@
 # Working in this repository
 
-hotkernels is a set of hand-written assembly kernels for NumPy operations, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project and [docs/judge-design.md](docs/judge-design.md) for the judge.
+hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project and [docs/judge-design.md](docs/judge-design.md) for the judge.
 
 This file is for coding agents. The first half applies to any work here; the second half applies when you are writing or tuning a kernel.
 
@@ -52,7 +52,7 @@ If you believe the spec, the naive reference or the judge is wrong, stop and say
 
 | Command | Use it for | Time |
 |---|---|---|
-| `uv run judge check <kernel>` | After every edit. Lint and correctness. | About 5 seconds |
+| `uv run judge check <kernel>` | After every edit. Lint and correctness. | About 5 seconds, up to 15 for a kernel with many scalar sets |
 | `uv run judge compare <kernel> --against HEAD` | After `check` passes. Is this edit faster? | About 30 seconds |
 | `uv run judge run <kernel>` | The full report against naive C and NumPy. | About 30 seconds |
 | `uv run judge check <kernel> --case '<case>'` | Rerun one failing case. | Instant |
@@ -77,7 +77,8 @@ Only the first failure is shown. The case line says how the input was built:
   - `end`: the buffer ends exactly at an inaccessible page.
   - `start`: the buffer starts exactly after one.
   - `mid1` to `mid3`: deliberately misaligned.
-- `x=nan_at@1` means argument `x` is random data with a NaN at index 1. Other value classes are named the same way (`max_at`, `ties`, `denormal`, `all_true`, and so on); see `judge/cases.py`.
+- `x=nan_at@1` means argument `x` is random data with a NaN at index 1. Other value classes are named the same way (`max_at`, `neg_zero_at`, `ties`, `denormal`, `all_true`, and so on); see `judge/cases.py`.
+- `scalars=zero_lo`, when present, names the set of scalar arguments the call was made with. The sets and their values are listed in the kernel's `spec.py`; without the field the scalars had their default values. A kernel must be right for every set, and `compare` times every set marked `timed`.
 
 The failure categories:
 
@@ -95,7 +96,7 @@ The failure categories:
 A kernel is a pure leaf function over the buffers it is given. The judge enforces all of this:
 
 - **No reads or writes outside the buffers, by even one byte.** This is strict: loading a full vector that extends past the end of an array is a failure, even though it would usually be harmless. Handle leftover elements inside the buffer, for example with a scalar loop, or with a final vector that overlaps the previous one and ends exactly at the end of the array.
-- **Inputs are read-only.** Writing to an input buffer crashes.
+- **Inputs are read-only.** Writing to an input buffer crashes. A buffer the spec declares `InOut` is the exception: the kernel reads and modifies it in place, and may store an element's own bits back to it.
 - **Write only the output you report.** If the kernel returns a count, it must not write beyond that many elements. The one exception is an output the spec declares `scratch=True`: there the kernel may write anywhere inside the buffer's capacity, and only the reported elements have to be right. Writing past the capacity is always a failure. Check `spec.py` before relying on this; the default is strict.
 - **No function calls, no system calls, no writable data.** Read-only constants are fine (`.section __TEXT,__const` or `__TEXT,__literal16`).
 - **Export exactly one symbol:** the kernel itself.
@@ -105,7 +106,8 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 
 - The symbol for C function `foo` is `_foo`. Declare it with `.globl _foo` and align with `.p2align 2`.
 - Labels that start with `L` are local to the file. Use them for everything except the kernel symbol.
-- Arguments arrive in `x0` to `x7` (integers and pointers) and `v0` to `v7` (floating point). The result goes in `x0` or `v0`.
+- Arguments arrive in `x0` to `x7` (integers and pointers) and `v0` to `v7` (floating point). The result goes in `x0` or `v0`. The two kinds are numbered separately: in `f(double *x, size_t n, double lo, double hi)` the pointer is `x0`, `n` is `x1`, `lo` is `d0` and `hi` is `d1`.
+- A leaf kernel may use stack memory below `sp` if it restores `sp` before returning and keeps it 16-byte aligned while it is moved.
 - You may freely use `x0` to `x17` and `v0` to `v7`, `v16` to `v31`.
 - You must preserve `x19` to `x28`, `x29`, the stack pointer, and the low 64 bits of `v8` to `v15`. Prefer not to use them at all.
 - Never use `x18`. The platform reserves it.

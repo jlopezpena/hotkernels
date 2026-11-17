@@ -1,5 +1,5 @@
 {% if result.ok %}
-PASS {{ result.name }} ({{ arch }}): {{ result.cases | thousands }} cases, fresh seed {{ result.fresh_seed }}
+PASS {{ result.name }} ({{ arch }}{{ ", naive C only: no assembly" if result.c_only }}): {{ result.cases | thousands }} cases, fresh seed {{ result.fresh_seed }}
 {% else %}
 {% set f = result.failure %}
 FAIL {{ result.name }} ({{ arch }}): {{ f.category }}

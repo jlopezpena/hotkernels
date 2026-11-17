@@ -6,18 +6,22 @@ One directory per kernel:
 kernels/<name>/
   spec.py          signature, NumPy oracle, correctness mode
   naive.c          the simplest correct C loop
-  arm64/kernel.s   hand-written NEON
+  arm64/kernel.s   hand-written NEON; absent for a kernel that is its naive C
   attempts.md      log of what was tried and what the judge said
 ```
 
-There are no kernels yet.
+A kernel without `arm64/kernel.s` is a C kernel: `uv run judge check <name>` verifies its `naive.c` against NumPy, and `uv run judge run <name>` reports the C against NumPy.
 
 ## Adding a kernel
 
 1. A person writes `spec.py` and `naive.c`. Working examples are in `judge/fixtures/`.
-2. Check the reference: `uv run judge check <name> --unlocked` will report a missing kernel, but it builds `naive.c` against the spec first, so a signature mismatch shows up here.
+2. Check the reference: `uv run judge check <name> --unlocked` builds `naive.c` against the spec and runs every correctness case on it. It must pass before any assembly is written.
 3. Merge `spec.py` and `naive.c` to `main` through a pull request. From then on they are locked.
 4. Start a `/goal` run using [docs/goal-spec-template.md](../docs/goal-spec-template.md).
+
+## Scalar arguments
+
+A `Scalar` has a default value, and the oracle receives the scalars after the arrays: `oracle(x, lo, hi)`. A kernel is verified only for the combinations of scalar values its spec lists, so list the ones that matter in `scalar_sets`: values that select a different path through the kernel, zeros of both signs, infinities, the smallest and largest sizes. Keep every combination inside the kernel's domain, and say in the spec's docstring what that domain is. Mark a set `timed=True` when its speed can differ from the default's. `kernels/clip_f64/spec.py` and `kernels/histogram_f64/spec.py` are working examples; the design is in [docs/judge-design.md](../docs/judge-design.md#scalar-sets).
 
 ## Scratch output
 

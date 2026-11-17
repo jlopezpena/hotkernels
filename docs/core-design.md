@@ -70,7 +70,7 @@ kernels/<name>/
 Each kernel declares one of two modes in its spec.
 
 - **`exact` (default).** Output must be byte-for-byte equal to NumPy's, including NaN, infinities and signed zero. This applies to every kernel that does no floating-point arithmetic: selection, search, counting, copying, comparison. For these, exactness costs nothing and a tolerance would only hide bugs.
-- **`tolerance`.** For kernels that reorder floating-point arithmetic (sums, cumulative sums, dot products), where bit-identical output is often impossible at full speed. The bound is relative and expressed in units in the last place, so the same rule works for float32 and float64. A fixed absolute bound such as 1e-12 does not: float32 carries only about 7 significant digits.
+- **`tolerance`.** For kernels that reorder floating-point arithmetic (sums, cumulative sums, dot products), where bit-identical output is often impossible at full speed. The bound is relative and expressed in units in the last place, so the same rule works for float32 and float64. A fixed absolute bound such as 1e-12 does not: float32 carries only about 7 significant digits. For a running sum the unit is taken at the size of the terms added so far, not at the size of the result: a result that has cancelled to almost nothing still carries the rounding error of its large terms, in NumPy's output as much as in a kernel's.
 
 `report()` marks every installed kernel that is not exact.
 
@@ -145,6 +145,8 @@ Take the shortlisted kernels to `install()`, in the order given in [survey-desig
 - Every shortlisted candidate has a recorded verdict from the judge: shipped as assembly (beats NumPy and naive C), shipped as C (beats NumPy), or rejected with the reason logged.
 - An unmodified script runs faster after adding the one line, with output that meets each kernel's correctness mode, and `report()` shows the kernels being hit.
 - The overhead of a patched call that falls back is measured and negligible.
+
+**Status:** the kernels have had a first pass, recorded in [kernel-findings.md](kernel-findings.md): 21 of the 22 have assembly that beats naive C and one ships as C. The binding and `install()` are not started.
 
 ## Non-goals
 
