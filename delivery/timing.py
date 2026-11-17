@@ -85,9 +85,11 @@ class Timed:
 class Measurement:
     """One statement at one size."""
 
-    # Operation, statement and data description, copied from the Timed entry.
+    # Operation the statement belongs to.
     operation: str
+    # The statement, as a user writes it.
     statement: str
+    # Element type of the data, and anything else that defines the input.
     data: str
     # Kernel that took the call, or None for a call left to NumPy.
     kernel: str | None

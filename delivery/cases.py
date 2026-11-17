@@ -53,6 +53,13 @@ FEW_SIZES = (1, 16, 100, 1000, 8193)
 SLOT_MIN_N = 128
 # Columns of the two-dimensional layouts.
 COLUMNS = 2
+# Bytes other than 1 that a boolean array can hold for True. NumPy accepts
+# them; the mask kernels must never see them.
+BAD_MASK_BYTES = (2, 255)
+# Element count of the one-off cases that need a single ordinary size.
+ORDINARY_N = 1000
+# Every how many bytes the self-overlapping mask case sets one to True.
+OVERLAP_EVERY = 3
 
 # Value classes whose sums can overflow, underflow or meet an infinity. A
 # float cumsum kernel drops its output for NumPy's when that happens.
@@ -567,7 +574,7 @@ def compress_cases() -> Iterator[Case]:
                                partial(_x_and_mask, dtype, n, CONTIGUOUS, mask_maker), spelling.call,
                                expectation(kernel, spelling, variant, n))
             if n:
-                for byte in (2, 255):
+                for byte in BAD_MASK_BYTES:
                     yield Case("compress", f"x[mask] {dtype} n={n} mask bytes are {byte}",
                                partial(_x_and_mask, dtype, n, CONTIGUOUS, partial(_bad_mask, n, byte)), select.call, None)
                 short = partial(values, "bool", n - 1, arg="mask")
@@ -575,7 +582,7 @@ def compress_cases() -> Iterator[Case]:
                            partial(_x_and_mask, dtype, n, CONTIGUOUS, short), select.call, None)
         rows = next(v for v in VARIANTS if v.name == "rows")
         yield Case("compress", f"x[mask] {dtype} two-dimensional",
-                   partial(_x_and_mask, dtype, 1000, rows, lambda: _rows(values("bool", 1000, arg="mask"))),
+                   partial(_x_and_mask, dtype, ORDINARY_N, rows, lambda: _rows(values("bool", ORDINARY_N, arg="mask"))),
                    select.call, None)
 
 
@@ -610,7 +617,7 @@ def _copyto(value, x, mask):
 def _overlapping(n: int) -> tuple:
     """Build an array and a boolean mask that is a view of the array's own bytes."""
     x = np.zeros(n, np.float64)
-    x.view(np.uint8)[: n : 3] = 1
+    x.view(np.uint8)[:n:OVERLAP_EVERY] = 1
     return (x, x.view(np.bool_)[:n])
 
 
@@ -661,11 +668,11 @@ def maskfill_cases() -> Iterator[Case]:
                            partial(_assign, 1.5),
                            takes if variant.plain else (ANY if takes and n == 0 else None))
             if n:
-                for byte in (2, 255):
+                for byte in BAD_MASK_BYTES:
                     yield Case("maskfill", f"x[mask] = 1.5 {dtype} n={n} mask bytes are {byte}",
                                partial(_x_and_mask, dtype, n, CONTIGUOUS, partial(_bad_mask, n, byte)),
                                partial(_assign, 1.5), None)
-    yield Case("maskfill", "x[mask] = 1.5 where mask is a view of x", partial(_overlapping, 1000), partial(_assign, 1.5), None)
+    yield Case("maskfill", "x[mask] = 1.5 where mask is a view of x", partial(_overlapping, ORDINARY_N), partial(_assign, 1.5), None)
 
 
 def nonzero_cases() -> Iterator[Case]:
@@ -680,7 +687,7 @@ def nonzero_cases() -> Iterator[Case]:
     # The kernel is not called for an empty mask's sake: it takes it and returns nothing.
     yield from unary_cases("nonzero", {"bool": "nonzero_bool"}, ("u8", "f64", "i64"), spellings)
     for n in LAYOUT_SIZES:
-        for byte in (2, 255):
+        for byte in BAD_MASK_BYTES:
             yield Case("nonzero", f"mask.nonzero() n={n} mask bytes are {byte}",
                        lambda n=n, byte=byte: (_bad_mask(n, byte),), spellings[0].call, None)
 
@@ -848,7 +855,7 @@ def bincount_cases() -> Iterator[Case]:
     )
     yield from unary_cases("bincount", {"u8": "bincount_u8"}, ("i64", "u16", "i8", "bool"), spellings)
     for value in (0, 1, 254, 255):
-        yield Case("bincount", f"np.bincount(x) every byte is {value}", lambda value=value: (np.full(1000, value, np.uint8),),
+        yield Case("bincount", f"np.bincount(x) every byte is {value}", lambda value=value: (np.full(ORDINARY_N, value, np.uint8),),
                    np.bincount, "bincount_u8")
 
 
