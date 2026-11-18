@@ -39,3 +39,86 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** significantly faster, 1.067x [1.063 – 1.071]
 - **Kept:** yes
 - **Notes:** `random`: 1.51x at 4,194,304 (2.34 ms to 1.57 ms) and 1.49x at 16,777,216; `rising`: 1.46x and 1.42x. More than the 1.25x the same stores gave `cumsum_i64`, less than the 2.6x of `cumsum_bool`, whose input is an eighth of its output. Nothing between 1,024 and 1,048,576. 0.92x at 64 rising elements (10.5 ns to 11.4) and 0.98x to 0.99x at 16, 64 and 256: the test on the way into a loop. Two earlier forms of the same change were slower there and are not kept: with the mark in `rdx` and M before a general block in memory, 0.92x at 256 random elements; with the mark written as a byte over a 4-byte zero, the same as this one. All three gave 1.06x to 1.07x overall, decided by the two largest sizes, which were measured three times with the same result.
+
+## Where it stands
+
+Final `judge run` (unlocked; the judge reported a load average of 3.0, other judges on other cores): 1.21x [1.20 – 1.21] over naive C on `random` and 1.13x [1.12 – 1.14] on `rising`, 1.17x [1.16 – 1.17] over both; 11.4x over NumPy on each.
+
+`random`:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 4.5 ns | 5.9 ns | 1.30x [1.29 – 1.31] | 276.8 ns | 61.7x [61.65 – 61.72] |
+| 64 | 15.1 ns | 12.3 ns | 0.82x [0.82 – 0.82] | 332.4 ns | 22.1x [22.04 – 22.06] |
+| 256 | 35.5 ns | 40.3 ns | 1.13x [1.13 – 1.14] | 649.0 ns | 18.3x [18.25 – 18.27] |
+| 1,024 | 126.7 ns | 160.3 ns | 1.27x [1.26 – 1.27] | 1.8 us | 14.0x [13.98 – 14.03] |
+| 4,096 | 470.7 ns | 622.9 ns | 1.32x [1.32 – 1.32] | 6.7 us | 14.3x [14.31 – 14.32] |
+| 16,384 | 1.9 us | 2.4 us | 1.27x [1.27 – 1.27] | 25.8 us | 13.6x [13.55 – 13.56] |
+| 65,536 | 7.6 us | 9.4 us | 1.24x [1.24 – 1.24] | 100.9 us | 13.3x [13.32 – 13.34] |
+| 262,144 | 72.5 us | 75.8 us | 1.05x [1.04 – 1.05] | 405.3 us | 5.59x [5.58 – 5.60] |
+| 1,048,576 | 390.7 us | 397.8 us | 1.02x [0.98 – 1.05] n.s. | 1.64 ms | 4.20x [4.04 – 4.47] |
+| 4,194,304 | 2.24 ms | 3.47 ms | 1.55x [1.53 – 1.57] | 9.19 ms | 4.10x [4.03 – 4.17] |
+| 16,777,216 | 6.88 ms | 10.29 ms | 1.50x [1.45 – 1.53] | 33.63 ms | 4.89x [4.79 – 4.97] |
+| overall |  |  | 1.21x [1.20 – 1.21] |  | 11.4x [11.35 – 11.47] |
+
+`rising`:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 4.5 ns | 4.4 ns | 1.00x [0.99 – 1.00] n.s. | 272.9 ns | 61.2x [61.05 – 61.32] |
+| 64 | 11.1 ns | 12.4 ns | 1.12x [1.12 – 1.12] | 332.9 ns | 29.9x [29.92 – 29.97] |
+| 256 | 37.4 ns | 41.1 ns | 1.10x [1.08 – 1.11] | 648.8 ns | 17.3x [17.32 – 17.35] |
+| 1,024 | 137.8 ns | 149.6 ns | 1.09x [1.09 – 1.09] | 1.8 us | 12.8x [12.81 – 12.84] |
+| 4,096 | 536.6 ns | 588.2 ns | 1.10x [1.09 – 1.10] | 6.7 us | 12.5x [12.44 – 12.49] |
+| 16,384 | 2.1 us | 2.3 us | 1.10x [1.10 – 1.10] | 25.4 us | 12.0x [12.00 – 12.02] |
+| 65,536 | 8.6 us | 9.3 us | 1.09x [1.09 – 1.09] | 101.5 us | 11.9x [11.85 – 11.87] |
+| 262,144 | 75.5 us | 77.1 us | 1.02x [1.02 – 1.02] | 404.8 us | 5.36x [5.35 – 5.37] |
+| 1,048,576 | 348.5 us | 357.3 us | 1.03x [1.00 – 1.06] | 1.64 ms | 4.72x [4.65 – 4.78] |
+| 4,194,304 | 1.81 ms | 2.63 ms | 1.45x [1.40 – 1.49] | 8.70 ms | 4.80x [4.60 – 4.92] |
+| 16,777,216 | 7.42 ms | 10.75 ms | 1.45x [1.28 – 1.55] | 34.56 ms | 4.66x [4.00 – 4.84] |
+| overall |  |  | 1.13x [1.12 – 1.14] |  | 11.4x [11.21 – 11.41] |
+
+With the output buffer 16 bytes behind its input ("apart" is the same kernel with the output clear of the input), `random`:
+
+| n | kernel | apart | speedup [95%] | naive C | speedup [95%] |
+|---|---|---|---|---|---|
+| 4,096 | 483.8 ns | 498.9 ns | 1.03x [1.03 – 1.03] | 611.3 ns | 1.26x [1.26 – 1.26] |
+| 16,384 | 2.0 us | 1.9 us | 0.93x [0.93 – 0.93] | 3.1 us | 1.53x [1.53 – 1.54] |
+| 65,536 | 7.6 us | 7.6 us | 1.00x [1.00 – 1.00] n.s. | 9.4 us | 1.23x [1.23 – 1.24] |
+| 262,144 | 60.0 us | 59.8 us | 1.00x [0.99 – 1.01] n.s. | 65.7 us | 1.10x [1.09 – 1.10] |
+| 1,048,576 | 410.3 us | 568.8 us | 1.39x [1.36 – 1.41] | 1.32 ms | 3.22x [3.20 – 3.24] |
+| 4,194,304 | 1.55 ms | 1.70 ms | 1.10x [1.08 – 1.11] | 2.45 ms | 1.58x [1.57 – 1.60] |
+| 16,777,216 | 6.55 ms | 6.72 ms | 1.03x [1.01 – 1.04] | 9.85 ms | 1.51x [1.48 – 1.55] |
+| overall |  |  | 1.06x [1.05 – 1.06] |  | 1.54x [1.53 – 1.54] |
+
+No stall: a block's four loads come before its four stores. 0.93x at 16,384 is the one size where the close placement costs.
+
+What the kernel requires of its caller: `out` does not overlap `x`. In the rising loop a block of `out` is stored after the same block of `x` is loaded, so `out` equal to `x` happens to work there, but the general path stores a group's elements after loading only that group and nothing was tested with overlap.
+
+What holds it at each size:
+
+- **16 and 64:** the general path, 1.1 cycles per element against the 0.8 of the naive C's predicted branches. Random data begins with new maxima, so its first blocks go that way: 0.82x at 64.
+- **256 to 65,536:** the second-level cache. The judge's pool of arrays is 64 KB of input and output from 64 elements up, so no size is timed in the first-level cache, where the micro-benchmark has the flat loop at 0.064 ns per element and the rising one at 0.076 against the naive C's 0.15. In the second-level cache the flat loop takes 0.116 ns per element, which is what a copy takes there (`cumsum_i64`'s log: 0.115). The rising loop takes 0.116 when `x` and `out` sit alike within 32 bytes and 0.129 when they do not, which is the judge's placement: with the stores aligned, two of a block's four loads straddle a cache line, and so do two of the four loads one element back.
+- **262,144 and 1,048,576:** the third-level cache, 1.02x to 1.05x.
+- **4,194,304 and 16,777,216:** memory, with a third less traffic than the naive C: 1.45x to 1.55x.
+
+**Data that is neither flat nor rising** is not in the judge's distributions. In the micro-benchmark, 16,384 elements, nanoseconds per element:
+
+| data | kernel | naive C |
+|---|---|---|
+| 1 0 2 1 3 2 ..., which the naive C's branches predict | 0.20 | 0.14 |
+| a walk with a small upward drift | 0.19 | 0.20 |
+| a walk with a strong upward drift | 0.23 | 0.27 |
+| a new maximum at a random half of the elements | 0.22 | 0.35 |
+| the same at 2,000,000 elements, too long for the predictor to learn | 0.72 | 2.60 |
+| a walk with a small upward drift, 2,000,000 elements | 0.75 | 1.32 |
+
+The first row is the worst found: 0.7x of the naive C on a pattern with a short period. On data a predictor cannot learn the general path is 1.8 to 3.6 times faster than the naive C, which is why it has no branch per element. (The figures at 2,000,000 elements were taken with other judges running and moved between runs: 0.54 and 0.67 for the kernel in an earlier one.)
+
+Not tried:
+
+- **The rising test without the second set of loads.** Building the vector one element back in the register costs two shuffles per vector on the port `vpcmpgtq` needs: three cycles per vector where the second-level cache allows 2.5. Assembling the output vectors from loads aligned to `x` (one `vperm2i128` per vector) would halve the straddling loads only when `x` and `out` differ by 16 within 32 bytes.
+- **A flat test after every general block,** or one chosen by whether the last group of four changed M. For random data the gain when the next block is flat and the loss when it is not are about equal by count; for data that is neither it adds a failed test per block.
+- **Blocks of 32 elements** in the flat and rising loops. The loops are at the copy's speed in the second-level cache already; it could only show inside the first-level cache, which the judge does not time.
+- **Stores past the caches below 24 MB,** for the reason `cumsum_i64` gives: the caller gets an output that is in no cache.
+- **The general path in the vector registers.** By count (above the first attempt) it is slower than the integer one.
