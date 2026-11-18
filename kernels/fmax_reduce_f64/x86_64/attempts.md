@@ -22,3 +22,11 @@ Figures "per call on runs of L" are from a driver outside the judge: 8,192 eleme
 - **compare:** n/a (first version). `run`: 2.38x [2.38 – 2.39] over naive C on `random`, 2.37x [2.36 – 2.37] on `some_nan`; 2.26x and 2.54x over NumPy.
 - **Kept:** yes
 - **Notes:** 2.9 ns at 16 (1.80x over the naive C), 8.3 ns at 64, 0.18 ns per element from 4,096 to 1,048,576, which is the chain: one cycle per element. NumPy takes 0.096 ns per element at 16,384 to 262,144, so this is at 0.5x of it there. Per call on runs of 2, 3, 4, 8, 16, 32: 1.1, 1.2, 1.5, 1.8, 2.3, 3.2 ns (naive C: 5.2, 7.5, 10.7, 3.9, 5.6, 9.7).
+
+## 2. Blocks of four vectors, combined with one another before they meet the running maximum
+
+- **Idea:** the chain of attempt 1 is four cycles per vector. Combining is associative as long as the earlier value is the a of each `vmaxpd` and the later one the b (the later of two equal values survives either way), which is how NumPy's own loop goes through eight vectors at a time. Four cleaned vectors are combined in pairs, then the pairs, then the result with the running maximum: one `vmaxpd` on the chain per 16 elements. Whole blocks first, then single vectors, then the leftover elements.
+- **check:** pass. Outside the judge: 60,000 arrays against NumPy, no difference.
+- **compare:** significantly faster, 1.974x [1.968 – 1.980]
+- **Kept:** yes
+- **Notes:** both distributions alike: 1.91x at 64, 2.0x at 256, 2.8x at 1,024, 3.66x at 4,096, 2.9x at 16,384 and 65,536, 2.4x at 262,144, 1.9x at 1,048,576, 1.12x at 4,194,304, nothing at 16 and at 16,777,216. 0.049 ns per element at 4,096: eight `vmaxpd` per block on two ports, four cycles per 16 elements, which is also the chain. Per call on runs of 8, 16, 32, 64: 1.8, 2.4, 2.9, 4.9 ns.

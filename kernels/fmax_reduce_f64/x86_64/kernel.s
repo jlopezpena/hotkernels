@@ -41,6 +41,31 @@ fmax_reduce_f64:
     vmaxpd  ymm0, ymm0, ymm4            # x[0] in every lane, NaN to minus infinity
     lea     rdx, [rdi + rsi * 8]        # the end of the array
     add     rdi, 8
+    lea     rax, [rdi + 128]
+    cmp     rax, rdx
+    ja      .Lvectors
+    # ---- Blocks of four vectors. The four are combined with one another
+    #      first, an earlier vector as a and a later one as b each time, so
+    #      the chain from block to block is one `vmaxpd` per 16 elements.
+.p2align 4
+.Lblock:
+    vmovupd ymm1, [rdi]
+    vmovupd ymm2, [rdi + 32]
+    vmovupd ymm3, [rdi + 64]
+    vmovupd ymm5, [rdi + 96]
+    vmaxpd  ymm1, ymm1, ymm4            # NaN to minus infinity
+    vmaxpd  ymm2, ymm2, ymm4
+    vmaxpd  ymm3, ymm3, ymm4
+    vmaxpd  ymm5, ymm5, ymm4
+    vmaxpd  ymm1, ymm1, ymm2
+    vmaxpd  ymm3, ymm3, ymm5
+    vmaxpd  ymm1, ymm1, ymm3
+    vmaxpd  ymm0, ymm0, ymm1
+    mov     rdi, rax
+    add     rax, 128
+    cmp     rax, rdx
+    jbe     .Lblock
+.Lvectors:
     lea     rax, [rdi + 32]
     cmp     rax, rdx
     ja      .Lreduce
