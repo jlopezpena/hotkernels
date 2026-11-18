@@ -18,12 +18,19 @@
 # probe is inside a whatever the data, sorted or not. A NaN in a (they are last) compares false and is never passed, which is right for
 # every needle that is not NaN.
 #
-# Sixteen searches run in step: four registers of four positions each. A step
-# is, per register, one `vgatherqpd` for the four probes, one compare with
-# the needles, and one add of `half` under the compare's mask. Nothing in a
-# step waits for another search, so when a is too large for the caches the
-# sixteen probes of a step are sixteen cache misses in flight together, where
-# a search done alone has one.
+# Up to 64 searches run in step. Their positions live in out, which is
+# exactly one 64-bit slot per needle, and their needles stay in v. A step is,
+# per four searches, a load of the positions, one `vgatherqpd` for the four
+# probes, one compare with the needles, one add of `half` under the compare's
+# mask, and a store. Nothing in a step waits for another search. Measured on
+# this processor, the chain from one step of a search to its next (store,
+# load, gather, compare, add) is about thirty cycles long, while a gather can
+# start every two or three; with 64 searches in step the sixteen gathers of a
+# step fill that time, where four registers of positions leave most of it
+# idle. And when a is too large for the caches, the probes of a step are
+# cache misses in flight together, where a search done alone has one.
+#
+# The first step needs no gather: every search probes the same element.
 #
 # A NaN needle. NumPy orders NaN after everything and equal to itself, so its
 # answer is the index of the first NaN of a, or n. The compare above is false
@@ -35,16 +42,20 @@
 # Paths, by the number of needles:
 #   0        nothing
 #   1..3     one search at a time, in general registers
-#   4..15    four in step, the last group overlapping the one before it
-#   16..     sixteen in step, the last group overlapping the one before it
+#   4..      chunks of up to 64 in step, four per vector; then, if the count
+#            is not a multiple of four, one more vector that ends with the
+#            last needle and overlaps the one before it
 #
 # `vgatherqpd` is fast on this processor and slow on some others (older AMD,
 # and Intel processors that carry the gather mitigation).
 #
-# Registers: r9 len, rax the address of a[half - 1], r10 byte offset of the
-# group, r11 byte offset of the last group. ymm0-ymm3 lo, ymm4-ymm7 needles,
-# ymm8 half in every lane, ymm9 the gather's mask, ymm10-ymm13 the probes,
+# Registers: r9 len, rax the address of a[half - 1], r10 and r11 the byte
+# offsets where the chunk starts and ends, rbx the offset inside it (saved
+# below the stack pointer). ymm8 half in every lane, ymm9 the gather's mask,
 # ymm15 collects "this needle is a NaN".
+
+# Needles per chunk, in bytes of v: 64.
+.set CHUNK_BYTES, 512
 
 # One step for the four searches in \lo against the needles in \key. A gather
 # clears its mask register, and it merges into its destination, which is
@@ -79,74 +90,92 @@ searchsorted_f64:
     jz      .Lreturn
     cmp     r8, 4
     jb      .Lfew
+    mov     [rsp - 8], rbx
     vpxor   xmm15, xmm15, xmm15
     xor     r10d, r10d
-    cmp     r8, 16
-    jb      .Lquads
+    test    rcx, rcx
+    jz      .Lempty
 
-    # ---- Sixteen in step.
-    lea     r11, [r8 * 8 - 128]
-.Lgroup16:
-    vmovupd ymm4, [rsi + r10]
-    vmovupd ymm5, [rsi + r10 + 32]
-    vmovupd ymm6, [rsi + r10 + 64]
-    vmovupd ymm7, [rsi + r10 + 96]
-    vpxor   xmm0, xmm0, xmm0
-    vpxor   xmm1, xmm1, xmm1
-    vpxor   xmm2, xmm2, xmm2
-    vpxor   xmm3, xmm3, xmm3
-    vcmpunordpd ymm10, ymm4, ymm5       # a NaN in either
-    vcmpunordpd ymm11, ymm6, ymm7
-    vorpd   ymm15, ymm15, ymm10
-    vorpd   ymm15, ymm15, ymm11
+.Lchunk:
+    mov     rax, r8
+    shr     rax, 2
+    shl     rax, 5                      # where the whole vectors end
+    cmp     r10, rax
+    jae     .Lremainder
+    lea     r11, [r10 + CHUNK_BYTES]
+    cmp     r11, rax
+    cmova   r11, rax                    # where this chunk ends
+    # The first step: every search probes a[half - 1].
     mov     r9, rcx
-    test    r9, r9
-    jz      .Lstore16
-.p2align 6
-.Lstep16:
     HALVE
-    PROBE   ymm0, ymm4, ymm10
-    PROBE   ymm1, ymm5, ymm11
-    PROBE   ymm2, ymm6, ymm12
-    PROBE   ymm3, ymm7, ymm13
-    jnz     .Lstep16
-.Lstore16:
-    vmovdqu [rdx + r10], ymm0
-    vmovdqu [rdx + r10 + 32], ymm1
-    vmovdqu [rdx + r10 + 64], ymm2
-    vmovdqu [rdx + r10 + 96], ymm3
-    cmp     r10, r11
-    jae     .Lnantest
-    add     r10, 128
-    cmp     r10, r11
-    cmova   r10, r11                    # the last group ends with the last needle
-    jmp     .Lgroup16
-
-    # ---- Four in step.
-.Lquads:
-    lea     r11, [r8 * 8 - 32]
-.Lgroup4:
-    vmovupd ymm4, [rsi + r10]
-    vpxor   xmm0, xmm0, xmm0
-    vcmpunordpd ymm10, ymm4, ymm4
-    vorpd   ymm15, ymm15, ymm10
-    mov     r9, rcx
+    vbroadcastsd ymm10, qword ptr [rax]
+    mov     rbx, r10
+.Lfirst:
+    vmovupd ymm4, [rsi + rbx]
+    vcmpunordpd ymm11, ymm4, ymm4
+    vorpd   ymm15, ymm15, ymm11
+    vcmpltpd ymm11, ymm10, ymm4
+    vpand   ymm11, ymm11, ymm8
+    vmovdqu [rdx + rbx], ymm11
+    add     rbx, 32
+    cmp     rbx, r11
+    jb      .Lfirst
     test    r9, r9
-    jz      .Lstore4
+    jz      .Lchunkdone
+.Lstep:
+    HALVE
+    mov     rbx, r10
+.p2align 5
+.Lprobe:
+    vmovdqu ymm0, [rdx + rbx]
+    vpcmpeqd ymm9, ymm9, ymm9
+    vpxor   xmm10, xmm10, xmm10         # a gather merges into its destination: start it afresh
+    vgatherqpd ymm10, [rax + ymm0 * 8], ymm9
+    vcmpltpd ymm10, ymm10, [rsi + rbx]
+    vpand   ymm10, ymm10, ymm8
+    vpaddq  ymm0, ymm0, ymm10
+    vmovdqu [rdx + rbx], ymm0
+    add     rbx, 32
+    cmp     rbx, r11
+    jb      .Lprobe
+    test    r9, r9
+    jnz     .Lstep
+.Lchunkdone:
+    mov     r10, r11
+    jmp     .Lchunk
+
+    # ---- The last one to three needles of a count that is not a multiple
+    #      of four: the last four needles as one vector, in registers.
+.Lremainder:
+    test    r8b, 3
+    jz      .Lnantest
+    lea     r10, [r8 * 8 - 32]
+    vmovupd ymm4, [rsi + r10]
+    vcmpunordpd ymm11, ymm4, ymm4
+    vorpd   ymm15, ymm15, ymm11
+    vpxor   xmm0, xmm0, xmm0
+    mov     r9, rcx
 .Lstep4:
     HALVE
     PROBE   ymm0, ymm4, ymm10
+    test    r9, r9
     jnz     .Lstep4
-.Lstore4:
     vmovdqu [rdx + r10], ymm0
-    cmp     r10, r11
-    jae     .Lnantest
-    add     r10, 32
-    cmp     r10, r11
-    cmova   r10, r11
-    jmp     .Lgroup4
+    jmp     .Lnantest
+
+    # ---- a is empty: every answer is 0.
+.Lempty:
+    xor     eax, eax
+.Lzero:
+    mov     qword ptr [rdx + r10 * 8], rax
+    inc     r10
+    cmp     r10, r8
+    jb      .Lzero
+    mov     rbx, [rsp - 8]
+    ret
 
 .Lnantest:
+    mov     rbx, [rsp - 8]
     vmovmskpd eax, ymm15
     vzeroupper
     test    eax, eax
