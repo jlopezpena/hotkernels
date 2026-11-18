@@ -224,6 +224,8 @@ The candidates the design lists for this family (`docs/x86-64-design.md`):
 
 **What differs from the ARM64 kernels for a caller.** The ARM64 row in "What a caller must know" says the kernels read the array twice, that the search for a NaN the first pass saw has no bound, and that a concurrent writer can make them return `n` or read past the end. Here the second look is at one block, both looks are bounded, nothing outside the array is read, and the result is always an index inside it. A concurrent writer can still make the answer wrong, as it can for NumPy.
 
+**One thing is new for a caller on x86-64: the invalid flag.** `vmaxps` and `vminps` set the invalid flag in MXCSR when an operand is a NaN, quiet or signalling, so these four kernels leave it set after a call on an array that holds a NaN. The ARM64 `fmax` does not for a quiet NaN. Whether NumPy looks at the flag after `argmax` and turns it into a warning has to be established by `uv run delivery check` when the package is built for x86-64; if it does, the binding clears the flag after these kernels as it does after `clip`. (Noted while writing the `clip` kernels, after this log's pull request was opened.)
+
 Left untried: aligned loads and a prefetch (above); the NaN test as a running sum on the third vector port instead of compares on the two busy ones (it would raise floating-point flags); blocks of 128.
 
 Found here and worth trying on ARM64: accumulators that are never reset and one branch per block for "new extreme or NaN", which make it one pass with a bounded second look. That would settle issue 56 there as well.
