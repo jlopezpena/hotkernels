@@ -11,3 +11,11 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** n/a (first version). `run`: 0.91x [0.90 – 0.92] of the naive C overall, 4.93x over NumPy.
 - **Kept:** yes
 - **Notes:** slower than the C wherever the counters are not what holds it. Uniform codes, 64 counters: 0.50x at 16 elements and 0.64x at 64 (`rep stosq` of 512 bytes against the C library's `memset`: 16 ns against 8 for the whole call at 16), 0.83x from 4,096 to 16,384 (0.242 ns per element against 0.200; the C's loop is unrolled four times, this one takes a loop branch per element). Four distinct values: 0.97x to 1.00x from 1,024 up, where both wait for the counters. 1,000 counters: 1.00x at 16 elements, where both spend the call clearing 8 KB.
+
+## 2. Four elements per step, counters cleared with 32-byte stores
+
+- **Idea:** the two things attempt 1 lost to the C. The loop is unrolled four times, so the loop branch is taken once per four elements. The counters are cleared two 32-byte stores per step, the last two ending exactly at the end of `counts` and overlapping the ones before; four to seven counters take two overlapping stores, one to three a store each, and from 512 counters `rep stosq` stays.
+- **check:** pass
+- **compare:** significantly faster, 1.120x [1.107 – 1.133]
+- **Kept:** yes
+- **Notes:** uniform codes, 64 counters: 2.13x at 16 elements (15.8 ns to 7.1), 1.28x at 4,096 (0.238 ns per element to 0.186), 1.07x to 1.16x from 16,384 up. Four distinct values: 1.94x at 16, 1.00x to 1.02x from 4,096 up, where the wait for the counters is the whole cost. 1,000 counters: 1.03x at 16 elements, `rep stosq` in both. One 32-byte store per step cleared 256 counters in 16 ns for the call against the C's 10 in a micro-benchmark outside the judge; two per step, 9 ns. An 8-byte load with the four codes taken out of the register was not written: a sign-extending load is one instruction already, where `bincount_u8` saved a load per byte.
