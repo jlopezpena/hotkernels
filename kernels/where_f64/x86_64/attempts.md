@@ -37,3 +37,11 @@ Every element is 17 bytes read and 8 written, so beyond the first-level cache th
 - **compare:** significantly faster, 1.048x [1.042 – 1.054]
 - **Kept:** yes
 - **Notes:** half_true 1.07x at 256, 1.11x at 1,024, 1.12x at 4,096, 1.27x at 16,384, 1.18x at 65,536, 1.05x at 262,144, nothing from 1,048,576, where the judge's output already is at a multiple of 32. mostly_true the same except 16,384 at 1.00x, where its output already was. **0.90x at 64** in both: five blocks where there were four.
+
+## 5. A group of four in place of the first block, and alignment from 32 elements
+
+- **Idea:** bringing out to a multiple of 32 takes at most three elements, so the unaligned first step need not be a block of 16: one group of four with its mask from `vpmovsxbq`, six instructions against 22. With the first step that cheap the alignment starts at 32 elements, not 64.
+- **check:** pass. The program of attempt 3 again: 156,114 runs, no failure.
+- **compare:** significantly faster, 1.017x [1.015 – 1.020]
+- **Kept:** yes
+- **Notes:** 1.19x to 1.20x at 64 (13.9 ns to 11.6 ns, and below the 12.5 ns it took before attempt 4), 1.02x at 256, 0.99x at 4,096 and 16,384, nothing elsewhere.

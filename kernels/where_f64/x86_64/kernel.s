@@ -25,9 +25,10 @@
 # masks come from `vpmovsxbq`.
 #
 # From ALIGN_MIN elements out is brought to a multiple of 32 bytes, so that
-# no store straddles two cache lines: the first block is done where out is,
-# and the blocks after it start up to three elements in, where out is at such
-# a multiple. An out that is not a multiple of 8 cannot be brought there.
+# no store straddles two cache lines: the first four elements are done as a
+# group where out is, and the blocks start up to three elements in, where out
+# is at such a multiple. An out that is not a multiple of 8 cannot be brought
+# there.
 #
 # From STREAM_MIN_N elements the blocks store with `vmovntdq`. An ordinary
 # store first reads the cache line it is about to overwrite; this one does
@@ -55,8 +56,9 @@
     .fill 8, 1, 4 * \g + 3
     .endr
 
-# From this many elements out is brought to a multiple of 32 bytes.
-.set ALIGN_MIN, 64
+# From this many elements out is brought to a multiple of 32 bytes: enough
+# for the three elements that may take and one block after them.
+.set ALIGN_MIN, 32
 # From this many elements the stores go past the caches: 24 MB of output, the
 # third-level cache of this processor.
 .set STREAM_MIN_N, 3 * 1024 * 1024
@@ -88,7 +90,7 @@
 .endm
 
 # Move the four pointers on by the up to three elements that bring out to a
-# multiple of 32 bytes, after a first block has been done where they were.
+# multiple of 32 bytes, after a first group has been done where they were.
 # For an out that is not a multiple of 8 the count is as arbitrary as the
 # place it leads to, and as harmless. r8 is free by now.
 .macro ALIGN
@@ -102,7 +104,8 @@
     add     rdi, r8
 .endm
 
-# One group of 4 elements at index \i, for the arrays under 16 elements.
+# One group of 4 elements at index \i: the arrays under 16 elements, and the
+# first four elements of the others. ymm0 = zeros.
 .macro GROUP i
     vpmovsxbq ymm1, dword ptr [rdi + \i]
     vpcmpeqq ymm1, ymm1, ymm0           # all ones where c is false
@@ -130,7 +133,7 @@ where_f64:
     lea     r9, [rcx + r8 * 8 - 128]
     cmp     r8, ALIGN_MIN
     jb      .Lfew
-    BLOCK   rdi, rsi, rdx, rcx          # the first block, wherever out is
+    GROUP   0                           # the first group, wherever out is
     cmp     r8, STREAM_MIN_N
     jae     .Lstream
     ALIGN
