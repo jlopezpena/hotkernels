@@ -18,8 +18,16 @@
 # The mask bits for 32 elements come from one compare and one `vpmovmskb`. A
 # mask byte counts as true when it is not zero, whatever its value.
 #
+# A block of 32 with at most SPARSE_MAX selected elements does not go through
+# the table. `tzcnt` and `blsr` take the positions out of the mask word one by
+# one, a fixed SPARSE_MAX of them, and each element is copied on its own. That
+# is four small loads and stores per block where the table path makes
+# eight of 32 bytes. Which path a block takes is one compare of its
+# count, so a mask that is sparse throughout or dense throughout predicts well
+# and one near the threshold does not.
+#
 # Paths, by what is left:
-#   32 or more  blocks of 32: one mask word, eight table steps
+#   32 or more  blocks of 32: one mask word, then four single copies or eight table steps
 #   4..31       one table step per 4, the mask bits from a 4-byte load
 #   1..3        one element at a time, as the reference does it
 
@@ -29,6 +37,9 @@
 .set ENTRY_SHIFT, 5
 # The bits of the shifted mask word that hold one group's offset.
 .set ENTRY_BITS, 0xf << ENTRY_SHIFT
+
+# A block with more selected elements than this goes through the table.
+.set SPARSE_MAX, 4
 
 # One entry of the permutation table: for mask bits \m, the 32-bit lanes of
 # the selected elements in ascending order. The lanes past the count are zero:
@@ -77,14 +88,52 @@ compress_f64:
     xor     r9d, r9d                    # elements written
     lea     r10, [rip + .Lperm]
     vpxor   xmm0, xmm0, xmm0
-    mov     r11, rcx
-    shr     r11, 5                      # blocks of 32
+    mov     [rsp - 8], rbx              # rbx is the caller's; restored before returning
+    mov     rbx, rcx
+    and     rbx, -32
     jz      .Lgroups
+    add     rbx, rsi                    # the mask address where the blocks end
 .p2align 6
 .Lblock:
     vpcmpeqb ymm1, ymm0, [rsi]          # 0xff where the mask byte is zero
     vpmovmskb eax, ymm1
     not     eax                         # one bit per selected element
+    popcnt  r11d, eax
+    cmp     r11d, SPARSE_MAX
+    ja      .Ldense
+    # Sparse block: the first SPARSE_MAX selected elements, one load and one
+    # store each. Bit 31 is set before every `tzcnt`, so that once the set
+    # bits are used up the position is 31, an element of this block, and the
+    # copy is one the write position does not advance over. A true bit 31 is
+    # the last to be reached and is copied like any other.
+    bts     eax, 31
+    tzcnt   r8d, eax
+    blsr    eax, eax
+    vmovsd    xmm2, [rdi + r8 * 8]
+    vmovsd    [rdx + r9 * 8], xmm2
+    bts     eax, 31
+    tzcnt   r8d, eax
+    blsr    eax, eax
+    vmovsd    xmm2, [rdi + r8 * 8]
+    vmovsd    [rdx + r9 * 8 + 8], xmm2
+    bts     eax, 31
+    tzcnt   r8d, eax
+    blsr    eax, eax
+    vmovsd    xmm2, [rdi + r8 * 8]
+    vmovsd    [rdx + r9 * 8 + 16], xmm2
+    bts     eax, 31
+    tzcnt   r8d, eax
+    blsr    eax, eax
+    vmovsd    xmm2, [rdi + r8 * 8]
+    vmovsd    [rdx + r9 * 8 + 24], xmm2
+    add     r9, r11
+    add     rsi, 32
+    add     rdi, 256
+    cmp     rsi, rbx
+    jne     .Lblock
+    jmp     .Lgroups
+.p2align 4
+.Ldense:
     shl     rax, ENTRY_SHIFT
     mov     r8d, eax
     and     r8d, ENTRY_BITS
@@ -112,8 +161,8 @@ compress_f64:
     STEP    [rdi + 224]
     add     rsi, 32
     add     rdi, 256
-    dec     r11
-    jnz     .Lblock
+    cmp     rsi, rbx
+    jne     .Lblock
 
 .Lgroups:
     and     ecx, 31
@@ -148,6 +197,7 @@ compress_f64:
     dec     ecx
     jnz     .Lone
 .Ldone:
+    mov     rbx, [rsp - 8]
     mov     rax, r9
     vzeroupper
     ret
