@@ -28,3 +28,11 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** significantly faster, 1.102x [1.096 – 1.108]
 - **Kept:** yes
 - **Notes:** on all three distributions alike: 1.20x at 1,024, 1.25x to 1.28x at 4,096, 1.23x to 1.31x at 16,384 and 65,536, 1.05x at 64, nothing from 262,144 up (0.95x and 0.96x at 1,048,576 on two of the three distributions, 1.00x on the third, with other judges running). 0.153 ns per element at 16,384, 0.8 of a cycle. By count the block has six shuffles (`vpermpd`) on the one port that takes them, six cycles per eight elements, and ten `vmaxpd` on two ports, five cycles.
+
+## 3. Prefetch the input and the output six cache lines ahead
+
+- **Idea:** found in a micro-benchmark outside the judge. Attempt 2 takes 0.142 ns per element at 1,024 elements, inside the first-level cache, and 0.167 at 16,384 and 65,536, where a plain copy takes 0.115: the cache is not what holds it. A block is some 30 operations, so the processor's window of instructions holds about a kilobyte of data and does not reach the cache misses ahead of it, as it does in a loop of a few instructions. One `prefetcht0` per block for each of the two buffers, 384 bytes ahead: 0.140 at 16,384 and 65,536 in the micro-benchmark, and the same at 768 bytes; 0.152 at 192. For the output alone: nothing. A prefetch reads nothing and cannot fault; near the end of the arrays its address is past them.
+- **check:** pass
+- **compare:** significantly faster, 1.033x [1.031 – 1.036]
+- **Kept:** yes
+- **Notes:** 1.04x to 1.08x from 64 to 65,536 on all three distributions, 1.02x at 262,144, 1.00x to 1.03x above; 16 unchanged. Less than the micro-benchmark's 1.2x: the judge's attempt 2 was at 0.153 ns per element at 16,384, not 0.167, and is now at 0.146. Tried in the same micro-benchmark and not kept, each a way to take shuffles off the one port that has them by sending the value through memory instead (a store below the stack pointer and a broadcast load of it): the two broadcasts of a block, 0.132 ns per element at 1,024 but 0.277 at 16,384; the shift by two lanes, 0.172 and 0.389. Beyond the first-level cache the stores of the output wait for their cache lines and the small stores queue behind them.

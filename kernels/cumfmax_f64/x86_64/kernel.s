@@ -28,6 +28,11 @@
 # rdi and rsi point at the ends of the arrays and rcx, negative, counts bytes
 # up to zero.
 
+# How far ahead of a block its input and output are prefetched, in bytes: six
+# cache lines. A block is some 30 operations, so the processor's window holds
+# few blocks and does not reach the cache misses ahead by itself.
+.set PREFETCH_BYTES, 384
+
 .section .rodata
 .p2align 3
 .Lneginf:
@@ -108,6 +113,8 @@ cumfmax_f64:
 .p2align 4
 .Lpair:
     PAIR
+    prefetcht0 [rdi + rcx + PREFETCH_BYTES]
+    prefetcht0 [rsi + rcx + PREFETCH_BYTES]
     vmovupd ymm1, [rdi + rcx + 64]
     vmovupd ymm2, [rdi + rcx + 96]
     vmovupd [rsi + rcx], ymm7
