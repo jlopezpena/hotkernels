@@ -1,5 +1,5 @@
 <section class="hero">
-<p class="eyebrow">NumPy on Apple Silicon</p>
+<p class="eyebrow">NumPy on Apple Silicon and x86-64 Linux</p>
 <div class="hero-grid">
 <div>
 <h1>The slow parts of NumPy, <em>rewritten underneath it</em>.</h1>
@@ -44,7 +44,7 @@ Each bar is one NumPy call on an array of 1,048,576 elements, timed as a native 
 - **Assembly only where it wins.** A kernel keeps its assembly only if it is measurably faster than the compiled C. Where it is not, the C ships.
 - **Nothing breaks when a kernel does not apply.** A strided array, another element type, an argument a kernel does not implement: the call goes to NumPy exactly as written. With hotkernels installed, NumPy's own test suite gives the same outcome for each of its 47,234 tests.
 
-There are limits, and the site does not hide them: one machine, macOS on Apple Silicon only, one or two element types per operation, and a few results that depend on the arguments. They are set out in [what the numbers do not say]([[ root ]]report/results/).
+There are limits, and the site does not hide them: figures from one machine, an Apple M1 Pro, with the x86-64 kernels measured separately and not yet written up here; one or two element types per operation, and a few results that depend on the arguments. They are set out in [what the numbers do not say]([[ root ]]report/results/).
 
 ## How it was built, and why you might care
 

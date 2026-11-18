@@ -105,12 +105,37 @@ jobs:
             dist/*.tar.gz
           if-no-files-found: error
 
-  # Any other platform builds the source distribution into a package that
-  # installs and does nothing. The slim image has no C compiler, which the
-  # build must not need.
-  other-platforms:
+  # The Linux x86-64 wheels, built by cibuildwheel from the same source
+  # distribution in a manylinux container. Settings are in [tool.cibuildwheel]
+  # in hotkernels/pyproject.toml. Its test command installs each wheel in a
+  # fresh environment and checks that kernels are installed, which needs a
+  # processor with the x86-64-v3 instruction sets; the hosted runners have one.
+  build-linux:
     needs: build
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: sdist
+      - id: sdist
+        run: echo "path=$(ls sdist/hotkernels-*.tar.gz)" >> "$GITHUB_OUTPUT"
+      - uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
+        with:
+          package-dir: ${{ steps.sdist.outputs.path }}
+          output-dir: dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-linux
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # Any other platform builds the source distribution into a package that
+  # installs and does nothing. Linux on ARM64 is such a platform, and the slim
+  # image has no C compiler, which the build must not need there.
+  other-platforms:
+    needs: build
+    runs-on: ubuntu-24.04-arm
     container: python:3.12-slim
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -120,7 +145,7 @@ jobs:
       - run: |
           pip install dist/hotkernels-*.tar.gz
           cd /tmp
-          python -c "import hotkernels; hotkernels.install(); r = hotkernels.report(); print(r); assert not r.installed and 'macOS on ARM64' in r.unsupported, r"
+          python -c "import hotkernels; hotkernels.install(); r = hotkernels.report(); print(r); assert not r.installed and 'macOS on ARM64 or Linux on x86-64' in r.unsupported, r"
           python -m hotkernels --help
 
   # Every hooked NumPy call, with and without hotkernels, against each wheel
@@ -160,9 +185,39 @@ jobs:
           uv pip install --reinstall dist/hotkernels-*-"$WHEEL_TAG"-"$WHEEL_TAG"-*.whl
           uv run --no-sync delivery check
 
+  # The same check against each Linux wheel.
+  test-linux:
+    needs: build-linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: "3.11", tag: cp311 }
+          - { python: "3.12", tag: cp312 }
+          - { python: "3.13", tag: cp313 }
+          - { python: "3.14", tag: cp314 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-linux
+          path: dist
+      - env:
+          PYTHON: ${{ matrix.python }}
+          WHEEL_TAG: ${{ matrix.tag }}
+        run: |
+          uv sync --python "$PYTHON"
+          # Replace the package built from the checkout with the release wheel.
+          uv pip install --reinstall dist/hotkernels-*-"$WHEEL_TAG"-"$WHEEL_TAG"-*.whl
+          uv run --no-sync delivery check
+
   pypi:
     if: github.ref_type == 'tag'
-    needs: [version, test, other-platforms]
+    needs: [version, test, test-linux, other-platforms]
     runs-on: ubuntu-latest
     # The gate: this job waits until the maintainer approves it, and PyPI
     # accepts an upload only from a job in this environment.
@@ -172,9 +227,12 @@ jobs:
     permissions:
       id-token: write # trusted publishing: proves to PyPI which workflow and environment this is
     steps:
+      # Both artifacts: the source distribution and the macOS wheels, and the
+      # Linux wheels.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dist
+          pattern: dist*
+          merge-multiple: true
           path: dist
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
@@ -182,7 +240,7 @@ jobs:
 
   testpypi:
     if: github.event_name == 'workflow_dispatch'
-    needs: [version, test, other-platforms]
+    needs: [version, test, test-linux, other-platforms]
     runs-on: ubuntu-latest
     environment:
       name: testpypi
@@ -190,9 +248,12 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # Both artifacts: the source distribution and the macOS wheels, and the
+      # Linux wheels.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dist
+          pattern: dist*
+          merge-multiple: true
           path: dist
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
@@ -212,7 +273,8 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dist
+          pattern: dist*
+          merge-multiple: true
           path: dist
       - env:
           GH_TOKEN: ${{ github.token }}

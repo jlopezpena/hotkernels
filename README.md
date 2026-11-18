@@ -11,7 +11,7 @@ Kernels are written by coding agents iterating against a judge. The judge checks
 
 **On an Apple M1 Pro, all 23 kernels are faster than NumPy at every size measured. At a million elements, 17 of the 22 in the table below are more than 5x faster and the best is 76x. Twenty-one return NumPy's result bit for bit.**
 
-The kernels that exist are ARM64 NEON, for Apple Silicon. x86-64 on Linux is the second architecture: the judge runs there, and AVX2 kernels are being written against the same specs. None is installed yet. The plan, and what a first measurement says to expect, is in [docs/x86-64-design.md](docs/x86-64-design.md).
+The kernels exist for two architectures, written separately against the same specs: ARM64 NEON for Apple Silicon, and x86-64 AVX2 for Linux on processors of the x86-64-v3 level. The tables below are the ARM64 kernels on an Apple M1 Pro. The x86-64 kernels' figures from Python, on an Intel Core i5-14600KF, are in [delivery/results/intel-r-core-tm-i5-14600kf.md](delivery/results/intel-r-core-tm-i5-14600kf.md); NumPy is a different opponent there, with vector loops of its own for several of these calls, so the two sets of figures are not expected to agree. The plan the x86-64 kernels were written to is [docs/x86-64-design.md](docs/x86-64-design.md).
 
 ## Results
 
@@ -133,7 +133,7 @@ At 16 elements most of the gain is NumPy's own call path being skipped, not the 
 - **Release tooling** (`release/`, `release-notes/`): the notes each pull request leaves, and the commands that turn them into a release. Publishing to PyPI runs in [`.github/workflows/release.yml`](.github/workflows/release.yml).
 - **The documentation site** (`docsite/`): the pages published at [sofeikov.github.io/hotkernels](https://sofeikov.github.io/hotkernels/), with a technical report on how all of this works. Its figures are read from the files above when it is built.
 
-Supported platform for the package: macOS on Apple Silicon (ARM64). The judge also runs on Linux x86-64.
+Supported platforms for the package, the judge and the survey: macOS on Apple Silicon (ARM64), and Linux on x86-64. On Linux the package needs a processor with the x86-64-v3 instruction sets (AVX2, FMA, BMI1, BMI2, LZCNT, MOVBE, POPCNT: Intel since 2013, AMD since 2015).
 
 ## Using hotkernels
 
@@ -141,7 +141,7 @@ Supported platform for the package: macOS on Apple Silicon (ARM64). The judge al
 pip install hotkernels
 ```
 
-Wheels are published for macOS on Apple Silicon, CPython 3.11 to 3.14. Elsewhere the package installs from its source distribution without a compiler, and `install()` does nothing. In this repository, `uv sync` builds the package from `kernels/`; that needs the Xcode command line tools.
+Wheels are published for macOS on Apple Silicon and for Linux on x86-64 (glibc), CPython 3.11 to 3.14. Elsewhere the package installs from its source distribution without a compiler, and `install()` does nothing. In this repository, `uv sync` builds the package from `kernels/`; that needs the Xcode command line tools on macOS, or a C compiler and GNU binutils on Linux.
 
 ```python
 import numpy as np
@@ -161,7 +161,7 @@ hotkernels.uninstall()          # NumPy is exactly as it was
 - `hotkernels.install(inexact=True)` also installs the kernels that are not bit-identical to NumPy.
 - `with hotkernels.enabled():` installs for the duration of a block.
 - A kernel takes a call only when the array is a plain contiguous `ndarray` of its element type and every other argument is one it implements. Any other call goes to NumPy as it was written.
-- On any other platform, `install()` does nothing and `report()` says why.
+- On any other platform, and on an x86-64 processor without the x86-64-v3 instruction sets, `install()` does nothing and `report()` says why.
 - `python -m hotkernels script.py [args ...]` runs an unmodified script with hotkernels installed; `-m module` runs a module, and `--report` prints the report at the end.
 
 ## Using the judge

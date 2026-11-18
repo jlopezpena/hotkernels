@@ -203,11 +203,14 @@ Steps 1 and 2 can land now; they are useful before anything is published, becaus
 
 ## More than one platform
 
-The pipeline was built for one platform, macOS on ARM64. A second, Linux on x86-64, is proposed in [x86-64-design.md](x86-64-design.md#the-package-and-its-delivery). What it changes here:
+The pipeline was built for one platform, macOS on ARM64. The second, Linux on x86-64 ([x86-64-design.md](x86-64-design.md#the-package-and-its-delivery)), is in the workflow as follows:
 
-- **`build` and `test` run once per platform**, each on a runner of that platform. Nothing is uploaded until every platform's wheels are built and tested.
+- **`build` and `test` run once per platform**, each on a runner of that platform. `build` makes the source distribution and the macOS wheels; `build-linux` takes that source distribution and builds the Linux wheels from it with `cibuildwheel` in a manylinux container; `test` and `test-linux` run `delivery check` against each wheel. Nothing is uploaded until every platform's wheels are built and tested: the publishing jobs need both test jobs and collect both sets of wheels.
+- **Linux wheels are `manylinux` on x86-64 only.** No `musllinux` wheel: the kernels have only been judged and checked with glibc. A Linux wheel installs on any x86-64 processor and `install()` does nothing on one below the x86-64-v3 level.
+- **The compiler in the manylinux image is gcc, and that is acceptable only while no kernel ships as C on x86-64.** A C kernel in a wheel has to be compiled by the compiler the judge timed it with, which is clang. Today every kernel has assembly on x86-64, assembled by GNU `as`, which is also what the judge uses. The day a kernel ships as C there, the Linux wheel build has to install clang in the image and point `CC` at it.
+- **The job for other platforms moved to Linux on ARM64**, since a build on Linux x86-64 now needs a compiler.
 - **macOS jobs that publish nothing may run on the maintainer's own Mac.** Hosted macOS runners are often not assigned for a quarter of an hour. [`pick-runner.yml`](../.github/workflows/pick-runner.yml) sends the judge job of `ci.yml` and the `build` and `test` jobs of a pull request to a self-hosted runner when it is online, busy or not, and to a hosted one otherwise. It is never used for a pull request from a fork or for a tag, so a published wheel is never built or tested on a personal machine. On the Mac, `build` makes the wheels with `uv build` and the settings `[tool.cibuildwheel]` gives, because `cibuildwheel` installs Pythons system-wide and the runner's account may not; a pull request therefore does not exercise `cibuildwheel` itself unless it falls back to a hosted runner. A tag always does.
-- **C kernels in a wheel are compiled for the oldest processor that platform's wheels claim to run on:** `apple-m1` on macOS, the x86-64-v3 level on Linux.
+- **C kernels in a wheel are compiled for the oldest processor that platform's wheels claim to run on:** `apple-m1` on macOS, the x86-64-v3 level on Linux. The `kernel_cpu` build option carries either.
 - **A note's speed figure names its platform** once the package ships for more than one.
 - **Re-measuring needs every platform.** Step 5 of the release pull request runs on the maintainer's machine, which is one platform. How the other platform's figures are re-measured is not decided. It is [open issue 6](x86-64-design.md#open-issues) of the x86-64 design.
 

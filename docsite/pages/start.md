@@ -4,11 +4,13 @@ There is very little to do. Install the package, call `install()` once, and NumP
 
 | | |
 |---|---|
-| Machine | A Mac with Apple Silicon (ARM64) |
+| Machine | A Mac with Apple Silicon (ARM64), or Linux on x86-64 with a processor of the x86-64-v3 level (AVX2, FMA, BMI2: Intel since 2013, AMD since 2015) |
 | Python | 3.11 or later, the standard build with the interpreter lock |
 | NumPy | 2.3 or a later NumPy 2 |
 
-Wheels are published for CPython 3.11 to 3.14. With another Python the package is built from source when it is installed, which takes a few seconds and needs the Xcode command line tools (`xcode-select --install`).
+Wheels are published for CPython 3.11 to 3.14. With another Python the package is built from source when it is installed, which takes a few seconds and needs the Xcode command line tools (`xcode-select --install`) on a Mac, or a C compiler and GNU binutils on Linux.
+
+The figures on this site were measured on an Apple M1 Pro. On x86-64 the same calls are served by a second set of kernels, written separately, and NumPy is faster to begin with for some of them, so the gains are not the same.
 
 On any other machine the package still installs, with no compiler, and `install()` does nothing, so code that calls it stays portable.
 
