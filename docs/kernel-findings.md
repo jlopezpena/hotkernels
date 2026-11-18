@@ -74,6 +74,7 @@ Every figure is how many times faster the kernel is. "vs naive C" and "vs NumPy"
 - **Memory is the ceiling sooner.** A scalar chain costs one cycle per element on this core against three on the M1, and a plain copy in the second-level cache is only 1.65x faster than that. `cumsum_i64` is the kernel that shows it: 1.18x over the naive C.
 - **Several ARM64 caveats do not exist in the x86-64 kernels:** the three of `clip`, the density at which the mask kernels are weak, mask bytes other than 0 and 1, the unbounded second scan of `argmax`, the slow last bin of `histogram`, the 1e154 limit of float `cumsum`. They are listed under [What a caller must know](#what-a-caller-must-know). None was removed from the binding or the rules on the kernels' authority.
 - **One reference was wrong for this architecture.** `interp_f64`'s fused the multiply and the add, which NumPy's x86-64 build does not. It was corrected in a pull request of its own, and the kernel's row below is a locked run against the corrected reference.
+- **Kernels added since the first pass** are the last rows of the table and are described under [Second shortlist](#second-shortlist). Their runs are `--unlocked`, because each kernel's spec and reference arrived in the same pull request as its assembly; the reports in `results/` say so.
 - **From Python,** with the binding and NumPy's call overhead on both sides: [delivery/results/intel-r-core-tm-i5-14600kf.md](../delivery/results/intel-r-core-tm-i5-14600kf.md). No hooked call is slower than NumPy at any size timed.
 
 | Kernel | Input | vs naive C | vs NumPy | vs NumPy at 1,048,576 |
@@ -101,6 +102,7 @@ Every figure is how many times faster the kernel is. "vs naive C" and "vs NumPy"
 | `clip_f32` | all six tables | 1.30x [1.30 – 1.30] | 13.1x | 1.05x (bounds -0.5, 0.5, random) |
 | `clip_f64` | all six tables | 1.09x [1.09 – 1.09] | 6.78x | |
 | `cast_u8_f32` | random | 1.21x [1.20 – 1.21] | 6.10x | 1.05x |
+| `cumsum_bool` | random | 1.89x [1.88 – 1.91] | 39.0x | 10.5x |
 
 Columns as in the ARM64 table: "vs naive C" and "vs NumPy" are geometric means over the eleven sizes from 16 to 16,777,216 elements. NumPy is timed from Python, where a call costs half a microsecond or more, so its overall column is dominated by the small sizes; the column at 1,048,576 elements is the one that compares loops. The reports the rows are read from are in [`results/`](../results), one per kernel.
 
@@ -365,6 +367,22 @@ Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and wha
 - **`cast_u8_f32`.** `vpmovzxbd` from memory and `vcvtdq2ps`, with aligned stores and stores past the caches from 24 MB. The naive C ties NumPy, as the design expected. The assembly is 1.21x over the C: level with NumPy from 16,384 to 1,048,576 elements and 3.39x at 16,777,216.
 - **The invalid flag.** `vmaxps` and `vminps` set it for any NaN operand, quiet or signalling. The binding's clearing of flags after `clip` is needed on x86-64 as on ARM64.
 
+### Second shortlist
+
+Kernels from [second-shortlist-design.md](second-shortlist-design.md), which took its candidates from the NumPy calls of a program in use. They are written for x86-64 first; on ARM64 each ships as its naive C until it has assembly there.
+
+#### `cumsum` on booleans
+
+`np.cumsum(mask)` gives a running count of the True elements as int64. NumPy converts the mask to int64 in chunks and adds: 1.9 ns per element at 4,096 and 3.5 at 65,536 on the Intel Core i5-14600KF. The naive C is the scalar chain at one cycle per element, 0.19 ns.
+
+- **Technique (x86-64).** Eight elements are one step. Their eight mask bits index a table of 256 entries, each the running count within the group as eight bytes; `vpmovzxbq` from memory widens the two halves to four 64-bit lanes each. A second table holds the group's total, loaded into every lane with `vpbroadcastq`. With T the count before the group, the two output vectors are the widened halves plus T and the next T is T plus the total: a chain of one add per eight elements. The bits of 32 elements come from one `vpmovmskb`.
+- **It writes eight bytes for every byte it reads,** so the stores decide. Up to three elements go one at a time first, until the output is a multiple of 32 bytes and no store straddles two cache lines; the mask being a byte per element, any number can. Inside the first-level cache it runs at 0.062 ns per element, 3.0x over the naive C. Once the output is in the second-level cache it runs at 0.10 ns per element whatever the arithmetic: 1.9x.
+- **Stores past the caches from 24 MB of output** are worth 2.6x at 4,194,304 and 16,777,216 elements, far more than for `cumsum_i64` (1.25x): here nearly all the memory traffic is the output, and an ordinary store reads each line before overwriting it.
+- **At 1,048,576 elements the judge's first table is misleading.** It shows the kernel 0.75x of the naive C. The same run's second table, and a micro-benchmark of the two alone, have the kernel 1.17x faster there (174 µs against 203 µs). The first table times NumPy between them, and NumPy allocates 8 MB for its result on every call, which pushes the kernel's own output out of the third-level cache just before the kernel is timed.
+- **`pext` in one place:** a group of eight outside a block of 32 gets its bits from an 8-byte load and `pext`, which is fast on Intel and on AMD from Zen 3 and slow on earlier AMD processors. Blocks do not use it.
+- **What a caller must know:** every mask byte is 0 or 1. The spec says so, and the kernel uses the bytes as numbers. The binding reads the mask for other bytes first.
+- **From Python,** `np.cumsum(mask)` is 3.1x faster at 16 elements, 9.7x at 4,096 and 9.5x at 1,048,576 with half the mask True. At 16 elements nearly all of the 338 ns left is `np.cumsum`'s own Python wrapper, which the method hook sits below.
+
 ## Where the result is narrower than the number
 
 The second item is about the reference and holds on every architecture. The others describe the ARM64 kernels and do not arise on x86-64, which has its own, listed after them.
@@ -407,6 +425,7 @@ These are constraints on the binding, collected from the kernels. The last colum
 | Kernel | Constraint | Holds on |
 |---|---|---|
 | `compress_*`, `nonzero_bool` | Scratch output: allocate the full capacity, return only the reported elements, never run on a buffer the caller owns | Every architecture: the spec declares it |
+| `cumsum_bool` | Every mask byte is 0 or 1; the kernel adds the bytes as numbers, and NumPy counts any non-zero byte once | Every architecture: the spec declares it |
 | `maskfill_f64` | Rewrites unselected elements with their own bits in dense blocks | ARM64 |
 | `argmax_*`, `argmin_*` | Read the array twice: a first pass finds the extreme and the block that holds it, a second finds its position, and the search for a NaN the first pass saw has no bound. If another thread changes the array between the passes, the kernel can return `n` or read past the end of the buffer. The binding runs every call with the interpreter lock held: the type-slot hook takes it back from NumPy, which releases it around `argmax`, and the function and method hooks never let it go. That stops Python threads, not a writer that does not take the lock. Bounding both scans is [issue 56](https://github.com/sofeikov/hotkernels/issues/56) | ARM64 |
 | `clip_*` | `lo <= hi`, neither NaN, otherwise fall back | Every architecture: the reference is defined for ordered bounds only |
@@ -428,7 +447,7 @@ These are constraints on the binding, collected from the kernels. The last colum
 | `clip_*` | One path for every ordered pair of bounds and every kind of data; no status register is read; `out` may be `x` exactly. A partial overlap is wrong. Leaves the invalid flag set whenever an element is a NaN, quiet or signalling | x86-64 |
 | `cumsum_i64` | `out` may be `x` exactly, as on ARM64 | x86-64 |
 | `cumsum_f32`, `cumsum_f64` | `out` must not overlap `x`. Adjacent outputs come from eight (`float32`) or four (`float64`) separate running sums. The fast path runs up to running sums of 2^64 (`float32`, as on ARM64) and 2^1023 (`float64`; ARM64 about 1e154). The test for it raises no flag; the regrouped additions can raise overflow or invalid where NumPy's sequential sum does not, as on ARM64. `float32` arrays of 2^29 elements or more take the sequential loop | x86-64 |
-| `cumsum_*`, `clip_*`, `cast_u8_f32` | From 24 MB of output the result is written past the caches and is in none of them when the call returns | x86-64 |
+| `cumsum_*` (the boolean one included), `clip_*`, `cast_u8_f32` | From 24 MB of output the result is written past the caches and is in none of them when the call returns | x86-64 |
 | `isin_i64` | The fast path needs every test value from 0 to 32,767 | x86-64 |
 | `searchsorted_f64`, `searchsorted_right_f64`, `interp_f64` | Stay inside their buffers on unsorted input by construction. The output buffer is working storage during the call. One to three needles are searched one at a time; there is no padded group. Use `vgatherqpd`, which is slow on some other x86-64 processors | x86-64 |
 | `interp_f64` | The last multiply and add are rounded separately, as NumPy's x86-64 build rounds them; results can differ from ARM64's in the last bit, as NumPy's do. No limit of 2^32 sample points | x86-64 |

@@ -229,7 +229,7 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 | `nonzero` | 1 | Method | 1-D contiguous boolean array |
 | `np.where(mask)` | The same 1 | Function | One argument, a 1-D contiguous boolean array. `np.where` calls NumPy's C code for `nonzero` directly, so the method hook does not see it |
 | `searchsorted` | 2 | Method | The array one-dimensional, contiguous float64; the needles a contiguous float64 array of any shape or a Python number; `side` absent, `'left'` or `'right'`, each side with its own kernel ([searchsorted-right-design.md](searchsorted-right-design.md)); no `sorter` |
-| `cumsum` | 3 | Method | Contiguous, no `axis`, `dtype` or `out`. The two float kernels only with `inexact=True` |
+| `cumsum` | 4 | Method | Contiguous, no `axis`, `dtype` or `out`. The two float kernels only with `inexact=True`. A boolean array, which has a kernel of its own and gives `np.intp`, is read for bytes other than 0 and 1 first |
 | `astype` | 1 | Method | Contiguous `uint8` to `float32`, other arguments at their defaults |
 | `sum` | 1 | Method and function | Contiguous `uint8` or boolean, no other arguments. A boolean array is read for bytes other than 0 and 1 first, a block at a time, and one that holds any is NumPy's |
 | `count_nonzero` | 2 | Function | Contiguous, no `axis` |

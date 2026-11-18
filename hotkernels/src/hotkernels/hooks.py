@@ -261,6 +261,13 @@ def _cumsum(dtype: type) -> bool:
     return bool(np.array_equal(np.ones(PROBE_N, dtype).cumsum(), np.arange(1, PROBE_N + 1).astype(dtype)))
 
 
+def _cumsum_bool() -> bool:
+    """Probe the method hook: `mask.cumsum()` on a mask that is True at every PROBE_STRIDE-th position."""
+    mask = _stride_mask()
+    result = mask.cumsum()
+    return result.dtype == np.intp and bool(np.array_equal(result, np.arange(PROBE_N) // PROBE_STRIDE + 1))
+
+
 def _astype() -> bool:
     """Probe the method hook: `x.astype(np.float32)` on bytes."""
     result = np.full(PROBE_N, PROBE_BYTE, np.uint8).astype(np.float32)
@@ -379,6 +386,7 @@ HOOKS: tuple[Hook, ...] = (
         Probe("cumsum_i64", partial(_cumsum, np.int64)),
         Probe("cumsum_f32", partial(_cumsum, np.float32), inexact=True),
         Probe("cumsum_f64", partial(_cumsum, np.float64), inexact=True),
+        Probe("cumsum_bool", _cumsum_bool),
     )),
     Hook("method.searchsorted", METHOD, (
         Probe("searchsorted_f64", _searchsorted),
@@ -422,6 +430,7 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("cumsum_i64", "np.cumsum", "int64", "cumsum", ("method.cumsum",)),
     KernelInfo("cumsum_f32", "np.cumsum", "float32", "cumsum", ("method.cumsum",)),
     KernelInfo("cumsum_f64", "np.cumsum", "float64", "cumsum", ("method.cumsum",)),
+    KernelInfo("cumsum_bool", "np.cumsum", "bool", "cumsum", ("method.cumsum",)),
     KernelInfo("cast_u8_f32", "x.astype(float32)", "uint8", "astype", ("method.astype",)),
     KernelInfo("sum_u8", "np.sum", "uint8", "sum", ("function.sum", "method.sum")),
     KernelInfo("count_nonzero_i64", "np.count_nonzero", "int64", "count_nonzero", ("function.count_nonzero",)),

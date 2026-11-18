@@ -1079,7 +1079,7 @@ def cumsum_cases(inexact: bool) -> Iterator[Case]:
     """Yield the cases of `cumsum`.
 
     Args:
-        inexact: False for the int64 kernel and the float kernels' absence;
+        inexact: False for the int64 and bool kernels and the float kernels' absence;
             True for the float kernels, which are compared within their
             specs' tolerance and only exist under install(inexact=True).
 
@@ -1101,8 +1101,12 @@ def cumsum_cases(inexact: bool) -> Iterator[Case]:
         yield from unary_cases("cumsum", {"f32": "cumsum_f32", "f64": "cumsum_f64"}, (), spellings,
                                empty_takes=False, tolerance=True)
     else:
-        yield from unary_cases("cumsum", {"i64": "cumsum_i64"}, ("f32", "f64", "i32", "u8"), spellings,
-                               empty_takes=False)
+        yield from unary_cases("cumsum", {"i64": "cumsum_i64", "bool": "cumsum_bool"}, ("f32", "f64", "i32", "u8"),
+                               spellings, empty_takes=False)
+        # A mask holding a byte other than 0 or 1 counts once per element in NumPy.
+        for n, byte, spelling in itertools.product(LAYOUT_SIZES, BAD_MASK_BYTES, spellings[:2]):
+            yield Case("cumsum", f"{spelling.text} bool n={n} mask bytes are {byte}",
+                       partial(_made, partial(_bad_mask, n, byte)), spelling.call, None)
 
 
 def astype_cases() -> Iterator[Case]:
