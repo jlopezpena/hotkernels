@@ -44,6 +44,33 @@ How many times faster each kernel is than NumPy, and than the same loop written 
 
 Apple M1 Pro, NumPy 2.5.5, Apple clang 21, arrays of 1,048,576 elements, where the fixed cost of a call no longer matters. A range covers the two cases the kernel is timed in: 5% and 50% of the elements selected for the mask kernels, test values close together or far apart for `isin`, and, for `clip`, bounds of (-0.5, 0.5) at the high end and bounds of (0, 1) on data that holds negative zeros at the low end. The `np.searchsorted`, `np.interp` and `np.clip` rows are each the mean of ten runs on a machine that was not fully quiet (load average about 3 for most runs, higher for some); the other rows are single runs. Results at every size from 16 to 16,777,216 elements, with confidence intervals, are in [docs/kernel-findings.md](docs/kernel-findings.md).
 
+The same kernels on an Apple M4 Max, against the M1 Pro figures above:
+
+| NumPy call | Elements | M1 Pro, vs NumPy | M4 Max, vs NumPy | M4 Max, vs `clang -O3` |
+|---|---|---|---|---|
+| `np.cumsum(x)` | float32 | 29.0x | 20.1x | 5.27x |
+| `np.cumsum(x)` | float64 | 20.1x | 17.4x | 3.99x |
+| `x[mask]` | float32 | 17.3x – 41.7x | 15.6x – 40.4x | 3.30x – 6.10x |
+| `np.interp(x, xp, fp)` | float64 | 16.8x | 16.5x | 5.19x |
+| `np.sum(x)` | uint8 | 15.7x | 14.0x | 4.87x |
+| `np.cumsum(x)` | int64 | 12.5x | 11.2x | 1.91x |
+| `x[mask]` | float64 | 11.0x – 22.5x | 11.4x – 24.3x | 2.00x – 4.49x |
+| `np.histogram(x, bins, range)` | float64 | 9.70x | 8.55x | 3.12x |
+| `np.argmax(x)`, `np.argmin(x)` | float32 | 8.82x, 8.86x | 9.57x, 9.17x | 27.7x, 26.6x |
+| `np.clip(x, lo, hi)` | float32 | 7.62x – 11.0x | 3.83x – 5.38x | 1.00x – 1.39x |
+| `x[mask] = value` | float64 | 7.48x – 21.4x | 11.1x – 23.6x | 5.18x – 20.7x |
+| `np.argmax(x)`, `np.argmin(x)` | float64 | 6.86x, 7.10x | 7.76x, 7.46x | 13.7x, 13.2x |
+| `np.bincount(x)` | uint8 | 6.74x | 6.78x | 1.26x |
+| `np.searchsorted(a, v)` | float64 | 6.40x | 1.48x | 7.60x |
+| `np.nonzero(mask)` | bool | 5.15x – 19.2x | 3.71x – 21.6x | 2.93x – 9.80x |
+| `np.count_nonzero(x)` | float64 | 3.79x | 3.44x | 1.29x |
+| `np.clip(x, lo, hi)` | float64 | 3.78x – 5.06x | 1.92x – 2.69x | 1.00x – 1.39x |
+| `np.count_nonzero(x)` | int64 | 3.25x | 3.36x | 1.02x |
+| `x.astype(np.float32)` | uint8 | 2.68x | 4.41x | ships as the C |
+| `np.isin(x, test)` | int64 | 1.83x – 75.6x | 1.57x – 68.2x | 1.00x – 5.61x |
+
+Apple M4 Max, NumPy 2.5.5, Apple clang 21, the same sizes and cases. One locked `uv run judge run <kernel> --record` per kernel, one after another, at a load average of 1.3 to 1.9. The reports are in [`results/`](results). Against NumPy most figures are within 15% of the M1 Pro's. Lower: `np.clip` by about half on both types, `np.searchsorted` with 1,000 needles from 6.40x to 1.48x, float32 `np.cumsum` from 29.0x to 20.1x, and `np.nonzero` with half selected from 5.15x to 3.71x. Higher: `x.astype(np.float32)` from 2.68x to 4.41x, and `x[mask] = value` with few selected from 7.48x to 11.1x. For `np.clip` and `np.searchsorted` the lead over the C is about the same on both machines, so NumPy is what got faster there; why has not been established.
+
 What stands behind the numbers:
 
 - **Checked against NumPy, not against a description of it.** Every kernel is compared with NumPy's own output on inputs that include NaN, infinities, signed zeros, ties and denormals. Twenty-one of the 23 match bit for bit. The two float `cumsum` kernels regroup the additions, which is where their speed comes from, and stay within a declared error bound.
@@ -92,7 +119,7 @@ At 16 elements most of the gain is NumPy's own call path being skipped, not the 
 - **An unmodified program.** [examples/workload.py](examples/workload.py) uses eleven of these operations on two million elements. It runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
 - **`np.searchsorted` and `np.interp` are timed with as many needles as elements**, and `np.digitize` with 1,000 bin edges. With a sorted array of 1,000 elements and a million needles `np.searchsorted` is 27x faster on either side and `np.interp` 19x.
 - **Checked from Python.** 96,734 NumPy calls give the same result, exceptions and warnings with hotkernels as without, and NumPy's own test suite gives the same outcome for each of its 47,234 tests.
-- **Taken on a machine in use**, in one run that started at a load average of 2.0. The full table is in [delivery/results/apple-m1-pro.md](delivery/results/apple-m1-pro.md).
+- **Taken on a machine in use**, in one run that started at a load average of 2.0. The full table is in [delivery/results/apple-m1-pro.md](delivery/results/apple-m1-pro.md). The same run on an Apple M4 Max, also at a load average of 2.0, is in [delivery/results/apple-m4-max.md](delivery/results/apple-m4-max.md).
 
 ## What is here
 
