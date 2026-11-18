@@ -23,12 +23,17 @@
 #             compare and one conditional move.
 #
 # The flat and rising loops run until a block fails their test; that block is
-# done the general way. After a general block the next one is tried flat if M
-# did not change in it, rising if its last element is M, and is done the
-# general way without a test otherwise. So data that is neither pays for no
-# test that fails, and no path has a branch that depends on a single element.
+# done the general way. After a block that failed the flat test the flat test
+# is tried again at once, since a new maximum is usually alone; a second
+# failure in a row hands the blocks to the general loop. After a block of the
+# general loop the next one is tried flat if M did not change in it, rising
+# if its last element is M, and is done the general way without a test
+# otherwise. So data that is neither pays for few tests that fail, and no
+# path has a branch that depends on a single element.
 #
-# From STREAM_MIN_BYTES of output the flat and rising loops store with
+# The output is first brought to a multiple of 32 bytes, up to three elements
+# one at a time, so that no store of a block straddles two cache lines. From
+# STREAM_MIN_BYTES of output the flat and rising loops store with
 # `vmovntdq`. An ordinary store first reads the cache line it is about to
 # overwrite; this one does not, which takes a third of the memory traffic
 # away. The output is then in no cache when the kernel returns, which costs a

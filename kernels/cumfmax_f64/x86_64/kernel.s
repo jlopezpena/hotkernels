@@ -22,13 +22,15 @@
 # inside the vector: the second of each pair of lanes against the first, then
 # the upper pair against the lower pair's maximum. The first step's shuffle
 # stays inside the 128-bit halves and is the integer one, `vpshufd`, which
-# has two ports on this processor where the others have one. In a block of two vectors the second also takes the
-# first's last lane. The output is that against M in every lane, and the next
-# M is M against the block's last lane, broadcast: the chain from block to
-# block is one `vmaxpd` per eight elements.
+# has two ports on this processor where the others have one. In a block of
+# two vectors the second also takes the first's last lane. The output is that
+# against M in every lane, and the next M is M against the block's last lane,
+# broadcast: the chain from block to block is one `vmaxpd` per eight
+# elements. The next block is loaded before this one is stored.
 #
 # The output is first brought to a multiple of 32 bytes, and both buffers are
-# prefetched ahead of the blocks. From STREAM_MIN_BYTES of output the blocks
+# prefetched ahead of the blocks; near the end the prefetched address is past
+# the arrays, which reads nothing. From STREAM_MIN_BYTES of output the blocks
 # store with `vmovntpd`. An ordinary store first reads the cache line it is
 # about to overwrite; this one does not, which takes a third of the memory
 # traffic away. The output is then in no cache when the kernel returns, which
