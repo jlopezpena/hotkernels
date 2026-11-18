@@ -24,7 +24,17 @@
 # input. Under sixteen elements the same is done with groups of four, whose
 # masks come from `vpmovsxbq`.
 #
+# From STREAM_MIN_N elements the blocks store with `vmovntdq`. An ordinary
+# store first reads the cache line it is about to overwrite; this one does
+# not, which takes a quarter of the memory traffic away. The output is then in
+# no cache when the kernel returns, which costs a caller nothing at a size no
+# cache holds. These stores need out at a multiple of 32 bytes: the first
+# block is stored the ordinary way, and the blocks after it start up to three
+# elements in, where out is at such a multiple. An out that is not a multiple
+# of 8 cannot be brought there and takes the ordinary stores throughout.
+#
 # Paths, by n:
+#   STREAM_MIN_N or more  the same blocks, stored past the caches
 #   16 or more  blocks of 16, the last one ending at the end of the buffers
 #   4..15       groups of 4, the last one ending at the end of the buffers
 #   1..3        one element at a time, with a conditional move
@@ -42,29 +52,34 @@
     .fill 8, 1, 4 * \g + 3
     .endr
 
+# From this many elements the stores go past the caches: 24 MB of output, the
+# third-level cache of this processor.
+.set STREAM_MIN_N, 3 * 1024 * 1024
+
 # Select one group. \m = its lane mask, all ones where c is false, replaced
 # by the output; \t = a scratch register. \a, \b, \o = the registers that
 # point at the block in a, b and out; \k = the group's number in the block.
-.macro SELECT k, m, t, a, b, o
+# \store is the instruction that stores the output.
+.macro SELECT k, m, t, a, b, o, store
     vpand   \t, \m, [\b + 32 * (\k)]
     vpandn  \m, \m, [\a + 32 * (\k)]
     vpor    \m, \m, \t
-    vmovdqu [\o + 32 * (\k)], \m
+    \store [\o + 32 * (\k)], \m
 .endm
 
 # One block of 16 elements. \c, \a, \b, \o = the registers that point at it
 # in c, a, b and out. ymm0 = zeros, ymm12 to ymm15 = the controls.
-.macro BLOCK c, a, b, o
+.macro BLOCK c, a, b, o, store=vmovdqu
     vbroadcasti128 ymm1, [\c]           # 16 bytes of c in both halves
     vpcmpeqb ymm1, ymm1, ymm0           # 0xff where c is false
     vpshufb ymm2, ymm1, ymm12
     vpshufb ymm3, ymm1, ymm13
     vpshufb ymm4, ymm1, ymm14
     vpshufb ymm5, ymm1, ymm15
-    SELECT 0, ymm2, ymm6, \a, \b, \o
-    SELECT 1, ymm3, ymm7, \a, \b, \o
-    SELECT 2, ymm4, ymm8, \a, \b, \o
-    SELECT 3, ymm5, ymm9, \a, \b, \o
+    SELECT 0, ymm2, ymm6, \a, \b, \o, \store
+    SELECT 1, ymm3, ymm7, \a, \b, \o, \store
+    SELECT 2, ymm4, ymm8, \a, \b, \o, \store
+    SELECT 3, ymm5, ymm9, \a, \b, \o, \store
 .endm
 
 # One group of 4 elements at index \i, for the arrays under 16 elements.
@@ -93,6 +108,8 @@ where_f64:
     lea     r11, [rsi + r8 * 8 - 128]
     lea     rax, [rdx + r8 * 8 - 128]
     lea     r9, [rcx + r8 * 8 - 128]
+    cmp     r8, STREAM_MIN_N
+    jae     .Lstream
     cmp     rdi, r10
     jae     .Llast
 .p2align 6
@@ -108,6 +125,32 @@ where_f64:
     BLOCK   r10, r11, rax, r9
     vzeroupper
     ret
+
+    # Stores past the caches. Only an out at a multiple of 8 can be brought
+    # to a multiple of 32.
+.Lstream:
+    test    cl, 7
+    jnz     .Lblock
+    BLOCK   rdi, rsi, rdx, rcx
+    mov     r8d, ecx
+    neg     r8d
+    and     r8d, 31                     # bytes until out is a multiple of 32
+    add     rsi, r8
+    add     rdx, r8
+    add     rcx, r8
+    shr     r8d, 3                      # the same in elements
+    add     rdi, r8
+.p2align 6
+.Lstreamblock:
+    BLOCK   rdi, rsi, rdx, rcx, vmovntdq
+    add     rdi, 16
+    add     rsi, 128
+    add     rdx, 128
+    add     rcx, 128
+    cmp     rdi, r10
+    jb      .Lstreamblock
+    sfence
+    jmp     .Llast
 
 .Lshort:
     xor     eax, eax
