@@ -1,0 +1,1659 @@
+{
+  "meta": {
+    "cpu": "Apple M4 Max",
+    "os": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
+    "numpy": "2.5.5",
+    "python": "3.14.8",
+    "git": "4c8b453",
+    "load_average": 2.02
+  },
+  "rows": [
+    {
+      "operation": "argmax",
+      "statement": "np.argmax(x)",
+      "data": "float32",
+      "kernel": "argmax_f32",
+      "n": 16,
+      "numpy_ns": 366.1532897806813,
+      "hotkernels_ns": 24.887074195053664
+    },
+    {
+      "operation": "argmax",
+      "statement": "np.argmax(x)",
+      "data": "float32",
+      "kernel": "argmax_f32",
+      "n": 4096,
+      "numpy_ns": 1752.5879533138807,
+      "hotkernels_ns": 109.62025844101709
+    },
+    {
+      "operation": "argmax",
+      "statement": "np.argmax(x)",
+      "data": "float32",
+      "kernel": "argmax_f32",
+      "n": 1048576,
+      "numpy_ns": 337430.55555555556,
+      "hotkernels_ns": 35976.851851851854
+    },
+    {
+      "operation": "argmax",
+      "statement": "x.argmax()",
+      "data": "float32",
+      "kernel": "argmax_f32",
+      "n": 16,
+      "numpy_ns": 112.12627136983338,
+      "hotkernels_ns": 35.13173555507466
+    },
+    {
+      "operation": "argmax",
+      "statement": "x.argmax()",
+      "data": "float32",
+      "kernel": "argmax_f32",
+      "n": 4096,
+      "numpy_ns": 1460.797734088637,
+      "hotkernels_ns": 116.41269576807731
+    },
+    {
+      "operation": "argmax",
+      "statement": "x.argmax()",
+      "data": "float32",
+      "kernel": "argmax_f32",
+      "n": 1048576,
+      "numpy_ns": 348658.962962963,
+      "hotkernels_ns": 36796.2962962963
+    },
+    {
+      "operation": "argmax",
+      "statement": "np.argmax(x)",
+      "data": "float64",
+      "kernel": "argmax_f64",
+      "n": 16,
+      "numpy_ns": 380.21717243335223,
+      "hotkernels_ns": 27.911727169597278
+    },
+    {
+      "operation": "argmax",
+      "statement": "np.argmax(x)",
+      "data": "float64",
+      "kernel": "argmax_f64",
+      "n": 4096,
+      "numpy_ns": 2554.9399066511087,
+      "hotkernels_ns": 191.5720536756126
+    },
+    {
+      "operation": "argmax",
+      "statement": "np.argmax(x)",
+      "data": "float64",
+      "kernel": "argmax_f64",
+      "n": 1048576,
+      "numpy_ns": 551879.9411764706,
+      "hotkernels_ns": 74102.94117647059
+    },
+    {
+      "operation": "argmin",
+      "statement": "np.argmin(x)",
+      "data": "float32",
+      "kernel": "argmin_f32",
+      "n": 16,
+      "numpy_ns": 377.3006650332517,
+      "hotkernels_ns": 26.54305215260763
+    },
+    {
+      "operation": "argmin",
+      "statement": "np.argmin(x)",
+      "data": "float32",
+      "kernel": "argmin_f32",
+      "n": 4096,
+      "numpy_ns": 1763.0894060012247,
+      "hotkernels_ns": 109.99693815064299
+    },
+    {
+      "operation": "argmin",
+      "statement": "np.argmin(x)",
+      "data": "float32",
+      "kernel": "argmin_f32",
+      "n": 1048576,
+      "numpy_ns": 346134.25925925927,
+      "hotkernels_ns": 37155.851851851854
+    },
+    {
+      "operation": "argmin",
+      "statement": "np.argmin(x)",
+      "data": "float64",
+      "kernel": "argmin_f64",
+      "n": 16,
+      "numpy_ns": 379.25205,
+      "hotkernels_ns": 27.68125
+    },
+    {
+      "operation": "argmin",
+      "statement": "np.argmin(x)",
+      "data": "float64",
+      "kernel": "argmin_f64",
+      "n": 4096,
+      "numpy_ns": 2560.295859689477,
+      "hotkernels_ns": 196.78464634847614
+    },
+    {
+      "operation": "argmin",
+      "statement": "np.argmin(x)",
+      "data": "float64",
+      "kernel": "argmin_f64",
+      "n": 1048576,
+      "numpy_ns": 542372.5294117647,
+      "hotkernels_ns": 74250.0
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, -0.5, 0.5)",
+      "data": "float32",
+      "kernel": "clip_f32",
+      "n": 16,
+      "numpy_ns": 944.071146953405,
+      "hotkernels_ns": 92.5926523297491
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, -0.5, 0.5)",
+      "data": "float32",
+      "kernel": "clip_f32",
+      "n": 4096,
+      "numpy_ns": 2033.7019438444925,
+      "hotkernels_ns": 259.6295896328294
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, -0.5, 0.5)",
+      "data": "float32",
+      "kernel": "clip_f32",
+      "n": 1048576,
+      "numpy_ns": 266292.85714285716,
+      "hotkernels_ns": 49376.2
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, -0.5, 0.5)",
+      "data": "float64",
+      "kernel": "clip_f64",
+      "n": 16,
+      "numpy_ns": 811.3793271574841,
+      "hotkernels_ns": 90.36925077198114
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, -0.5, 0.5)",
+      "data": "float64",
+      "kernel": "clip_f64",
+      "n": 4096,
+      "numpy_ns": 1962.41675,
+      "hotkernels_ns": 379.32275
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, -0.5, 0.5)",
+      "data": "float64",
+      "kernel": "clip_f64",
+      "n": 1048576,
+      "numpy_ns": 269988.63636363635,
+      "hotkernels_ns": 105952.0
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, 0, 1)",
+      "data": "float64",
+      "kernel": "clip_f64",
+      "n": 16,
+      "numpy_ns": 983.6604806814724,
+      "hotkernels_ns": 98.3799817462732
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, 0, 1)",
+      "data": "float64",
+      "kernel": "clip_f64",
+      "n": 4096,
+      "numpy_ns": 2237.8268631340325,
+      "hotkernels_ns": 549.9433267214508
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, 0, 1)",
+      "data": "float64",
+      "kernel": "clip_f64",
+      "n": 1048576,
+      "numpy_ns": 271811.26470588235,
+      "hotkernels_ns": 113699.73529411765
+    },
+    {
+      "operation": "clip",
+      "statement": "x.clip(-0.5, 0.5)",
+      "data": "float32",
+      "kernel": "clip_f32",
+      "n": 16,
+      "numpy_ns": 549.425,
+      "hotkernels_ns": 80.7166
+    },
+    {
+      "operation": "clip",
+      "statement": "x.clip(-0.5, 0.5)",
+      "data": "float32",
+      "kernel": "clip_f32",
+      "n": 4096,
+      "numpy_ns": 1693.187870124566,
+      "hotkernels_ns": 259.14662037982436
+    },
+    {
+      "operation": "clip",
+      "statement": "x.clip(-0.5, 0.5)",
+      "data": "float32",
+      "kernel": "clip_f32",
+      "n": 1048576,
+      "numpy_ns": 274030.0833333333,
+      "hotkernels_ns": 49858.805555555555
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "float32, half selected",
+      "kernel": "compress_f32",
+      "n": 16,
+      "numpy_ns": 182.73606370875996,
+      "hotkernels_ns": 70.14188200877621
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "float32, half selected",
+      "kernel": "compress_f32",
+      "n": 4096,
+      "numpy_ns": 6415.884387351779,
+      "hotkernels_ns": 460.2687747035573
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "float32, half selected",
+      "kernel": "compress_f32",
+      "n": 1048576,
+      "numpy_ns": 3327333.3333333335,
+      "hotkernels_ns": 116513.66666666667
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "float64, half selected",
+      "kernel": "compress_f64",
+      "n": 16,
+      "numpy_ns": 170.81815301758277,
+      "hotkernels_ns": 68.02431490575005
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "float64, half selected",
+      "kernel": "compress_f64",
+      "n": 4096,
+      "numpy_ns": 6088.864235055725,
+      "hotkernels_ns": 611.322188449848
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "float64, half selected",
+      "kernel": "compress_f64",
+      "n": 1048576,
+      "numpy_ns": 3328805.6666666665,
+      "hotkernels_ns": 201125.0
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "float64, few selected",
+      "kernel": "compress_f64",
+      "n": 16,
+      "numpy_ns": 175.41063526588164,
+      "hotkernels_ns": 92.60541513537838
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "float64, few selected",
+      "kernel": "compress_f64",
+      "n": 4096,
+      "numpy_ns": 1485.4118993135012,
+      "hotkernels_ns": 283.51970505975083
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "float64, few selected",
+      "kernel": "compress_f64",
+      "n": 1048576,
+      "numpy_ns": 652821.4285714285,
+      "hotkernels_ns": 74898.78571428571
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[mask] = 0.0",
+      "data": "float64, half selected",
+      "kernel": "maskfill_f64",
+      "n": 16,
+      "numpy_ns": 213.85529608006672,
+      "hotkernels_ns": 36.18640533778149
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[mask] = 0.0",
+      "data": "float64, half selected",
+      "kernel": "maskfill_f64",
+      "n": 4096,
+      "numpy_ns": 4962.105901374292,
+      "hotkernels_ns": 350.3096200485044
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[mask] = 0.0",
+      "data": "float64, half selected",
+      "kernel": "maskfill_f64",
+      "n": 1048576,
+      "numpy_ns": 2907736.3333333335,
+      "hotkernels_ns": 132569.66666666666
+    },
+    {
+      "operation": "compress",
+      "statement": "np.compress(mask, x)",
+      "data": "float64, half selected",
+      "kernel": "compress_f64",
+      "n": 16,
+      "numpy_ns": 504.70512558709413,
+      "hotkernels_ns": 81.46130283847253
+    },
+    {
+      "operation": "compress",
+      "statement": "np.compress(mask, x)",
+      "data": "float64, half selected",
+      "kernel": "compress_f64",
+      "n": 4096,
+      "numpy_ns": 5526.519666269368,
+      "hotkernels_ns": 646.6775923718712
+    },
+    {
+      "operation": "compress",
+      "statement": "np.compress(mask, x)",
+      "data": "float64, half selected",
+      "kernel": "compress_f64",
+      "n": 1048576,
+      "numpy_ns": 1245744.0,
+      "hotkernels_ns": 199369.0
+    },
+    {
+      "operation": "compress",
+      "statement": "np.extract(mask, x)",
+      "data": "float64, half selected",
+      "kernel": "compress_f64",
+      "n": 16,
+      "numpy_ns": 982.6680672268908,
+      "hotkernels_ns": 82.5359477124183
+    },
+    {
+      "operation": "compress",
+      "statement": "np.extract(mask, x)",
+      "data": "float64, half selected",
+      "kernel": "compress_f64",
+      "n": 4096,
+      "numpy_ns": 5834.769383697813,
+      "hotkernels_ns": 648.6361829025844
+    },
+    {
+      "operation": "compress",
+      "statement": "np.extract(mask, x)",
+      "data": "float64, half selected",
+      "kernel": "compress_f64",
+      "n": 1048576,
+      "numpy_ns": 1222572.875,
+      "hotkernels_ns": 199921.875
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[mask] = 0.0",
+      "data": "float64, few selected",
+      "kernel": "maskfill_f64",
+      "n": 16,
+      "numpy_ns": 206.7099567099567,
+      "hotkernels_ns": 37.32380952380952
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[mask] = 0.0",
+      "data": "float64, few selected",
+      "kernel": "maskfill_f64",
+      "n": 4096,
+      "numpy_ns": 1368.2774527452746,
+      "hotkernels_ns": 238.93631863186317
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[mask] = 0.0",
+      "data": "float64, few selected",
+      "kernel": "maskfill_f64",
+      "n": 1048576,
+      "numpy_ns": 583222.2,
+      "hotkernels_ns": 67088.86666666667
+    },
+    {
+      "operation": "maskfill",
+      "statement": "np.putmask(x, mask, 0.0)",
+      "data": "float64, half selected",
+      "kernel": "maskfill_f64",
+      "n": 16,
+      "numpy_ns": 211.5428242958421,
+      "hotkernels_ns": 50.56447595324775
+    },
+    {
+      "operation": "maskfill",
+      "statement": "np.putmask(x, mask, 0.0)",
+      "data": "float64, half selected",
+      "kernel": "maskfill_f64",
+      "n": 4096,
+      "numpy_ns": 2736.1116389548692,
+      "hotkernels_ns": 368.7315914489311
+    },
+    {
+      "operation": "maskfill",
+      "statement": "np.putmask(x, mask, 0.0)",
+      "data": "float64, half selected",
+      "kernel": "maskfill_f64",
+      "n": 1048576,
+      "numpy_ns": 2514708.3333333335,
+      "hotkernels_ns": 122791.66666666667
+    },
+    {
+      "operation": "maskfill",
+      "statement": "np.copyto(x, 0.0, where=mask)",
+      "data": "float64, half selected",
+      "kernel": "maskfill_f64",
+      "n": 16,
+      "numpy_ns": 242.55606390159755,
+      "hotkernels_ns": 56.47011175279382
+    },
+    {
+      "operation": "maskfill",
+      "statement": "np.copyto(x, 0.0, where=mask)",
+      "data": "float64, half selected",
+      "kernel": "maskfill_f64",
+      "n": 4096,
+      "numpy_ns": 4440.6941266209,
+      "hotkernels_ns": 377.79633867276885
+    },
+    {
+      "operation": "maskfill",
+      "statement": "np.copyto(x, 0.0, where=mask)",
+      "data": "float64, half selected",
+      "kernel": "maskfill_f64",
+      "n": 1048576,
+      "numpy_ns": 2815541.6666666665,
+      "hotkernels_ns": 130403.0
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.nonzero(mask)",
+      "data": "bool, half selected",
+      "kernel": "nonzero_bool",
+      "n": 16,
+      "numpy_ns": 203.18634215855397,
+      "hotkernels_ns": 160.98214955373885
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.nonzero(mask)",
+      "data": "bool, half selected",
+      "kernel": "nonzero_bool",
+      "n": 4096,
+      "numpy_ns": 1704.0673167072941,
+      "hotkernels_ns": 695.1372585786612
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.nonzero(mask)",
+      "data": "bool, half selected",
+      "kernel": "nonzero_bool",
+      "n": 1048576,
+      "numpy_ns": 356657.71428571426,
+      "hotkernels_ns": 155096.7142857143
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.nonzero(mask)",
+      "data": "bool, few selected",
+      "kernel": "nonzero_bool",
+      "n": 16,
+      "numpy_ns": 203.81629568562792,
+      "hotkernels_ns": 161.63630118164332
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.nonzero(mask)",
+      "data": "bool, few selected",
+      "kernel": "nonzero_bool",
+      "n": 4096,
+      "numpy_ns": 1088.1756462913747,
+      "hotkernels_ns": 369.60425223483935
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.nonzero(mask)",
+      "data": "bool, few selected",
+      "kernel": "nonzero_bool",
+      "n": 1048576,
+      "numpy_ns": 579407.7857142857,
+      "hotkernels_ns": 44330.357142857145
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.where(mask)",
+      "data": "bool, half selected",
+      "kernel": "nonzero_bool",
+      "n": 16,
+      "numpy_ns": 144.25130530365485,
+      "hotkernels_ns": 63.43505541815517
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.where(mask)",
+      "data": "bool, half selected",
+      "kernel": "nonzero_bool",
+      "n": 4096,
+      "numpy_ns": 1650.2811812179016,
+      "hotkernels_ns": 589.0421863536317
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.where(mask)",
+      "data": "bool, half selected",
+      "kernel": "nonzero_bool",
+      "n": 1048576,
+      "numpy_ns": 356560.18518518517,
+      "hotkernels_ns": 154390.44444444444
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "int64",
+      "kernel": "cumsum_i64",
+      "n": 16,
+      "numpy_ns": 529.3622623110678,
+      "hotkernels_ns": 268.5478628311393
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "int64",
+      "kernel": "cumsum_i64",
+      "n": 4096,
+      "numpy_ns": 6257.97306874557,
+      "hotkernels_ns": 683.5287030474841
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "int64",
+      "kernel": "cumsum_i64",
+      "n": 1048576,
+      "numpy_ns": 1518069.3333333333,
+      "hotkernels_ns": 135590.33333333334
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "float32",
+      "kernel": "cumsum_f32",
+      "n": 16,
+      "numpy_ns": 558.639969342786,
+      "hotkernels_ns": 301.91368078175896
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "float32",
+      "kernel": "cumsum_f32",
+      "n": 4096,
+      "numpy_ns": 8321.585365853658,
+      "hotkernels_ns": 711.7073170731708
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "float32",
+      "kernel": "cumsum_f32",
+      "n": 1048576,
+      "numpy_ns": 2179229.25,
+      "hotkernels_ns": 100489.5
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "float64",
+      "kernel": "cumsum_f64",
+      "n": 16,
+      "numpy_ns": 569.1568406840684,
+      "hotkernels_ns": 309.49032403240324
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "float64",
+      "kernel": "cumsum_f64",
+      "n": 4096,
+      "numpy_ns": 8160.594439117929,
+      "hotkernels_ns": 858.3413231064238
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "float64",
+      "kernel": "cumsum_f64",
+      "n": 1048576,
+      "numpy_ns": 2275354.0,
+      "hotkernels_ns": 138073.0
+    },
+    {
+      "operation": "astype",
+      "statement": "x.astype(np.float32)",
+      "data": "uint8",
+      "kernel": "cast_u8_f32",
+      "n": 16,
+      "numpy_ns": 140.12786577740727,
+      "hotkernels_ns": 75.05731554814506
+    },
+    {
+      "operation": "astype",
+      "statement": "x.astype(np.float32)",
+      "data": "uint8",
+      "kernel": "cast_u8_f32",
+      "n": 4096,
+      "numpy_ns": 1183.7209098862643,
+      "hotkernels_ns": 218.12117235345582
+    },
+    {
+      "operation": "astype",
+      "statement": "x.astype(np.float32)",
+      "data": "uint8",
+      "kernel": "cast_u8_f32",
+      "n": 1048576,
+      "numpy_ns": 254856.36842105264,
+      "hotkernels_ns": 43285.10526315789
+    },
+    {
+      "operation": "sum",
+      "statement": "np.sum(x)",
+      "data": "uint8",
+      "kernel": "sum_u8",
+      "n": 16,
+      "numpy_ns": 838.4704057896097,
+      "hotkernels_ns": 26.2235719824244
+    },
+    {
+      "operation": "sum",
+      "statement": "np.sum(x)",
+      "data": "uint8",
+      "kernel": "sum_u8",
+      "n": 4096,
+      "numpy_ns": 1352.498593662104,
+      "hotkernels_ns": 46.55765985374086
+    },
+    {
+      "operation": "sum",
+      "statement": "np.sum(x)",
+      "data": "uint8",
+      "kernel": "sum_u8",
+      "n": 1048576,
+      "numpy_ns": 137853.87323943662,
+      "hotkernels_ns": 9406.098591549297
+    },
+    {
+      "operation": "sum",
+      "statement": "x.sum()",
+      "data": "uint8",
+      "kernel": "sum_u8",
+      "n": 16,
+      "numpy_ns": 475.17494168610466,
+      "hotkernels_ns": 34.16927690769744
+    },
+    {
+      "operation": "sum",
+      "statement": "x.sum()",
+      "data": "uint8",
+      "kernel": "sum_u8",
+      "n": 4096,
+      "numpy_ns": 1035.8887430737825,
+      "hotkernels_ns": 60.179060950714494
+    },
+    {
+      "operation": "sum",
+      "statement": "x.sum()",
+      "data": "uint8",
+      "kernel": "sum_u8",
+      "n": 1048576,
+      "numpy_ns": 135945.61111111112,
+      "hotkernels_ns": 9847.805555555555
+    },
+    {
+      "operation": "count_nonzero",
+      "statement": "np.count_nonzero(x)",
+      "data": "int64",
+      "kernel": "count_nonzero_i64",
+      "n": 16,
+      "numpy_ns": 88.06780169504238,
+      "hotkernels_ns": 28.56011400285007
+    },
+    {
+      "operation": "count_nonzero",
+      "statement": "np.count_nonzero(x)",
+      "data": "int64",
+      "kernel": "count_nonzero_i64",
+      "n": 4096,
+      "numpy_ns": 999.9375,
+      "hotkernels_ns": 194.223875
+    },
+    {
+      "operation": "count_nonzero",
+      "statement": "np.count_nonzero(x)",
+      "data": "int64",
+      "kernel": "count_nonzero_i64",
+      "n": 1048576,
+      "numpy_ns": 244237.27777777778,
+      "hotkernels_ns": 77675.94444444444
+    },
+    {
+      "operation": "count_nonzero",
+      "statement": "np.count_nonzero(x)",
+      "data": "float64",
+      "kernel": "count_nonzero_f64",
+      "n": 16,
+      "numpy_ns": 87.5637876847864,
+      "hotkernels_ns": 27.881649400535444
+    },
+    {
+      "operation": "count_nonzero",
+      "statement": "np.count_nonzero(x)",
+      "data": "float64",
+      "kernel": "count_nonzero_f64",
+      "n": 4096,
+      "numpy_ns": 1086.6772430342621,
+      "hotkernels_ns": 241.25676576456473
+    },
+    {
+      "operation": "count_nonzero",
+      "statement": "np.count_nonzero(x)",
+      "data": "float64",
+      "kernel": "count_nonzero_f64",
+      "n": 1048576,
+      "numpy_ns": 254565.97222222222,
+      "hotkernels_ns": 76237.27777777778
+    },
+    {
+      "operation": "histogram",
+      "statement": "np.histogram(x, 50, (-3.0, 3.0))",
+      "data": "float64",
+      "kernel": "histogram_f64",
+      "n": 16,
+      "numpy_ns": 13068.370919881305,
+      "hotkernels_ns": 2029.3026706231453
+    },
+    {
+      "operation": "histogram",
+      "statement": "np.histogram(x, 50, (-3.0, 3.0))",
+      "data": "float64",
+      "kernel": "histogram_f64",
+      "n": 4096,
+      "numpy_ns": 33656.75330396476,
+      "hotkernels_ns": 4140.233480176212
+    },
+    {
+      "operation": "histogram",
+      "statement": "np.histogram(x, 50, (-3.0, 3.0))",
+      "data": "float64",
+      "kernel": "histogram_f64",
+      "n": 1048576,
+      "numpy_ns": 4662278.0,
+      "hotkernels_ns": 531486.0
+    },
+    {
+      "operation": "bincount",
+      "statement": "np.bincount(x)",
+      "data": "uint8",
+      "kernel": "bincount_u8",
+      "n": 16,
+      "numpy_ns": 275.41626040651016,
+      "hotkernels_ns": 134.38775969399234
+    },
+    {
+      "operation": "bincount",
+      "statement": "np.bincount(x)",
+      "data": "uint8",
+      "kernel": "bincount_u8",
+      "n": 4096,
+      "numpy_ns": 4467.636854741897,
+      "hotkernels_ns": 833.9333733493397
+    },
+    {
+      "operation": "bincount",
+      "statement": "np.bincount(x)",
+      "data": "uint8",
+      "kernel": "bincount_u8",
+      "n": 1048576,
+      "numpy_ns": 1108140.625,
+      "hotkernels_ns": 159578.125
+    },
+    {
+      "operation": "isin",
+      "statement": "np.isin(x, eight_values)",
+      "data": "int64, values close together",
+      "kernel": "isin_i64",
+      "n": 16,
+      "numpy_ns": 6426.202464788732,
+      "hotkernels_ns": 77.97887323943662
+    },
+    {
+      "operation": "isin",
+      "statement": "np.isin(x, eight_values)",
+      "data": "int64, values close together",
+      "kernel": "isin_i64",
+      "n": 4096,
+      "numpy_ns": 12917.543859649122,
+      "hotkernels_ns": 450.219298245614
+    },
+    {
+      "operation": "isin",
+      "statement": "np.isin(x, eight_values)",
+      "data": "int64, values close together",
+      "kernel": "isin_i64",
+      "n": 1048576,
+      "numpy_ns": 1469250.0,
+      "hotkernels_ns": 92139.0
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v)",
+      "data": "float64, as many needles as elements",
+      "kernel": "searchsorted_f64",
+      "n": 16,
+      "numpy_ns": 395.364625,
+      "hotkernels_ns": 263.619875
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v)",
+      "data": "float64, as many needles as elements",
+      "kernel": "searchsorted_f64",
+      "n": 4096,
+      "numpy_ns": 106796.29629629629,
+      "hotkernels_ns": 10498.462962962964
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v)",
+      "data": "float64, as many needles as elements",
+      "kernel": "searchsorted_f64",
+      "n": 1048576,
+      "numpy_ns": 106330083.33333333,
+      "hotkernels_ns": 13203375.0
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v)",
+      "data": "float64, 1,000 elements",
+      "kernel": "searchsorted_f64",
+      "n": 16,
+      "numpy_ns": 460.0913591359136,
+      "hotkernels_ns": 366.594396939694
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v)",
+      "data": "float64, 1,000 elements",
+      "kernel": "searchsorted_f64",
+      "n": 4096,
+      "numpy_ns": 39285.637681159424,
+      "hotkernels_ns": 6768.115942028986
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v)",
+      "data": "float64, 1,000 elements",
+      "kernel": "searchsorted_f64",
+      "n": 1048576,
+      "numpy_ns": 47392347.333333336,
+      "hotkernels_ns": 1739514.0
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v, side='right')",
+      "data": "float64, as many needles as elements",
+      "kernel": "searchsorted_right_f64",
+      "n": 16,
+      "numpy_ns": 425.9641232061603,
+      "hotkernels_ns": 300.2640882044102
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v, side='right')",
+      "data": "float64, as many needles as elements",
+      "kernel": "searchsorted_right_f64",
+      "n": 4096,
+      "numpy_ns": 66591.79710144928,
+      "hotkernels_ns": 10588.173913043478
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v, side='right')",
+      "data": "float64, as many needles as elements",
+      "kernel": "searchsorted_right_f64",
+      "n": 1048576,
+      "numpy_ns": 106247375.0,
+      "hotkernels_ns": 13402513.666666666
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v, side='right')",
+      "data": "float64, 1,000 elements",
+      "kernel": "searchsorted_right_f64",
+      "n": 16,
+      "numpy_ns": 518.8870655123401,
+      "hotkernels_ns": 400.35314640134385
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v, side='right')",
+      "data": "float64, 1,000 elements",
+      "kernel": "searchsorted_right_f64",
+      "n": 4096,
+      "numpy_ns": 39792.232876712325,
+      "hotkernels_ns": 6891.54794520548
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v, side='right')",
+      "data": "float64, 1,000 elements",
+      "kernel": "searchsorted_right_f64",
+      "n": 1048576,
+      "numpy_ns": 47441541.666666664,
+      "hotkernels_ns": 1741000.0
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.digitize(x, bins)",
+      "data": "float64, 1,000 bin edges",
+      "kernel": "searchsorted_right_f64",
+      "n": 16,
+      "numpy_ns": 1180.421052631579,
+      "hotkernels_ns": 1061.8244210526316
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.digitize(x, bins)",
+      "data": "float64, 1,000 bin edges",
+      "kernel": "searchsorted_right_f64",
+      "n": 4096,
+      "numpy_ns": 43154.850746268654,
+      "hotkernels_ns": 7455.223880597015
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.digitize(x, bins)",
+      "data": "float64, 1,000 bin edges",
+      "kernel": "searchsorted_right_f64",
+      "n": 1048576,
+      "numpy_ns": 47648180.666666664,
+      "hotkernels_ns": 1702041.6666666667
+    },
+    {
+      "operation": "interp",
+      "statement": "np.interp(x, xp, fp)",
+      "data": "float64, as many queries as points",
+      "kernel": "interp_f64",
+      "n": 16,
+      "numpy_ns": 414.56523551479785,
+      "hotkernels_ns": 81.56190079199666
+    },
+    {
+      "operation": "interp",
+      "statement": "np.interp(x, xp, fp)",
+      "data": "float64, as many queries as points",
+      "kernel": "interp_f64",
+      "n": 4096,
+      "numpy_ns": 175454.44186046513,
+      "hotkernels_ns": 10416.67441860465
+    },
+    {
+      "operation": "interp",
+      "statement": "np.interp(x, xp, fp)",
+      "data": "float64, as many queries as points",
+      "kernel": "interp_f64",
+      "n": 1048576,
+      "numpy_ns": 180314777.66666666,
+      "hotkernels_ns": 11427222.0
+    },
+    {
+      "operation": "interp",
+      "statement": "np.interp(x, xp, fp)",
+      "data": "float64, 1,000 points",
+      "kernel": "interp_f64",
+      "n": 16,
+      "numpy_ns": 905.9842484248425,
+      "hotkernels_ns": 218.6780678067807
+    },
+    {
+      "operation": "interp",
+      "statement": "np.interp(x, xp, fp)",
+      "data": "float64, 1,000 points",
+      "kernel": "interp_f64",
+      "n": 4096,
+      "numpy_ns": 142263.65573770492,
+      "hotkernels_ns": 8498.639344262296
+    },
+    {
+      "operation": "interp",
+      "statement": "np.interp(x, xp, fp)",
+      "data": "float64, 1,000 points",
+      "kernel": "interp_f64",
+      "n": 1048576,
+      "numpy_ns": 38475861.333333336,
+      "hotkernels_ns": 2209750.0
+    },
+    {
+      "operation": "argmax",
+      "statement": "np.argmax(x)",
+      "data": "int64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 366.2531501575079,
+      "hotkernels_ns": 369.4580854042702
+    },
+    {
+      "operation": "argmax",
+      "statement": "np.argmax(x)",
+      "data": "int64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 867.2460621062106,
+      "hotkernels_ns": 869.3791629162916
+    },
+    {
+      "operation": "argmax",
+      "statement": "np.argmax(x)",
+      "data": "int64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 130205.52702702703,
+      "hotkernels_ns": 130666.0945945946
+    },
+    {
+      "operation": "argmax",
+      "statement": "x.argmax()",
+      "data": "int64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 108.02534692721609,
+      "hotkernels_ns": 109.45610308694421
+    },
+    {
+      "operation": "argmax",
+      "statement": "x.argmax()",
+      "data": "int64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 600.1522702104097,
+      "hotkernels_ns": 603.9260401835153
+    },
+    {
+      "operation": "argmax",
+      "statement": "x.argmax()",
+      "data": "int64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 129312.78082191781,
+      "hotkernels_ns": 126811.64383561644
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x[::2], -0.5, 0.5)",
+      "data": "float64, strided",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 875.2151898734177,
+      "hotkernels_ns": 881.82433479721
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x[::2], -0.5, 0.5)",
+      "data": "float64, strided",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 1498.3666,
+      "hotkernels_ns": 1508.4
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x[::2], -0.5, 0.5)",
+      "data": "float64, strided",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 131769.09722222222,
+      "hotkernels_ns": 134445.01388888888
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, -0.5, None)",
+      "data": "float64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 722.2666,
+      "hotkernels_ns": 731.7834
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, -0.5, None)",
+      "data": "float64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 1877.7482483691713,
+      "hotkernels_ns": 1879.539985503745
+    },
+    {
+      "operation": "clip",
+      "statement": "np.clip(x, -0.5, None)",
+      "data": "float64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 273913.19444444444,
+      "hotkernels_ns": 276034.72222222225
+    },
+    {
+      "operation": "astype",
+      "statement": "x.astype(np.float64)",
+      "data": "uint8",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 135.38572935647838,
+      "hotkernels_ns": 139.91723410376906
+    },
+    {
+      "operation": "astype",
+      "statement": "x.astype(np.float64)",
+      "data": "uint8",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 1217.2818791946308,
+      "hotkernels_ns": 1204.430551502772
+    },
+    {
+      "operation": "astype",
+      "statement": "x.astype(np.float64)",
+      "data": "uint8",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 258995.6052631579,
+      "hotkernels_ns": 258515.34210526315
+    },
+    {
+      "operation": "sum",
+      "statement": "np.sum(x)",
+      "data": "float64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 559.6210317460317,
+      "hotkernels_ns": 568.2919000933707
+    },
+    {
+      "operation": "sum",
+      "statement": "np.sum(x)",
+      "data": "float64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 1003.9535203520352,
+      "hotkernels_ns": 1007.0933718371837
+    },
+    {
+      "operation": "sum",
+      "statement": "np.sum(x)",
+      "data": "float64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 118595.3125,
+      "hotkernels_ns": 118490.1
+    },
+    {
+      "operation": "sum",
+      "statement": "x.sum()",
+      "data": "float64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 221.3708,
+      "hotkernels_ns": 222.6708
+    },
+    {
+      "operation": "sum",
+      "statement": "x.sum()",
+      "data": "float64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 654.1125,
+      "hotkernels_ns": 654.9708
+    },
+    {
+      "operation": "sum",
+      "statement": "x.sum()",
+      "data": "float64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 120045.73170731707,
+      "hotkernels_ns": 118928.35365853658
+    },
+    {
+      "operation": "count_nonzero",
+      "statement": "np.count_nonzero(x)",
+      "data": "int32",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 85.52001332001332,
+      "hotkernels_ns": 87.54855144855145
+    },
+    {
+      "operation": "count_nonzero",
+      "statement": "np.count_nonzero(x)",
+      "data": "int32",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 571.0798769969249,
+      "hotkernels_ns": 575.3831095777394
+    },
+    {
+      "operation": "count_nonzero",
+      "statement": "np.count_nonzero(x)",
+      "data": "int32",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 116735.75,
+      "hotkernels_ns": 116815.78947368421
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "float64, exact kernels only",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 556.611473880597,
+      "hotkernels_ns": 554.570895522388
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "float64, exact kernels only",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 8077.03081232493,
+      "hotkernels_ns": 8091.736694677871
+    },
+    {
+      "operation": "cumsum",
+      "statement": "np.cumsum(x)",
+      "data": "float64, exact kernels only",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 2111468.75,
+      "hotkernels_ns": 2103739.5
+    },
+    {
+      "operation": "histogram",
+      "statement": "np.histogram(x, 50, (-3.0, 3.0), density=False)",
+      "data": "float64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 12987.782524271845,
+      "hotkernels_ns": 13156.714563106796
+    },
+    {
+      "operation": "histogram",
+      "statement": "np.histogram(x, 50, (-3.0, 3.0), density=False)",
+      "data": "float64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 32736.271317829458,
+      "hotkernels_ns": 31837.856589147286
+    },
+    {
+      "operation": "histogram",
+      "statement": "np.histogram(x, 50, (-3.0, 3.0), density=False)",
+      "data": "float64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 4490986.0,
+      "hotkernels_ns": 4293722.333333333
+    },
+    {
+      "operation": "bincount",
+      "statement": "np.bincount(x)",
+      "data": "int64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 137.93611342785655,
+      "hotkernels_ns": 141.00988323603002
+    },
+    {
+      "operation": "bincount",
+      "statement": "np.bincount(x)",
+      "data": "int64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 5055.434188967777,
+      "hotkernels_ns": 5046.217913708356
+    },
+    {
+      "operation": "bincount",
+      "statement": "np.bincount(x)",
+      "data": "int64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 1239017.857142857,
+      "hotkernels_ns": 1235000.0
+    },
+    {
+      "operation": "isin",
+      "statement": "np.isin(x, nine_values)",
+      "data": "int64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 6750.471186440678,
+      "hotkernels_ns": 6531.261016949153
+    },
+    {
+      "operation": "isin",
+      "statement": "np.isin(x, nine_values)",
+      "data": "int64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 13047.828571428572,
+      "hotkernels_ns": 13090.61680672269
+    },
+    {
+      "operation": "isin",
+      "statement": "np.isin(x, nine_values)",
+      "data": "int64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 1448618.0,
+      "hotkernels_ns": 1433840.3333333333
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v)",
+      "data": "float64 array, float32 needles",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 485.3105399443752,
+      "hotkernels_ns": 493.2267190946581
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v)",
+      "data": "float64 array, float32 needles",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 97940.37254901961,
+      "hotkernels_ns": 97332.50980392157
+    },
+    {
+      "operation": "searchsorted",
+      "statement": "np.searchsorted(a, v)",
+      "data": "float64 array, float32 needles",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 105844625.0,
+      "hotkernels_ns": 106155833.33333333
+    },
+    {
+      "operation": "interp",
+      "statement": "np.interp(x, xp, fp, left=0.0)",
+      "data": "float64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 451.0215882806476,
+      "hotkernels_ns": 459.9845797995374
+    },
+    {
+      "operation": "interp",
+      "statement": "np.interp(x, xp, fp, left=0.0)",
+      "data": "float64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 173265.0,
+      "hotkernels_ns": 173632.5
+    },
+    {
+      "operation": "interp",
+      "statement": "np.interp(x, xp, fp, left=0.0)",
+      "data": "float64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 183081527.66666666,
+      "hotkernels_ns": 182565902.66666666
+    },
+    {
+      "operation": "nonzero",
+      "statement": "x.nonzero()",
+      "data": "int64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 117.90094654046128,
+      "hotkernels_ns": 124.57792294360752
+    },
+    {
+      "operation": "nonzero",
+      "statement": "x.nonzero()",
+      "data": "int64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 4560.636031649422,
+      "hotkernels_ns": 4688.831405964699
+    },
+    {
+      "operation": "nonzero",
+      "statement": "x.nonzero()",
+      "data": "int64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 1385291.6666666667,
+      "hotkernels_ns": 1407708.3333333333
+    },
+    {
+      "operation": "compress",
+      "statement": "x[3]",
+      "data": "float64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 44.756370952289714,
+      "hotkernels_ns": 46.02174746119946
+    },
+    {
+      "operation": "compress",
+      "statement": "x[3]",
+      "data": "float64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 46.69270207080828,
+      "hotkernels_ns": 45.294756179024716
+    },
+    {
+      "operation": "compress",
+      "statement": "x[3]",
+      "data": "float64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 46.126153153828845,
+      "hotkernels_ns": 47.91524788119703
+    },
+    {
+      "operation": "compress",
+      "statement": "x[1:5]",
+      "data": "float64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 54.364575,
+      "hotkernels_ns": 54.645825
+    },
+    {
+      "operation": "compress",
+      "statement": "x[1:5]",
+      "data": "float64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 54.45195390781563,
+      "hotkernels_ns": 54.81937207748831
+    },
+    {
+      "operation": "compress",
+      "statement": "x[1:5]",
+      "data": "float64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 56.52476428820859,
+      "hotkernels_ns": 56.747846583634036
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "int64, half selected",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 175.47131803628602,
+      "hotkernels_ns": 179.47905549626466
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "int64, half selected",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 6197.125,
+      "hotkernels_ns": 6174.708
+    },
+    {
+      "operation": "compress",
+      "statement": "x[mask]",
+      "data": "int64, half selected",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 3255138.6666666665,
+      "hotkernels_ns": 3217583.3333333335
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[3] = 1.0",
+      "data": "float64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 36.20500137400385,
+      "hotkernels_ns": 36.893926902995325
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[3] = 1.0",
+      "data": "float64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 36.361503984063745,
+      "hotkernels_ns": 36.5378818061089
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[3] = 1.0",
+      "data": "float64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 36.0817625,
+      "hotkernels_ns": 36.7177125
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[mask] = 0.0",
+      "data": "float32, half selected",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 207.37388434710869,
+      "hotkernels_ns": 217.9617490437261
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[mask] = 0.0",
+      "data": "float32, half selected",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 5207.82208588957,
+      "hotkernels_ns": 5144.203987730061
+    },
+    {
+      "operation": "maskfill",
+      "statement": "x[mask] = 0.0",
+      "data": "float32, half selected",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 2893639.0,
+      "hotkernels_ns": 2907375.0
+    },
+    {
+      "operation": "maskfill",
+      "statement": "np.copyto(x, 0.0)",
+      "data": "float64",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 172.8767507002801,
+      "hotkernels_ns": 176.5873015873016
+    },
+    {
+      "operation": "maskfill",
+      "statement": "np.copyto(x, 0.0)",
+      "data": "float64",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 453.841125,
+      "hotkernels_ns": 462.4296875
+    },
+    {
+      "operation": "maskfill",
+      "statement": "np.copyto(x, 0.0)",
+      "data": "float64",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 62361.85906040268,
+      "hotkernels_ns": 62498.04697986577
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.where(mask, 1.0, 0.0)",
+      "data": "bool, half selected",
+      "kernel": null,
+      "n": 16,
+      "numpy_ns": 425.1522478953967,
+      "hotkernels_ns": 433.19756403367364
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.where(mask, 1.0, 0.0)",
+      "data": "bool, half selected",
+      "kernel": null,
+      "n": 4096,
+      "numpy_ns": 1571.7580154039047,
+      "hotkernels_ns": 1573.9596990865127
+    },
+    {
+      "operation": "nonzero",
+      "statement": "np.where(mask, 1.0, 0.0)",
+      "data": "bool, half selected",
+      "kernel": null,
+      "n": 1048576,
+      "numpy_ns": 269337.0,
+      "hotkernels_ns": 269937.5
+    }
+  ]
+}
