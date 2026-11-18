@@ -35,6 +35,9 @@
 .set BLOCK, 128
 # Bytes in a group of the general path: four elements.
 .set GROUP_BYTES, 32
+# From this many bytes the output is first brought to a multiple of 32: enough
+# for the three elements that may take and one block after them.
+.set ALIGN_MIN_BYTES, BLOCK + 24
 
 # Four elements at rcx + \o the general way. rax = M, before and after.
 .macro GROUP o
@@ -78,6 +81,26 @@ cummax_i64:
     neg     rcx
     cmp     rcx, -BLOCK
     jg      .Ltail
+    cmp     rcx, -ALIGN_MIN_BYTES
+    jg      .Lgeneral
+    # Up to three elements one at a time until out is a multiple of 32, so
+    # that no store of a block straddles two cache lines. An out that is not
+    # a multiple of 8 cannot be brought there and is left as it is.
+    lea     r8d, [rsi + rcx]
+    neg     r8d
+    and     r8d, 31                     # bytes until out is a multiple of 32
+    jz      .Lgeneral
+    test    r8d, 7
+    jnz     .Lgeneral
+    add     r8, rcx                     # where the head ends
+.Lhead:
+    mov     r9, [rdi + rcx]
+    cmp     rax, r9
+    cmovl   rax, r9
+    mov     [rsi + rcx], rax
+    add     rcx, 8
+    cmp     rcx, r8
+    jne     .Lhead
 
     # ---- General: one block, then choose how to try the next.
 .p2align 4

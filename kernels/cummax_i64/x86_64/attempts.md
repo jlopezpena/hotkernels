@@ -15,3 +15,11 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** n/a (first version). `run`: 1.10x [1.10 – 1.11] over naive C on `random`, 1.08x [1.08 – 1.08] on `rising`, 10.9x over NumPy on both.
 - **Kept:** yes
 - **Notes:** `random`: 1.40x at 16, 0.83x at 64 (the first blocks of random data hold new maxima and go the general way), 1.21x to 1.25x from 1,024 to 16,384, 1.09x at 65,536, 1.02x to 1.04x above. `rising`: 1.14x to 1.21x up to 256, 1.07x to 1.09x to 65,536, 1.00x to 1.02x above. In a micro-benchmark with both buffers aligned the loops take 0.067 ns per element at 1,024 (flat) and 0.075 (rising), and 0.104 and 0.112 with the output 16 bytes off: the judge's placement. The general path alone, on 1 0 2 1 3 2 ..., takes 0.21 ns per element, 1.1 cycles, against the naive C's 0.14 on a pattern its branches predict; on the random half above it takes 0.24 at 16,384 and 0.54 at 2,000,000 against the naive C's 0.35 and 2.55.
+
+## 2. Bring the output to a multiple of 32 bytes first
+
+- **Idea:** up to three elements one at a time until `out` is a multiple of 32, from 19 elements up, so that no store of a block straddles two cache lines. An `out` that is not a multiple of 8 is left as it is.
+- **check:** pass
+- **compare:** significantly faster, 1.030x [1.025 – 1.035]
+- **Kept:** yes
+- **Notes:** `random`: 1.17x at 1,024, 1.16x at 4,096, 1.14x at 65,536, 1.00x at 16,384; `rising`: 1.09x at 4,096, 1.07x at 16,384; 0.98x to 0.99x at 16 and 64, which pay two more compares; nothing from 262,144 up. The judge's 128.6 ns at 1,024 random elements is still twice the micro-benchmark's 65 to 80: the judge does not time one array over and over, so each new maximum in the flat loop costs its mispredicted exit, and after it two blocks done the general way.
