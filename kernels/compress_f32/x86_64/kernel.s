@@ -53,14 +53,18 @@
     .endr
 
 # One table step: compact the eight elements at \src by the group whose table
-# offset is in the low bits of rax (already masked into r8 by the caller),
-# store them at r9 and advance r9 by four bytes per selected element.
+# offset is in r8, store them at element r9 of the output and advance r9 by
+# the number selected.
+#
+# r9 counts elements, and the store scales it. Counting bytes would put a
+# `lea` with a scaled index on the one chain that runs from step to step, and
+# on this processor that `lea` takes two cycles where the `add` takes one.
 .macro STEP src
     vmovdqa ymm2, [r10 + r8]
     vpermps ymm2, ymm2, \src
-    vmovups [r9], ymm2
+    vmovups [rdx + r9 * 4], ymm2
     popcnt  r8d, r8d
-    lea     r9, [r9 + r8 * 4]
+    add     r9, r8
 .endm
 
 .text
@@ -68,7 +72,7 @@
 .type compress_f32, @function
 .p2align 4
 compress_f32:
-    mov     r9, rdx                     # write position
+    xor     r9d, r9d                    # elements written
     lea     r10, [rip + .Lperm]
     vpxor   xmm0, xmm0, xmm0
     mov     r11, rcx
@@ -93,9 +97,9 @@ compress_f32:
     and     eax, ENTRY_BITS
     vmovdqa ymm2, [r10 + rax]
     vpermps ymm2, ymm2, [rdi + 96]
-    vmovups [r9], ymm2
+    vmovups [rdx + r9 * 4], ymm2
     popcnt  eax, eax
-    lea     r9, [r9 + rax * 4]
+    add     r9, rax
     add     rsi, 32
     sub     rdi, -128
     dec     r11
@@ -124,19 +128,17 @@ compress_f32:
     jz      .Ldone
 .Lone:
     mov     eax, [rdi]
-    mov     [r9], eax
+    mov     [rdx + r9 * 4], eax
     xor     eax, eax
     cmp     byte ptr [rsi], 0
     setne   al
-    lea     r9, [r9 + rax * 4]
+    add     r9, rax
     add     rdi, 4
     inc     rsi
     dec     ecx
     jnz     .Lone
 .Ldone:
     mov     rax, r9
-    sub     rax, rdx
-    shr     rax, 2
     vzeroupper
     ret
 .size compress_f32, .-compress_f32
