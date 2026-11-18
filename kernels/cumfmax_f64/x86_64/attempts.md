@@ -20,3 +20,11 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** n/a (first version). `run`: 6.99x [6.95 – 7.02] over naive C on `random`, 6.27x [6.25 – 6.29] on `rising`, 5.90x [5.87 – 5.93] on `some_nan`; 10.3x, 9.3x and 10.9x over NumPy.
 - **Kept:** yes
 - **Notes:** 0.19 ns per element from 256 to 65,536 on every distribution, one cycle: the chain. 10.4x over the naive C there, 4.5x at 16, 7.1x at 262,144, 3.3x and 2.4x to 2.5x at the two largest sizes. The second table of `run`, output 16 bytes behind the input: 0.88x to 0.90x of the first from 4,096 to 65,536. A vector is stored before the next is loaded.
+
+## 2. Blocks of eight, the next block loaded before this one is stored
+
+- **Idea:** the chain of attempt 1 is four cycles per vector. In a block of two vectors the second takes the first's last lane, broadcast, before either meets M, so the chain is one `vmaxpd` per eight elements. And the two vectors of the next block are loaded before the two of this one are stored, for the close placement.
+- **check:** pass
+- **compare:** significantly faster, 1.102x [1.096 – 1.108]
+- **Kept:** yes
+- **Notes:** on all three distributions alike: 1.20x at 1,024, 1.25x to 1.28x at 4,096, 1.23x to 1.31x at 16,384 and 65,536, 1.05x at 64, nothing from 262,144 up (0.95x and 0.96x at 1,048,576 on two of the three distributions, 1.00x on the third, with other judges running). 0.153 ns per element at 16,384, 0.8 of a cycle. By count the block has six shuffles (`vpermpd`) on the one port that takes them, six cycles per eight elements, and ten `vmaxpd` on two ports, five cycles.
