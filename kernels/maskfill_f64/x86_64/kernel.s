@@ -37,6 +37,30 @@
     vmovdqu [rdi + \xoff], ymm3
 .endm
 
+# The same for a group of a dense block, whose mask bits are already in a
+# general register: the lane mask comes from a table of 16 entries indexed
+# by the group's four bits, all ones in the lanes that are selected. That is
+# one load, where widening the mask bytes takes two vector instructions on a
+# core with three ports for them. r8 = the group's bits times 32.
+.macro BLENDTABLE xoff
+    vmovdqa ymm2, [r11 + r8]
+    vpandn  ymm3, ymm2, [rdi + \xoff]
+    vpand   ymm2, ymm2, ymm0
+    vpor    ymm3, ymm3, ymm2
+    vmovdqu [rdi + \xoff], ymm3
+.endm
+
+.section .rodata
+.p2align 6
+.Llanes:
+    .set .Lbits, 0
+    .rept 16
+    .irp bit, 0, 1, 2, 3
+    .quad -(((.Lbits) >> \bit) & 1)
+    .endr
+    .set .Lbits, .Lbits + 1
+    .endr
+
 .text
 .globl maskfill_f64
 .type maskfill_f64, @function
@@ -90,14 +114,32 @@ maskfill_f64:
     jmp     .Lgroups
 .p2align 4
 .Ldense:
-    BLEND   0, 0
-    BLEND   4, 32
-    BLEND   8, 64
-    BLEND   12, 96
-    BLEND   16, 128
-    BLEND   20, 160
-    BLEND   24, 192
-    BLEND   28, 224
+    lea     r11, [rip + .Llanes]
+    shl     rax, 5                      # a table entry is 32 bytes
+    mov     r8d, eax
+    and     r8d, 0x1e0
+    BLENDTABLE 0
+    rorx    r8, rax, 4
+    and     r8d, 0x1e0
+    BLENDTABLE 32
+    rorx    r8, rax, 8
+    and     r8d, 0x1e0
+    BLENDTABLE 64
+    rorx    r8, rax, 12
+    and     r8d, 0x1e0
+    BLENDTABLE 96
+    rorx    r8, rax, 16
+    and     r8d, 0x1e0
+    BLENDTABLE 128
+    rorx    r8, rax, 20
+    and     r8d, 0x1e0
+    BLENDTABLE 160
+    rorx    r8, rax, 24
+    and     r8d, 0x1e0
+    BLENDTABLE 192
+    rorx    r8, rax, 28
+    and     r8d, 0x1e0
+    BLENDTABLE 224
     add     rsi, 32
     add     rdi, 256
     dec     rcx
