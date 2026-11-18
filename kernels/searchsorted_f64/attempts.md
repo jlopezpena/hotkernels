@@ -376,7 +376,7 @@ in each `csel` (`a[i] <= key`), and its spec has the same two timed sets.
 
 All runs on an Intel Core i5-14600KF (Raptor Lake, performance core, 48 KB first-level and 2 MB second-level cache per core, 24 MB third-level cache shared), Linux, locked, pinned to one performance core by the judge.
 
-What the compiler does with `naive.c` (`clang -O3 -march=native`): one search at a time with a branch per step. The judge times the same needles again and again, so with 64 needles the branches are learnt and the naive C takes 6 to 13 ns per needle up to 262,144 elements; with 1,000 needles they are not, and it takes 34 ns per needle at 1,024 elements and 120 ns at 1,048,576. NumPy takes 78 ns per needle at 1,048,576 with 1,000 needles.
+What the compiler does with `naive.c` (`clang -O3 -march=native`): one search at a time with a branch per step. The judge times the same needles again and again, so with 64 needles the branches are learnt and the naive C takes 6 to 17 ns per needle up to 262,144 elements; with 1,000 needles they are not, and it takes 34 ns per needle at 1,024 elements and 120 ns at 1,048,576. NumPy takes 78 ns per needle at 1,048,576 with 1,000 needles.
 
 ## x86-64 1. Baseline: sixteen branch-free searches in step, probes by `vgatherqpd`
 
