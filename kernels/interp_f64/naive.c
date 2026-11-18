@@ -5,8 +5,27 @@
 // This follows NumPy's arr_interp case by case, so the result is bit-identical:
 //   - a NaN query gives that NaN (except with a single sample point);
 //   - j is the largest index with xp[j] <= x;
-//   - the interpolated value is one fused multiply-add, as in NumPy's build for
-//     this platform, with NumPy's two fallbacks when it comes out as NaN.
+//   - the interpolated value is slope * (x - xp[j]) + fp[j], rounded as
+//     NumPy's build for the platform rounds it (see mul_add), with NumPy's two
+//     fallbacks when it comes out as NaN.
+
+// The compiler must not fuse a multiply and an add on its own: where NumPy
+// does not, the two roundings are part of the result.
+#pragma STDC FP_CONTRACT OFF
+
+// a * b + c as NumPy's build for this architecture computes it in arr_interp.
+// On ARM64 the compiler contracts the expression into one fused multiply-add,
+// rounded once. On x86-64 it does not: NumPy's baseline build has no FMA, so
+// the product is rounded and then the sum. Measured against np.interp on each.
+static inline double mul_add(double a, double b, double c) {
+#if defined(__aarch64__)
+    return __builtin_fma(a, b, c);
+#else
+    double product = a * b;
+    return product + c;
+#endif
+}
+
 void interp_f64(const double *x, const double *xp, const double *fp, double *out, size_t n,
                 size_t queries) {
     double left = fp[0], right = fp[n - 1];
@@ -32,9 +51,9 @@ void interp_f64(const double *x, const double *xp, const double *fp, double *out
         size_t j = lo - 1;
         if (j == n - 1 || xp[j] == v) { out[i] = fp[j]; continue; }
         double slope = (fp[j + 1] - fp[j]) / (xp[j + 1] - xp[j]);
-        double r = __builtin_fma(slope, v - xp[j], fp[j]);
+        double r = mul_add(slope, v - xp[j], fp[j]);
         if (r != r) {
-            r = __builtin_fma(slope, v - xp[j + 1], fp[j + 1]);
+            r = mul_add(slope, v - xp[j + 1], fp[j + 1]);
             if (r != r && fp[j] == fp[j + 1]) r = fp[j];
         }
         out[i] = r;
