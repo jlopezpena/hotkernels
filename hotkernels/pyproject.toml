@@ -48,10 +48,8 @@ cache-keys = [
 [tool.cibuildwheel]
 build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
 # Free-threaded Python is not supported: install() does nothing there (issue 21).
-skip = ["cp3??t-*"]
-# A wheel runs on every Apple Silicon Mac, so C kernels are compiled for the
-# first one, not for the machine that builds the wheel. See meson.options.
-config-settings = { setup-args = "-Dkernel_cpu=apple-m1" }
+# musl: the kernels have only been judged and checked with glibc.
+skip = ["cp3??t-*", "*-musllinux_*"]
 # Run in a fresh environment with only the wheel and its dependencies: the
 # extension loads, the self-test of every hook passes, and kernels are installed.
 test-command = [
@@ -61,5 +59,17 @@ test-command = [
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
+# A wheel runs on every Apple Silicon Mac, so C kernels are compiled for the
+# first one, not for the machine that builds the wheel. See meson.options.
+config-settings = { setup-args = "-Dkernel_cpu=apple-m1" }
 # The oldest macOS the wheels claim to run on; Apple Silicon starts at 11.
 environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+# A wheel runs on every x86-64 processor of the x86-64-v3 level, which is what
+# the assembly kernels are written to and what install() checks for. No
+# kernel ships as C on x86-64 today; one that did would have to be compiled
+# by clang, the compiler the judge timed it with, and the manylinux image's
+# compiler is gcc (docs/release-design.md).
+config-settings = { setup-args = "-Dkernel_cpu=x86-64-v3" }

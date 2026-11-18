@@ -50,11 +50,15 @@ jobs:
           uv run --python 3.14 --upgrade-package numpy python -c "$VERSIONS"
           uv run --python 3.14 --upgrade-package numpy delivery check
 
-  # The judge on its second platform. No kernel is installed there yet, so
-  # there is no delivery check to run.
+  # The judge and the package on their second platform. The hosted runners'
+  # processors have the x86-64-v3 instruction sets the kernels need; if one
+  # did not, install() would do nothing and the delivery check would say so.
   judge-linux:
     runs-on: ubuntu-latest # x86-64, with clang and GNU binutils installed
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv run judge selftest --no-speed
+      # Every hooked NumPy call, with and without hotkernels installed, on the
+      # NumPy in uv.lock, with the x86-64 kernels.
+      - run: uv run delivery check

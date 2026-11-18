@@ -7,7 +7,7 @@ It settles what [issue 19](https://github.com/sofeikov/hotkernels/issues/19) lef
 ## Summary
 
 - **A source distribution that builds anywhere.** When the source distribution is made, the build copies in everything it needs from the checkout: the kernel sources, the generated header and kernel table, and the judge's compiler flags. Building it then needs no checkout and no judge. Releases publish it next to the wheels, and the wheels are built from it, which proves it builds.
-- **Other platforms get a package that installs and does nothing.** Built from the source distribution on Linux, Windows or an Intel Mac, the package has no extension; `install()` does nothing and `report()` says why. That build needs no compiler. No separate pure-Python wheel is published.
+- **Other platforms get a package that installs and does nothing.** Built from the source distribution on Windows, an Intel Mac or Linux on ARM64, the package has no extension; `install()` does nothing and `report()` says why. That build needs no compiler. No separate pure-Python wheel is published.
 - **`python -m hotkernels script.py`** runs a script with hotkernels installed, with no change to the script. It reads its few options by hand, an exception to the rule that command lines use `typer`, so the package gains no dependency.
 - **Jinja stays a dependency of the package.** Decided in review.
 
@@ -16,8 +16,8 @@ It settles what [issue 19](https://github.com/sofeikov/hotkernels/issues/19) lef
 | Proposed | Built | Why |
 |---|---|---|
 | `meson.build` reads the kernel set's lists with `fs.read()` | It reads them through Python with `run_command` | `fs.read()` refuses files in the build tree, which is where a checkout's kernel set is written |
-| The kernel set picks the sources for the architecture of the machine that makes it | Always the ARM64 sources | The extension is only built for ARM64, so a set made on another machine must carry the same sources |
-| A Linux job checks the source distribution | It builds it in a `python:3.12-slim` container, which has no C compiler, and checks `install()` and `report()` there | A runner image has compilers installed and would not show a build that needs one. Locally, the same build was checked with the compiler pointed at a path that does not exist |
+| The kernel set picks the sources for the architecture of the machine that makes it | One kernel set per architecture, `kernel-set/arm64/` and `kernel-set/x86_64/`, whichever machine makes the source distribution | The extension is built for two platforms, and one source distribution serves both. At first there was one set, always ARM64's; the second came with the x86-64 kernels |
+| A Linux job checks the source distribution | It builds it in a `python:3.12-slim` container, which has no C compiler, and checks `install()` and `report()` there. Since Linux on x86-64 became a platform with kernels, that job runs on Linux on ARM64 | A runner image has compilers installed and would not show a build that needs one. Locally, the same build was checked with the compiler pointed at a path that does not exist |
 
 ## Where things stood
 
@@ -31,7 +31,7 @@ The build cannot run from anything but a checkout, because:
 
 ## The source distribution
 
-`meson dist`, which meson-python runs to make a source distribution, packs the files git tracks under `hotkernels/` and then runs the project's dist scripts on the result. One dist script, `generate.py dist`, writes the **kernel set** into the source distribution's `kernel-set/` directory:
+`meson dist`, which meson-python runs to make a source distribution, packs the files git tracks under `hotkernels/` and then runs the project's dist scripts on the result. One dist script, `generate.py dist`, writes a **kernel set** per architecture into the source distribution, `kernel-set/arm64/` and `kernel-set/x86_64/`. Each holds:
 
 | File | What it holds |
 |---|---|
@@ -41,7 +41,7 @@ The build cannot run from anything but a checkout, because:
 | `assembly-sources.txt`, `c-sources.txt` | The file names in `sources/`, one per line |
 | `c-flags.txt` | The judge's C flags, one per line, with `-mcpu=native` as the judge has it |
 
-A build from a checkout writes the same kernel set into its build directory with `generate.py write`, so `meson.build` has one way to build: it reads a kernel set, from `kernel-set/` when the source distribution carries one, from the build directory otherwise. The `kernel_cpu` option replaces `-mcpu=native` in `c-flags.txt` as it does today.
+A build from a checkout writes the kernel set for its own architecture into its build directory with `generate.py write OUT_DIR ARCH`, so `meson.build` has one way to build: it reads a kernel set, from `kernel-set/<arch>/` when the source distribution carries one, from the build directory otherwise. The `kernel_cpu` option replaces `native` in the judge's flag in `c-flags.txt`: `-mcpu=native` on ARM64, `-march=native` on x86-64.
 
 What this keeps true:
 
@@ -53,9 +53,9 @@ What this keeps true:
 
 ## Other platforms
 
-The extension is built only for macOS on ARM64, as today. Elsewhere `meson.build` adds the C language only inside that branch, so a build on Linux, Windows or an Intel Mac compiles nothing, needs no compiler, and installs the Python package alone. `install()` then finds no extension and does nothing, and `report()` says `needs macOS on ARM64, and this is linux on x86_64`. That is what the core design asked for: hotkernels never breaks a program, it only fails to speed it up.
+The extension is built for macOS on ARM64 and for Linux on x86-64. Elsewhere `meson.build` adds the C language only inside that branch, so a build on Windows, an Intel Mac or Linux on ARM64 compiles nothing, needs no compiler, and installs the Python package alone. `install()` then finds no extension and does nothing, and `report()` says `needs macOS on ARM64 or Linux on x86-64, and this is linux on aarch64`. On Linux x86-64 a build from the source distribution does need a C compiler and GNU `as`; the wheels are there so that most users never build. That is what the core design asked for: hotkernels never breaks a program, it only fails to speed it up.
 
-A release workflow job on Linux builds the source distribution into a wheel, installs it and checks exactly that.
+A release workflow job on Linux on ARM64 builds the source distribution into a wheel, installs it and checks exactly that.
 
 **No pure-Python wheel.** Issue 19 suggested one, to make the do-nothing install explicit. With a source distribution that builds without a compiler, it adds nothing on other platforms. It would also do harm on an Apple Silicon Mac with a Python that has no wheel yet: pip prefers any wheel to building from source, so that user would get the do-nothing package instead of building the real one.
 

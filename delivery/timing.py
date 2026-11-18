@@ -26,6 +26,9 @@ import numpy as np
 import hotkernels
 from hotkernels.environment import BINDING_MODULE
 
+from judge import cores
+from judge.cli import machine
+
 from .check import operation_kernels
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -402,13 +405,21 @@ def _output_of(command: list[str]) -> str:
 def describe_machine() -> dict:
     """Record what a run was measured on.
 
+    Pins the calling thread first, as the judge does, where the system allows
+    it: on a processor with performance and efficiency cores an unpinned run
+    is not a result.
+
     Returns:
         Processor, operating system, NumPy and Python versions, git revision,
-        and the one-minute load average when the run started. A load average
-        well above zero means the timings were taken on a busy machine.
+        the one-minute load average when the run started, and the CPU the
+        timing thread is pinned to, or None where threads cannot be pinned
+        (macOS). A load average well above zero means the timings were taken
+        on a busy machine.
     """
+    claim = cores.claim()
     return {
-        "cpu": _output_of(["sysctl", "-n", "machdep.cpu.brand_string"]),
+        "cpu": machine(),
+        "pinned_cpu": claim.cpu if claim else None,
         "os": platform.platform(),
         "numpy": np.__version__,
         "python": platform.python_version(),
