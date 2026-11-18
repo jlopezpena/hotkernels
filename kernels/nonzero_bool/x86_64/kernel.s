@@ -19,8 +19,16 @@
 # The mask bits for 32 bytes come from one compare and one `vpmovmskb`. A mask
 # byte counts as true when it is not zero, whatever its value.
 #
+# A block of 32 with at most SPARSE_MAX true elements does not go through the
+# table. `tzcnt` and `blsr` take the positions out of the mask word one by
+# one, a fixed SPARSE_MAX of them, each stored with one 8-byte store. That is
+# four small stores per block where the table path makes eight of 32 bytes.
+# Which path a block takes is one compare of its count, so a mask that is
+# sparse throughout or dense throughout predicts well and one near the
+# threshold does not.
+#
 # Paths, by what is left:
-#   32 or more  blocks of 32: one mask word, four groups
+#   32 or more  blocks of 32: one mask word, then four `tzcnt` or four groups
 #   8..31       one group per 8, the mask bits from an 8-byte load
 #   1..7        one element at a time, as the reference does it
 
@@ -50,6 +58,12 @@
 .p2align 5
 .Leight:
     .quad 8, 8, 8, 8
+# The same for a whole block.
+.Lblocksize:
+    .quad 32, 32, 32, 32
+
+# A block with more true elements than this goes through the table.
+.set SPARSE_MAX, 4
 
 # One group: r8 = its eight mask bits, ymm4 = the index of its first element
 # in every lane, r9 = indices written so far. r9 counts elements and the
@@ -73,19 +87,50 @@
 .p2align 4
 nonzero_bool:
     xor     r9d, r9d                    # indices written
-    mov     rcx, rdx                    # elements left
+    mov     [rsp - 8], rdx              # n, for the paths after the blocks
     lea     r10, [rip + .Loffsets]
     vpxor   xmm0, xmm0, xmm0
     vpxor   xmm4, xmm4, xmm4            # index of the next group's first element
     vmovdqa ymm5, [rip + .Leight]
-    mov     r11, rdx
-    shr     r11, 5                      # blocks of 32
+    vmovdqa ymm6, [rip + .Lblocksize]
+    xor     r11d, r11d                  # index of the block's first element
+    and     rdx, -32                    # where the blocks end
     jz      .Lgroups
 .p2align 6
 .Lblock:
-    vpcmpeqb ymm1, ymm0, [rdi]          # 0xff where the mask byte is zero
+    vpcmpeqb ymm1, ymm0, [rdi + r11]    # 0xff where the mask byte is zero
     vpmovmskb eax, ymm1
     not     eax                         # one bit per true element
+    popcnt  ecx, eax
+    cmp     ecx, SPARSE_MAX
+    ja      .Ldense
+    # Sparse block: the positions of the first SPARSE_MAX set bits, one
+    # 8-byte store each. Past the last set bit `tzcnt` returns 32 and the
+    # store is an index the write position does not advance over.
+    tzcnt   r8d, eax
+    blsr    eax, eax
+    add     r8, r11
+    mov     [rsi + r9 * 8], r8
+    tzcnt   r8d, eax
+    blsr    eax, eax
+    add     r8, r11
+    mov     [rsi + r9 * 8 + 8], r8
+    tzcnt   r8d, eax
+    blsr    eax, eax
+    add     r8, r11
+    mov     [rsi + r9 * 8 + 16], r8
+    tzcnt   r8d, eax
+    blsr    eax, eax
+    add     r8, r11
+    mov     [rsi + r9 * 8 + 24], r8
+    add     r9, rcx
+    vpaddq  ymm4, ymm4, ymm6
+    add     r11, 32
+    cmp     r11, rdx
+    jne     .Lblock
+    jmp     .Lgroups
+.p2align 4
+.Ldense:
     movzx   r8d, al
     shr     eax, 8
     GROUP
@@ -97,12 +142,15 @@ nonzero_bool:
     GROUP
     movzx   r8d, al
     GROUP
-    add     rdi, 32
-    dec     r11
-    jnz     .Lblock
+    add     r11, 32
+    cmp     r11, rdx
+    jne     .Lblock
 
 .Lgroups:
-    and     ecx, 31
+    add     rdi, r11
+    mov     rdx, [rsp - 8]
+    mov     ecx, edx
+    and     ecx, 31                     # elements left
     cmp     ecx, 8
     jb      .Ltail
 .Lgroup:
