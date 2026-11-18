@@ -44,3 +44,11 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** significantly faster, 1.014x [1.008 – 1.019]
 - **Kept:** yes
 - **Notes:** 1.09x to 1.13x at 64 on all three distributions, 1.00x to 1.03x from 256 to 1,048,576, 0.97x to 1.00x at the two largest sizes, none of those significant on `rising` and `some_nan`. The block is held by its arithmetic, so a store that straddles costs little; the verdict is the 64-element row. The stores past the caches need the alignment in any case.
+
+## 5. Stores past the caches from 24 MB of output
+
+- **Idea:** when 3,145,728 elements or more are left as M becomes a number, the blocks store with `vmovntpd`, which does not read the line it is about to overwrite, followed by one `sfence`. It needs the output at a multiple of 32, which attempt 4 arranges; an output that could not be brought there keeps the ordinary stores. The output is no longer prefetched on that path. The threshold is this processor's third-level cache, as in `cumsum_i64`: below it an output written with ordinary stores is left in a cache for the caller.
+- **check:** pass. The judge's correctness cases do not reach this path, so it was tested outside the judge against the naive C: 173 sizes, every one from 0 to 150 and 16 from 3,145,727 to 4,194,304 around the threshold and the head lengths; ten kinds of data (random, rising with ties, constant, few values, 1 0 2 1 3 2, two walks, falling, runs of random length that are flat, rising or noisy in turn, and the same with NaNs of both signs and several payloads, infinities and both zeros scattered through them, alone and in runs, with and without a run of NaN at the start); four placements of `x` and seven of `out`, two of them not multiples of 8; 16 guard bytes before and after `out`, and `x` compared with what it held before: 133,784 runs, no failure. The NaNs there include a signaling one, which the kernel ignores as the naive C does and NumPy does not.
+- **compare:** significantly faster, 1.030x [1.029 – 1.031]; a second run, since the verdict rests on the two largest sizes: 1.027x [1.026 – 1.028].
+- **Kept:** yes
+- **Notes:** 1.23x to 1.25x at 4,194,304 (2.28 ms to 1.82 ms) and at 16,777,216 on all three distributions in both runs, nothing elsewhere.

@@ -25,6 +25,13 @@
 # M is M against the block's last lane, broadcast: the chain from block to
 # block is one `vmaxpd` per eight elements.
 #
+# The output is first brought to a multiple of 32 bytes, and both buffers are
+# prefetched ahead of the blocks. From STREAM_MIN_BYTES of output the blocks
+# store with `vmovntpd`. An ordinary store first reads the cache line it is
+# about to overwrite; this one does not, which takes a third of the memory
+# traffic away. The output is then in no cache when the kernel returns, which
+# costs a caller nothing at a size no cache holds.
+#
 # rdi and rsi point at the ends of the arrays and rcx, negative, counts bytes
 # up to zero.
 
@@ -35,6 +42,9 @@
 # From this many bytes left the output is first brought to a multiple of 32:
 # enough for the three elements that may take and one block after them.
 .set ALIGN_MIN_BYTES, 64 + 24
+# From this many bytes of output left when M becomes a number, the blocks
+# store past the caches: 24 MB, the third-level cache of this processor.
+.set STREAM_MIN_BYTES, 24 * 1024 * 1024
 
 .section .rodata
 .p2align 3
@@ -101,17 +111,22 @@ cumfmax_f64:
     # ---- M is a number.
 .Lnumber:
     vbroadcastsd ymm4, qword ptr [rip + .Lneginf]
+    xor     r9d, r9d                    # 1 if the blocks store past the caches
     cmp     rcx, -ALIGN_MIN_BYTES
     jg      .Laligned
     # Up to three elements one at a time until out is a multiple of 32, so
     # that no store of a block straddles two cache lines. An out that is not
-    # a multiple of 8 cannot be brought there and is left as it is.
+    # a multiple of 8 cannot be brought there and is left as it is; the
+    # stores past the caches need the multiple of 32, so it does without.
     lea     r8d, [rsi + rcx]
     neg     r8d
     and     r8d, 31                     # bytes until out is a multiple of 32
-    jz      .Laligned
     test    r8d, 7
     jnz     .Laligned
+    cmp     rcx, -STREAM_MIN_BYTES
+    setle   r9b
+    test    r8d, r8d
+    jz      .Laligned
     add     r8, rcx                     # where the head ends
 .Lhead:
     vmovsd  xmm1, qword ptr [rdi + rcx]
@@ -134,6 +149,8 @@ cumfmax_f64:
     vmovupd ymm2, [rdi + rcx + 32]
     cmp     rcx, -128
     jg      .Llastpair
+    test    r9d, r9d
+    jnz     .Lstream
 .p2align 4
 .Lpair:
     PAIR
@@ -177,6 +194,23 @@ cumfmax_f64:
 .Ldone:
     vzeroupper
     ret
+
+    # ---- The blocks of an output of STREAM_MIN_BYTES or more, stored past
+    #      the caches. The output is not prefetched: these stores do not
+    #      read the lines they overwrite.
+.p2align 4
+.Lstream:
+    PAIR
+    prefetcht0 [rdi + rcx + PREFETCH_BYTES]
+    vmovupd ymm1, [rdi + rcx + 64]
+    vmovupd ymm2, [rdi + rcx + 96]
+    vmovntpd [rsi + rcx], ymm7
+    vmovntpd [rsi + rcx + 32], ymm8
+    add     rcx, 64
+    cmp     rcx, -128
+    jle     .Lstream
+    sfence                              # those stores are ordered before what follows
+    jmp     .Llastpair
 
     # ---- Two elements. xmm0 = x[0], already stored.
 .Ltwo:
