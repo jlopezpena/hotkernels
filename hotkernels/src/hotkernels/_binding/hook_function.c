@@ -659,20 +659,6 @@ static PyObject *call_copyto(HK_VECTORCALL_PARAMETERS) {
     return functions[F_COPYTO].original(callable, args, nargsf, kwnames);
 }
 
-// np.where(condition) with nothing but a one-dimensional contiguous boolean
-// array: the positions that are True, as np.nonzero gives them. np.where
-// calls NumPy's C code for nonzero directly, so the method hook does not see
-// this call. With `x` and `y` it is another operation, which is passed on
-// without being counted. NumPy accepts no keywords here.
-static PyObject *call_where(HK_VECTORCALL_PARAMETERS) {
-    if (PyVectorcall_NARGS(nargsf) == 1 && kwnames == NULL) {
-        PyObject *result = hk_try_nonzero(args[0]);
-        if (result != NULL) return result;
-        hk_pass(HK_OP_NONZERO);
-    }
-    return functions[F_WHERE].original(callable, args, nargsf, kwnames);
-}
-
 // -------------------------------------------------------------------- clip
 //
 // `np.clip(x, lo, hi)` runs a Python wrapper, then `x.clip`, then NumPy's
@@ -832,6 +818,125 @@ static void prepare_clip(PyObject *object) {
     Py_XDECREF(defaults);
     Py_XDECREF(implementation);
     PyErr_Clear();
+}
+
+// ------------------------------------------------------------------- where
+//
+// np.where has two operations behind one name. With the condition alone it
+// gives the positions that are True, as np.nonzero does: the nonzero_bool
+// kernel, counted under nonzero. With `x` and `y` it selects, element by
+// element, from `x` where the condition is True and from `y` where it is
+// not: the where_f64 kernel, counted under where. NumPy accepts no keywords
+// for either, and a call with keywords or another number of arguments is
+// passed on without being counted.
+//
+// The selection is taken only when it needs no broadcasting and no type
+// conversion: the condition and the arrays have one shape, and the arrays
+// one element type. The kernel only moves 64-bit elements, so it serves
+// float64 and int64 alike, and a NaN keeps its payload. Which type NumPy
+// gives the result follows NEP 50: beside a float64 array a Python float, a
+// Python int or an np.float64 leaves it float64, so such a scalar is taken
+// on either side, converted as a float64 clip bound is (clip_bound_f64: an
+// int only when a double holds it exactly). Beside an int64 array a float
+// would change the result's type, and an int may not fit; both are NumPy's.
+
+// Run where_f64 into a new array of the condition's shape and of NumPy type
+// `type_num`. `a` and `b` are the data of the arrays selected from, of the
+// condition's size; either may be NULL, and that side is then the scalar
+// `fill` at every position. The kernel reads n elements from each side, so a
+// scalar is first spread over a buffer of its own, on the stack when it fits
+// and from malloc above that. The result is the binding's own buffer and
+// cannot overlap an input, which the kernel requires.
+//
+// The kernel takes any non-zero byte of the condition as True, as NumPy
+// does, but its spec promises only 0 and 1 and ARM64 runs it as C; the
+// condition is checked first, as for the other mask kernels, and one with
+// another byte is NumPy's. Returns NULL with no exception set when the call
+// goes to NumPy after all: such a condition, or no memory.
+static HK_NOINLINE PyObject *run_where(PyArrayObject *condition, const void *a, const void *b, double fill,
+                                       int type_num) {
+    const npy_intp n = PyArray_SIZE(condition);
+    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(condition), PyArray_DIMS(condition), type_num);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    double on_stack[HK_STACK_SCRATCH_BYTES / sizeof(double)];
+    double *spread = NULL;
+    if (a == NULL || b == NULL) {
+        const size_t bytes = (size_t)n * sizeof(double);
+        spread = bytes <= sizeof on_stack ? on_stack : malloc(bytes);
+        if (spread == NULL) {
+            Py_DECREF(result);
+            return NULL;
+        }
+        if (a == NULL) a = spread;
+        else b = spread;
+    }
+    bool clean;
+    {
+        // The kernel reads each input once and writes only the new array, which
+        // no other thread can see yet.
+        HK_BEGIN_NOGIL(n)
+        clean = hk_mask_is_clean(PyArray_DATA(condition), (size_t)n);
+        if (clean) {
+            if (spread != NULL) {
+                for (npy_intp i = 0; i < n; i++) spread[i] = fill;
+            }
+            where_f64(PyArray_DATA(condition), a, b, PyArray_DATA((PyArrayObject *)result), (size_t)n);
+        }
+        HK_END_NOGIL
+    }
+    if (spread != NULL && spread != on_stack) free(spread);
+    if (!clean) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    hk_take(HK_WHERE_F64);
+    return result;
+}
+
+// np.where(condition, x, y) for a contiguous boolean condition with at least
+// one dimension and, of exactly its shape, two contiguous float64 arrays, two
+// contiguous int64 arrays, or one contiguous float64 array and a scalar that
+// keeps the result float64 (see above). An empty condition is taken: the
+// kernel writes nothing and the result is NumPy's empty array of that shape.
+static HK_NOINLINE PyObject *try_where(PyObject *condition, PyObject *x, PyObject *y) {
+    if (!hk_is_flat(condition, NPY_BOOL)) return NULL;
+    PyArrayObject *c = (PyArrayObject *)condition;
+    double fill = 0.0;
+    if (hk_is_plain_array(x) && hk_is_plain_array(y)) {
+        const int type_num = PyArray_TYPE((PyArrayObject *)x);
+        if (type_num != NPY_DOUBLE && type_num != NPY_INT64) return NULL;
+        if (!hk_is_flat(x, type_num) || !hk_is_flat(y, type_num)) return NULL;
+        if (!hk_same_shape(c, (PyArrayObject *)x) || !hk_same_shape(c, (PyArrayObject *)y)) return NULL;
+        return run_where(c, PyArray_DATA((PyArrayObject *)x), PyArray_DATA((PyArrayObject *)y), fill, type_num);
+    }
+    if (hk_is_flat(x, NPY_DOUBLE) && hk_same_shape(c, (PyArrayObject *)x) && clip_bound_f64(y, &fill)) {
+        return run_where(c, PyArray_DATA((PyArrayObject *)x), NULL, fill, NPY_DOUBLE);
+    }
+    if (hk_is_flat(y, NPY_DOUBLE) && hk_same_shape(c, (PyArrayObject *)y) && clip_bound_f64(x, &fill)) {
+        return run_where(c, NULL, PyArray_DATA((PyArrayObject *)y), fill, NPY_DOUBLE);
+    }
+    return NULL;
+}
+
+// np.where(condition, x, y), and np.where(condition) with nothing but a
+// one-dimensional contiguous boolean array: the positions that are True, as
+// np.nonzero gives them. np.where calls NumPy's C code for nonzero directly,
+// so the method hook does not see that call.
+static PyObject *call_where(HK_VECTORCALL_PARAMETERS) {
+    const Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    if (kwnames == NULL && nargs == 3) {
+        PyObject *result = try_where(args[0], args[1], args[2]);
+        if (result != NULL) return result;
+        hk_pass(HK_OP_WHERE);
+    } else if (kwnames == NULL && nargs == 1) {
+        PyObject *result = hk_try_nonzero(args[0]);
+        if (result != NULL) return result;
+        hk_pass(HK_OP_NONZERO);
+    }
+    return functions[F_WHERE].original(callable, args, nargsf, kwnames);
 }
 
 // ----------------------------------------------------------------- the hook

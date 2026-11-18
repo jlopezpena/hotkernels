@@ -49,6 +49,8 @@ TIMED_COLUMNS = 4
 # Share of a mask that is True in the two mask distributions.
 HALF = 0.5
 FEW = 0.05
+# Share of a condition that is True in the timed np.where with a scalar.
+MOSTLY = 0.95
 # Bounds, bin count and range used by the timed clip and histogram calls.
 LO, HI = -0.5, 0.5
 BINS = 50
@@ -148,6 +150,12 @@ def _masked_rows(dtype: type, share: float, n: int) -> tuple:
     """Build two-dimensional data of TIMED_COLUMNS columns and a mask of its shape that selects `share` of it."""
     x, mask = _masked(dtype, share, n)
     return (x.reshape(-1, TIMED_COLUMNS), mask.reshape(-1, TIMED_COLUMNS))
+
+
+def _selected(dtype: type, share: float, n: int) -> tuple:
+    """Build a mask that is True for `share` of its elements and two arrays of floats to select from."""
+    rng = _rng(n)
+    return (rng.random(n) < share, rng.standard_normal(n).astype(dtype), rng.standard_normal(n).astype(dtype))
 
 
 def _mask(share: float, n: int) -> tuple:
@@ -284,6 +292,9 @@ TAKEN: tuple[Timed, ...] = (
     Timed("nonzero", "np.nonzero(mask)", "bool, half selected", partial(_mask, HALF), np.nonzero, "nonzero_bool"),
     Timed("nonzero", "np.nonzero(mask)", "bool, few selected", partial(_mask, FEW), np.nonzero, "nonzero_bool"),
     Timed("nonzero", "np.where(mask)", "bool, half selected", partial(_mask, HALF), np.where, "nonzero_bool"),
+    Timed("where", "np.where(mask, a, b)", "float64, half true", partial(_selected, np.float64, HALF), np.where, "where_f64"),
+    Timed("where", "np.where(mask, a, np.nan)", "float64, mostly true", partial(_selected, np.float64, MOSTLY),
+          lambda m, a, b: np.where(m, a, np.nan), "where_f64"),
     Timed("cumsum", "np.cumsum(x)", "int64", partial(_ints, np.int64), np.cumsum, "cumsum_i64"),
     Timed("cumsum", "np.cumsum(mask)", "bool, half selected", partial(_mask, HALF), np.cumsum, "cumsum_bool"),
     Timed("cumsum", "np.cumsum(x)", "float32", partial(_floats, np.float32), np.cumsum, "cumsum_f32", inexact=True),
@@ -331,7 +342,8 @@ LEFT: tuple[Timed, ...] = (
     Timed("maskfill", "x[3] = 1.0", "float64", partial(_floats, np.float64), _set_element, None),
     Timed("maskfill", "x[mask] = 0.0", "float32, half selected", partial(_masked, np.float32, HALF), partial(_assign, 0.0), None),
     Timed("maskfill", "np.copyto(x, 0.0)", "float64", partial(_floats, np.float64), lambda x: np.copyto(x, 0.0), None),
-    Timed("nonzero", "np.where(mask, 1.0, 0.0)", "bool, half selected", partial(_mask, HALF), lambda m: np.where(m, 1.0, 0.0), None),
+    Timed("where", "np.where(mask, 1.0, 0.0)", "bool, half selected", partial(_mask, HALF), lambda m: np.where(m, 1.0, 0.0), None),
+    Timed("where", "np.where(mask, a, b)", "float32, half true", partial(_selected, np.float32, HALF), np.where, None),
 )
 
 
