@@ -500,6 +500,9 @@ static HK_NOINLINE PyObject *try_accumulate(PyObject *ufunc, PyObject *const *ar
                                             PyObject *kwnames) {
     enum { ARRAY, AXIS, DTYPE, OUT, PARAMETERS };
     static const char *const names[PARAMETERS] = {"array", "axis", "dtype", "out"};
+    // The array is nearly always the first positional argument, and its type
+    // decides most calls; it is tested before the arguments are matched.
+    if (nargs >= 1 && accumulate_kernel(ufunc, args[0]) == HK_KERNEL_COUNT) return NULL;
     PyObject *bound[PARAMETERS];
     if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
     if (bound[ARRAY] == NULL) return NULL;
