@@ -9,40 +9,127 @@
 # payload and its signalling bit, a zero its sign, and 64-bit integers sent
 # through as bit patterns arrive unchanged.
 #
-# Four elements at a time: `vpmovsxbq` widens four bytes of c to four 64-bit
-# lanes and a compare with zero makes the lane mask, all ones where c is
-# false. The output is (mask and b) or (a and not mask). A byte of c is true
-# when it is not zero, whatever its value.
+# A byte of c is true when it is not zero, whatever its value.
 #
-# Paths, by what is left:
-#   4 or more   one select per 4
+# Sixteen elements are one block. Their sixteen bytes of c are loaded once,
+# into both halves of a register, and compared with zero: 0xff where c is
+# false. Four `vpshufb` then spread the bytes of each group of four over the
+# eight bytes of a 64-bit lane each, which gives the four lane masks, all
+# ones where c is false. A group's output is (mask and b) or (a and not
+# mask).
+#
+# The elements left after the whole blocks are done by one more block that
+# ends exactly at the end of the four buffers. It writes again some elements
+# the block before it wrote, with the same values: out never overlaps an
+# input. Under sixteen elements the same is done with groups of four, whose
+# masks come from `vpmovsxbq`.
+#
+# Paths, by n:
+#   16 or more  blocks of 16, the last one ending at the end of the buffers
+#   4..15       groups of 4, the last one ending at the end of the buffers
 #   1..3        one element at a time, with a conditional move
+
+.section .rodata
+.p2align 6
+# The `vpshufb` controls of the four groups of a block: group g takes bytes
+# 4g and 4g+1 of the low half and bytes 4g+2 and 4g+3 of the high half, each
+# eight times.
+.Lspread:
+    .irp g, 0, 1, 2, 3
+    .fill 8, 1, 4 * \g
+    .fill 8, 1, 4 * \g + 1
+    .fill 8, 1, 4 * \g + 2
+    .fill 8, 1, 4 * \g + 3
+    .endr
+
+# Select one group. \m = its lane mask, all ones where c is false, replaced
+# by the output; \t = a scratch register. \a, \b, \o = the registers that
+# point at the block in a, b and out; \k = the group's number in the block.
+.macro SELECT k, m, t, a, b, o
+    vpand   \t, \m, [\b + 32 * (\k)]
+    vpandn  \m, \m, [\a + 32 * (\k)]
+    vpor    \m, \m, \t
+    vmovdqu [\o + 32 * (\k)], \m
+.endm
+
+# One block of 16 elements. \c, \a, \b, \o = the registers that point at it
+# in c, a, b and out. ymm0 = zeros, ymm12 to ymm15 = the controls.
+.macro BLOCK c, a, b, o
+    vbroadcasti128 ymm1, [\c]           # 16 bytes of c in both halves
+    vpcmpeqb ymm1, ymm1, ymm0           # 0xff where c is false
+    vpshufb ymm2, ymm1, ymm12
+    vpshufb ymm3, ymm1, ymm13
+    vpshufb ymm4, ymm1, ymm14
+    vpshufb ymm5, ymm1, ymm15
+    SELECT 0, ymm2, ymm6, \a, \b, \o
+    SELECT 1, ymm3, ymm7, \a, \b, \o
+    SELECT 2, ymm4, ymm8, \a, \b, \o
+    SELECT 3, ymm5, ymm9, \a, \b, \o
+.endm
+
+# One group of 4 elements at index \i, for the arrays under 16 elements.
+.macro GROUP i
+    vpmovsxbq ymm1, dword ptr [rdi + \i]
+    vpcmpeqq ymm1, ymm1, ymm0           # all ones where c is false
+    vpand   ymm2, ymm1, [rdx + \i * 8]
+    vpandn  ymm1, ymm1, [rsi + \i * 8]
+    vpor    ymm1, ymm1, ymm2
+    vmovdqu [rcx + \i * 8], ymm1
+.endm
 
 .text
 .globl where_f64
 .type where_f64, @function
 .p2align 4
 where_f64:
-    xor     eax, eax                    # elements done
-    mov     r9, r8
-    and     r9, -4                      # elements in whole groups
-    jz      .Ltail
+    cmp     r8, 16
+    jb      .Lshort
     vpxor   xmm0, xmm0, xmm0
-.p2align 4
+    vmovdqa ymm12, [rip + .Lspread]
+    vmovdqa ymm13, [rip + .Lspread + 32]
+    vmovdqa ymm14, [rip + .Lspread + 64]
+    vmovdqa ymm15, [rip + .Lspread + 96]
+    lea     r10, [rdi + r8 - 16]        # the last block, in each buffer
+    lea     r11, [rsi + r8 * 8 - 128]
+    lea     rax, [rdx + r8 * 8 - 128]
+    lea     r9, [rcx + r8 * 8 - 128]
+    cmp     rdi, r10
+    jae     .Llast
+.p2align 6
+.Lblock:
+    BLOCK   rdi, rsi, rdx, rcx
+    add     rdi, 16
+    add     rsi, 128
+    add     rdx, 128
+    add     rcx, 128
+    cmp     rdi, r10
+    jb      .Lblock
+.Llast:
+    BLOCK   r10, r11, rax, r9
+    vzeroupper
+    ret
+
+.Lshort:
+    xor     eax, eax
+    cmp     r8, 4
+    jb      .Ltail
+    vpxor   xmm0, xmm0, xmm0
+    lea     r9, [r8 - 4]                # the last group
+    test    r9, r9
+    jz      .Llastgroup
 .Lgroup:
-    vpmovsxbq ymm1, dword ptr [rdi + rax]
-    vpcmpeqq ymm1, ymm1, ymm0           # all ones where c is false
-    vpand   ymm2, ymm1, [rdx + rax * 8]
-    vpandn  ymm1, ymm1, [rsi + rax * 8]
-    vpor    ymm1, ymm1, ymm2
-    vmovdqu [rcx + rax * 8], ymm1
+    GROUP   rax
     add     rax, 4
     cmp     rax, r9
     jb      .Lgroup
+.Llastgroup:
+    GROUP   r9
     vzeroupper
+    ret
+
 .Ltail:
-    cmp     rax, r8
-    jae     .Ldone
+    test    r8, r8
+    jz      .Ldone
 .Lone:
     mov     r9, [rdx + rax * 8]
     cmp     byte ptr [rdi + rax], 0
