@@ -45,3 +45,27 @@ Every element is 17 bytes read and 8 written, so beyond the first-level cache th
 - **compare:** significantly faster, 1.017x [1.015 – 1.020]
 - **Kept:** yes
 - **Notes:** 1.19x to 1.20x at 64 (13.9 ns to 11.6 ns, and below the 12.5 ns it took before attempt 4), 1.02x at 256, 0.99x at 4,096 and 16,384, nothing elsewhere.
+
+## 6. Select by storing twice: the elements of a, then a masked store of b (`vmaskmovpd`)
+
+- **Idea:** in the micro-benchmark a group selected with and, and-not and or takes 2.0 cycles in the first-level cache whatever is done to it, and the same group done as two loads, a store of a's four elements and a `vmaskmovpd` store of b's over them where c is false takes 1.66 to 1.79; at 16,384 elements 0.135 ns per element against 0.150. The lane mask's top bit is all the masked store reads. The blocks stored past the caches keep the logical select, since a masked store cannot go past them.
+- **check:** pass. The program of attempt 3: 156,114 runs, no failure.
+- **compare:** significantly faster, 1.005x [1.001 – 1.010]; a second run 1.008x [1.003 – 1.013]
+- **Kept:** no. The judge's verdict allows it, twice, by half a percent. Not kept for what comes with it: `vmaskmovpd` to memory is one of the instructions that are fast on this processor and slow on others (many times slower on AMD before Zen 4, by the published instruction tables; not measured here), the time comes to depend on the condition, and two sizes lose more than the others gain. Reported for a person to decide.
+- **Notes:** both runs alike. 1.06x to 1.10x at 16, 1.05x at 256, 1.02x to 1.03x at 1,024 and 4,096; **0.88x at 64 with half_true** (11.7 ns to 13.3 ns) and 0.97x with mostly_true, the first place the same code takes a different time on the two distributions; **0.96x at 16,384** in both; 0.97x to 0.99x at 1,048,576; nothing from 4,194,304, which this change does not touch. The micro-benchmark's gain beyond the first-level cache did not appear in the judge.
+
+## 7. All four groups of a block selected before any is stored
+
+- **Idea:** the loads of a block ahead of its stores: the four selects first, each into its own register, then the four stores, in the ordinary blocks and in those stored past the caches. In the micro-benchmark it was 0.156 ns per element against 0.175 at 4,096 with a and b 16 bytes off a multiple of 32, and nothing at 16,384.
+- **check:** pass. The program of attempt 3: 156,114 runs, no failure.
+- **compare:** no significant difference, 1.001x [0.998 – 1.004]
+- **Kept:** no
+- **Notes:** every size 0.98x to 1.02x.
+
+## 8. Ask for the cache lines 512 bytes ahead
+
+- **Idea:** from 256 to 65,536 elements the judge's data sits in the second-level cache, and there the kernel is as fast as the lines arrive. Six `prefetcht0` per block ask for the two lines of a, of b and of out that the block 512 bytes on will use. A first loop does that for as long as those lines are inside the buffers and a second, the loop as it was, does the last blocks without, so nothing outside the buffers is asked for and an array of under 80 elements never prefetches. Not in the blocks stored past the caches. In the micro-benchmark, with a and b 16 bytes off a multiple of 32: 0.160 to 0.145 ns per element at 4,096 and 0.180 to 0.150 at 65,536 with 512 bytes, the same with 1,024, less with 256 (0.153 and 0.185), and nothing that stands out of the noise at 262,144 and above.
+- **check:** pass. The program of attempt 3: 156,114 runs, no failure.
+- **compare:** significantly faster, 1.019x [1.013 – 1.026]
+- **Kept:** yes
+- **Notes:** 1.03x to 1.04x at 1,024, 1.06x to 1.07x at 4,096, 16,384 and 65,536, 1.01x at 256, nothing at 16 and 64 and from 262,144 up.

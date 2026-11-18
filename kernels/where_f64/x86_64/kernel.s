@@ -30,6 +30,10 @@
 # is at such a multiple. An out that is not a multiple of 8 cannot be brought
 # there.
 #
+# The aligned blocks ask for the cache lines of a, b and out that the block
+# PREFETCH_BYTES ahead will use, as long as those lines are inside the
+# buffers; the last blocks ask for nothing.
+#
 # From STREAM_MIN_N elements the blocks store with `vmovntdq`. An ordinary
 # store first reads the cache line it is about to overwrite; this one does
 # not, which takes a quarter of the memory traffic away. The output is then in
@@ -59,6 +63,9 @@
 # From this many elements out is brought to a multiple of 32 bytes: enough
 # for the three elements that may take and one block after them.
 .set ALIGN_MIN, 32
+# How far ahead of a block its two cache lines of a, of b and of out are
+# asked for, in bytes.
+.set PREFETCH_BYTES, 512
 # From this many elements the stores go past the caches: 24 MB of output, the
 # third-level cache of this processor.
 .set STREAM_MIN_N, 3 * 1024 * 1024
@@ -137,6 +144,24 @@ where_f64:
     cmp     r8, STREAM_MIN_N
     jae     .Lstream
     ALIGN
+    lea     r8, [r10 - PREFETCH_BYTES / 8]  # in c, where the prefetches would pass the end
+    cmp     rdi, r8
+    jae     .Lblock
+.p2align 6
+.Lfetchblock:
+    prefetcht0 [rsi + PREFETCH_BYTES]
+    prefetcht0 [rsi + PREFETCH_BYTES + 64]
+    prefetcht0 [rdx + PREFETCH_BYTES]
+    prefetcht0 [rdx + PREFETCH_BYTES + 64]
+    prefetcht0 [rcx + PREFETCH_BYTES]
+    prefetcht0 [rcx + PREFETCH_BYTES + 64]
+    BLOCK   rdi, rsi, rdx, rcx
+    add     rdi, 16
+    add     rsi, 128
+    add     rdx, 128
+    add     rcx, 128
+    cmp     rdi, r8
+    jb      .Lfetchblock
 .p2align 6
 .Lblock:
     BLOCK   rdi, rsi, rdx, rcx
