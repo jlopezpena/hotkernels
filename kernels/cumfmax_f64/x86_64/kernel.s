@@ -19,8 +19,10 @@
 # number are done one at a time.
 #
 # From there, four elements per vector. Two steps make the running maximum
-# inside the vector: each lane against the lane before it, then against the
-# lane two before. In a block of two vectors the second also takes the
+# inside the vector: the second of each pair of lanes against the first, then
+# the upper pair against the lower pair's maximum. The first step's shuffle
+# stays inside the 128-bit halves and is the integer one, `vpshufd`, which
+# has two ports on this processor where the others have one. In a block of two vectors the second also takes the
 # first's last lane. The output is that against M in every lane, and the next
 # M is M against the block's last lane, broadcast: the chain from block to
 # block is one `vmaxpd` per eight elements.
@@ -55,10 +57,10 @@
 # infinity first. ymm4 = minus infinity in every lane; \t is scratch.
 .macro PREFIX r, t
     vmaxpd  \r, \r, ymm4               # NaN to minus infinity
-    vpermpd \t, \r, 0x90               # x0 x0 x1 x2
-    vmaxpd  \r, \t, \r                 # each lane against the one before it
-    vpermpd \t, \r, 0x40               # a0 a0 a0 a1
-    vmaxpd  \r, \t, \r                 # and against the one two before
+    vpshufd \t, \r, 0x44               # x0 x0 x2 x2
+    vmaxpd  \r, \t, \r                 # x0, x0..x1, x2, x2..x3
+    vpermpd \t, \r, 0x50               # a0 a0 a1 a1
+    vmaxpd  \r, \t, \r                 # the upper pair against x0..x1
 .endm
 
 # Eight elements, loaded in ymm1 and ymm2. Leaves their output in ymm7 and

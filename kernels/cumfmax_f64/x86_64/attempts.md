@@ -52,3 +52,11 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** significantly faster, 1.030x [1.029 – 1.031]; a second run, since the verdict rests on the two largest sizes: 1.027x [1.026 – 1.028].
 - **Kept:** yes
 - **Notes:** 1.23x to 1.25x at 4,194,304 (2.28 ms to 1.82 ms) and at 16,777,216 on all three distributions in both runs, nothing elsewhere.
+
+## 6. The first shuffle inside the 128-bit halves, as an integer shuffle
+
+- **Idea:** inside the first-level cache the block takes six cycles in the micro-benchmark, which is its six `vpermpd` on the one port that takes a shuffle across the halves of a register. The running maximum inside a vector can pair the lanes first (x0 x0 x2 x2 against the vector, a shuffle that stays inside each half) and then put the lower pair's maximum against the upper pair (a0 a0 a1 a1, across the halves). `vunpcklpd` and `vmovddup` for the first shuffle changed nothing in the micro-benchmark (145 ns at 1,024 elements, as before); `vpshufd`, the integer shuffle, has a second port: 139 ns.
+- **check:** pass, and the comparison with NumPy outside the judge again: 12,216 arrays, no difference.
+- **compare:** significantly faster, 1.009x [1.008 – 1.010]
+- **Kept:** yes
+- **Notes:** 1.02x to 1.03x from 256 to 4,096, 1.01x to 1.02x at 16,384 and 65,536, nothing at 16 and 64 or from 262,144 up. Tried in the micro-benchmark and not taken further: the second vector's first step from a load one element back, cleaned of NaN, in place of its shuffle: 0.138 ns per element at 1,024 and 16,384 against this attempt's 0.135 and 0.133 (attempt 5: 0.142), and both together 0.140. It trades a shuffle for a `vmaxpd`, and the ten of a block already fill their two ports for five cycles.
