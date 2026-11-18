@@ -29,3 +29,113 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** significantly faster, 1.034x [1.031 – 1.036]
 - **Kept:** yes
 - **Notes:** four distinct values with 1,000 counters 1.33x to 1.36x from 16,384 to 1,048,576 (0.277 ns per element against 0.375), 1.15x to 1.16x above, where the input comes from memory. Uniform codes with 1,000 counters 1.00x to 1.03x. The two tables with 64 counters, which this change does not reach from 8,192 elements, read 0.99x [0.99 – 1.00] and 1.00x n.s.
+
+## Where it stands
+
+Final `judge run` (unlocked): 1.15x [1.15 – 1.15] over the naive C across the four tables, 3.96x over NumPy. By table: uniform codes 1.12x with 64 counters and 1.02x with 1,000; four distinct values 1.34x with 64 counters and 1.16x with 1,000. `NumPy*` is the call from Python, `np.bincount(x, minlength=bins)`, with its per-call overhead.
+
+`uniform`:
+
+| n | kernel | naive C | speedup [95%] | NumPy* | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 8.5 ns | 8.6 ns | 1.01x [1.01 – 1.01] | 285.4 ns | 33.4x [33.40 – 33.45] |
+| 64 | 19.0 ns | 19.6 ns | 1.03x [1.03 – 1.03] | 321.4 ns | 16.9x [16.86 – 16.91] |
+| 256 | 54.9 ns | 61.1 ns | 1.11x [1.11 – 1.11] | 438.1 ns | 7.97x [7.96 – 7.99] |
+| 1,024 | 267.4 ns | 228.4 ns | 0.85x [0.85 – 0.86] | 871.8 ns | 3.26x [3.26 – 3.26] |
+| 4,096 | 780.2 ns | 817.9 ns | 1.05x [1.05 – 1.05] | 2.6 us | 3.39x [3.38 – 3.39] |
+| 16,384 | 3.6 us | 4.2 us | 1.18x [1.18 – 1.18] | 10.7 us | 2.98x [2.98 – 2.98] |
+| 65,536 | 13.8 us | 16.7 us | 1.22x [1.21 – 1.22] | 41.3 us | 3.00x [3.00 – 3.00] |
+| 262,144 | 56.0 us | 74.9 us | 1.34x [1.34 – 1.34] | 167.9 us | 3.00x [2.99 – 3.00] |
+| 1,048,576 | 218.3 us | 291.4 us | 1.33x [1.33 – 1.34] | 665.5 us | 3.05x [3.04 – 3.05] |
+| 4,194,304 | 1.50 ms | 1.72 ms | 1.14x [1.13 – 1.16] | 3.63 ms | 2.41x [2.39 – 2.44] |
+| 16,777,216 | 6.53 ms | 7.34 ms | 1.12x [1.10 – 1.16] | 15.61 ms | 2.39x [2.35 – 2.41] |
+| overall |  |  | 1.12x [1.12 – 1.12] |  | 4.68x [4.67 – 4.68] |
+
+`uniform, scalars=thousand_bins`:
+
+| n | kernel | naive C | speedup [95%] | NumPy* | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 29.9 ns | 30.7 ns | 1.03x [1.03 – 1.03] | 340.0 ns | 11.4x [11.38 – 11.39] |
+| 64 | 38.8 ns | 39.3 ns | 1.01x [1.01 – 1.02] | 369.2 ns | 9.52x [9.50 – 9.53] |
+| 256 | 75.2 ns | 84.3 ns | 1.12x [1.12 – 1.12] | 487.8 ns | 6.49x [6.44 – 6.52] |
+| 1,024 | 309.0 ns | 308.8 ns | 1.00x [1.00 – 1.00] n.s. | 924.1 ns | 2.99x [2.98 – 2.99] |
+| 4,096 | 1.2 us | 1.2 us | 1.07x [1.07 – 1.08] | 2.8 us | 2.44x [2.44 – 2.45] |
+| 16,384 | 4.2 us | 4.2 us | 1.01x [1.01 – 1.01] | 10.7 us | 2.57x [2.57 – 2.58] |
+| 65,536 | 17.7 us | 17.2 us | 0.97x [0.97 – 0.97] | 41.9 us | 2.37x [2.36 – 2.37] |
+| 262,144 | 71.7 us | 71.6 us | 1.00x [1.00 – 1.00] n.s. | 168.3 us | 2.35x [2.34 – 2.35] |
+| 1,048,576 | 290.8 us | 301.1 us | 1.04x [1.03 – 1.04] | 674.5 us | 2.32x [2.31 – 2.32] |
+| 4,194,304 | 1.79 ms | 1.80 ms | 1.01x [1.00 – 1.02] n.s. | 3.74 ms | 2.09x [2.07 – 2.12] |
+| 16,777,216 | 7.50 ms | 7.42 ms | 0.99x [0.97 – 1.02] n.s. | 15.60 ms | 2.08x [2.03 – 2.12] |
+| overall |  |  | 1.02x [1.02 – 1.02] |  | 3.42x [3.41 – 3.42] |
+
+`few_values`:
+
+| n | kernel | naive C | speedup [95%] | NumPy* | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 9.2 ns | 9.6 ns | 1.05x [1.05 – 1.06] | 278.2 ns | 30.4x [30.34 – 30.38] |
+| 64 | 24.2 ns | 25.5 ns | 1.05x [1.05 – 1.05] | 316.4 ns | 13.1x [13.08 – 13.09] |
+| 256 | 90.2 ns | 94.5 ns | 1.05x [1.05 – 1.05] | 460.0 ns | 5.10x [5.10 – 5.10] |
+| 1,024 | 385.8 ns | 382.1 ns | 0.99x [0.99 – 0.99] | 1.1 us | 2.73x [2.73 – 2.73] |
+| 4,096 | 1.5 us | 1.5 us | 1.01x [1.01 – 1.01] | 3.4 us | 2.24x [2.24 – 2.24] |
+| 16,384 | 3.7 us | 6.3 us | 1.71x [1.71 – 1.72] | 12.8 us | 3.49x [3.48 – 3.49] |
+| 65,536 | 13.3 us | 24.7 us | 1.86x [1.85 – 1.86] | 50.0 us | 3.76x [3.76 – 3.77] |
+| 262,144 | 53.5 us | 98.8 us | 1.85x [1.83 – 1.86] | 200.0 us | 3.74x [3.71 – 3.76] |
+| 1,048,576 | 212.1 us | 397.3 us | 1.87x [1.86 – 1.88] | 795.9 us | 3.75x [3.73 – 3.76] |
+| 4,194,304 | 1.49 ms | 2.07 ms | 1.39x [1.36 – 1.41] | 4.02 ms | 2.70x [2.65 – 2.74] |
+| 16,777,216 | 6.37 ms | 8.73 ms | 1.37x [1.35 – 1.40] | 16.85 ms | 2.64x [2.62 – 2.66] |
+| overall |  |  | 1.34x [1.33 – 1.34] |  | 4.52x [4.51 – 4.53] |
+
+`few_values, scalars=thousand_bins`:
+
+| n | kernel | naive C | speedup [95%] | NumPy* | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 29.4 ns | 30.5 ns | 1.04x [1.04 – 1.04] | 340.5 ns | 11.6x [11.56 – 11.57] |
+| 64 | 44.3 ns | 44.2 ns | 1.00x [1.00 – 1.00] | 370.6 ns | 8.37x [8.37 – 8.38] |
+| 256 | 113.4 ns | 117.0 ns | 1.03x [1.03 – 1.04] | 515.6 ns | 4.55x [4.55 – 4.55] |
+| 1,024 | 445.6 ns | 446.6 ns | 1.00x [1.00 – 1.00] | 1.1 us | 2.49x [2.48 – 2.49] |
+| 4,096 | 1.6 us | 1.6 us | 1.00x [1.00 – 1.00] | 3.4 us | 2.17x [2.16 – 2.17] |
+| 16,384 | 4.5 us | 6.1 us | 1.35x [1.35 – 1.35] | 12.8 us | 2.83x [2.83 – 2.84] |
+| 65,536 | 18.4 us | 25.1 us | 1.36x [1.36 – 1.36] | 50.1 us | 2.72x [2.72 – 2.72] |
+| 262,144 | 73.3 us | 99.9 us | 1.36x [1.36 – 1.36] | 200.8 us | 2.74x [2.74 – 2.74] |
+| 1,048,576 | 290.7 us | 397.8 us | 1.37x [1.37 – 1.37] | 798.0 us | 2.74x [2.74 – 2.75] |
+| 4,194,304 | 2.04 ms | 2.36 ms | 1.15x [1.07 – 1.20] | 4.35 ms | 2.13x [2.00 – 2.24] |
+| 16,777,216 | 7.22 ms | 8.57 ms | 1.19x [1.12 – 1.20] | 17.03 ms | 2.36x [2.21 – 2.38] |
+| overall |  |  | 1.16x [1.15 – 1.16] |  | 3.39x [3.37 – 3.41] |
+
+Output buffer 16 bytes behind its input, counted within a memory page:
+
+
+`uniform`:
+
+| n | kernel | apart* | speedup [95%] | naive C | speedup [95%] |
+|---|---|---|---|---|---|
+| 4,096 | 808.2 ns | 781.6 ns | 0.97x [0.97 – 0.97] | 824.2 ns | 1.02x [1.02 – 1.02] |
+| 16,384 | 3.6 us | 3.6 us | 0.99x [0.99 – 0.99] | 4.0 us | 1.11x [1.10 – 1.11] |
+| 65,536 | 13.9 us | 13.8 us | 0.99x [0.99 – 0.99] | 18.8 us | 1.35x [1.35 – 1.35] |
+| 262,144 | 57.5 us | 58.2 us | 1.01x [1.01 – 1.02] | 73.2 us | 1.27x [1.27 – 1.28] |
+| 1,048,576 | 234.8 us | 237.6 us | 1.01x [1.00 – 1.02] | 295.5 us | 1.26x [1.25 – 1.26] |
+| 4,194,304 | 1.61 ms | 1.67 ms | 1.03x [1.02 – 1.05] | 1.82 ms | 1.13x [1.12 – 1.14] |
+| 16,777,216 | 9.44 ms | 9.36 ms | 0.99x [0.93 – 1.25] n.s. | 9.93 ms | 1.05x [0.96 – 1.21] n.s. |
+| overall |  |  | 1.00x [0.99 – 1.03] n.s. |  | 1.16x [1.15 – 1.19] |
+
+**What the figures are.** Below 8,192 elements, and with more than 1,024 counters, the kernel is the naive C's loop. From 8,192 elements with at most 64 counters the pair table takes 0.21 ns per element on both kinds of data, where the C takes 0.26 to 0.29 on uniform codes and 0.38 on four values: 1.18x to 1.34x and 1.71x to 1.87x up to 1,048,576. With 65 to 1,024 counters the second table is taken only on data that repeats: 1.35x to 1.37x on four values up to 1,048,576, and uniform codes stay on the single table (0.97x to 1.04x). From 4,194,304 elements every gain shrinks to 1.12x to 1.39x: the input is 32 MB and more, and reading it is most of the time (0.36 to 0.39 ns per element in the pair path).
+
+**1,024 uniform codes with 64 counters reads 0.85x** in the table above (267 ns against 228). It is not the kernel's: two `run --quick` afterwards had 291 ns against 305 (1.05x) and 375 against 378 (1.01x). Both the kernel and the C run the same loop there, and its time moves between 228 and 378 ns from one run to the next with where the judge's buffers fall, as the log of `bincount_u8` found for that kernel's naive C. Both also take 0.29 to 0.30 ns per element at 1,024 and 4,096 elements with 1,000 counters, against 0.19 with 64 counters at 4,096; that was not looked into.
+
+**The output 16 bytes behind the input** costs nothing: 1.00x overall, n.s., between 0.97x and 1.03x at every size.
+
+**Verdict for a person to confirm:** assembly, by less than `bincount_i16`. It ties the C where nothing but the loop is possible, is 1.2x to 1.9x faster from 8,192 to 1,048,576 elements with at most 64 counters and 1.35x on repeating data with up to 1,024, and 1.1x to 1.4x beyond, where memory sets the pace.
+
+What a caller should know (as for `bincount_i16`):
+
+- **Stack.** The pair path uses 16.6 KB below the stack pointer, cleared from the top down, and the second table 12.3 KB, whose first store can land up to 12 KB below the caller's frame.
+- **Elements outside `[0, bins)`** are ignored on every path, but the pair path is slow on them (attempt 2). A binding that only sends calls NumPy would accept never sends any.
+- **n of 2^32 or more** with at most 64 counters takes the single table or the second table, whose counters are 64 bits. That branch was not run: it needs 32 GB of input.
+- No `pext`, `pdep`, gather or masked store is used. `popcnt` is, in the sample that chooses the second table.
+
+Not tried:
+
+- **The dead ends of `bincount_i16` on this element type**: the pair indexes computed in a vector register (its attempt 4), two pair tables, and the second table without the sample (its attempt 5). An attempt rejected for 2-byte elements was rejected for those; none was repeated here.
+- **Fewer instructions in the pair step**, for instance `vptest` on a 32-byte load for the range test in place of four `or` from memory.
+- **Prefetching the input** from 4,194,304 elements, where it comes from memory.
+- **The pair table for more than 64 counters**, a second table above 1,024 counters, and where the one-in-eight line of the sample belongs.

@@ -140,11 +140,11 @@ Output buffer 16 bytes behind its input, counted within a memory page:
 | 16,777,216 | 2.86 ms | 2.90 ms | 1.01x [1.00 – 1.02] | 4.07 ms | 1.42x [1.41 – 1.43] |
 | overall |  |  | 1.00x [1.00 – 1.00] n.s. |  | 1.44x [1.43 – 1.44] |
 
-**What the figures are.** Below 8,192 elements, and with more than 1,024 counters, the kernel is the naive C's loop with a cheaper start: 1.01x to 1.13x. The gains are the two paths from 8,192 elements. With at most 64 counters the pair table takes 0.151 ns per element on both kinds of data where the C takes 0.225 on uniform codes and 0.375 on four values: 1.41x to 1.50x and 2.14x to 2.48x from 65,536 up. With 65 to 1,024 counters the second table is taken only on data that repeats: 1.39x to 1.46x on four values, and uniform codes stay on the single table at 1.00x to 1.03x. The naive C is not steady from run to run at single sizes (16,384 uniform codes: 3.2 us here, 4.7 us in the second table of the same run), as the log of `bincount_u8` found; the kernel's 3.0 us at 16,384 in the first table is 2.5 to 2.7 us in every `compare`.
+**What the figures are.** Below 8,192 elements, and with more than 1,024 counters, the kernel is the naive C's loop with a cheaper start: 1.00x to 1.13x. The gains are the two paths from 8,192 elements. With at most 64 counters the pair table takes 0.151 ns per element on both kinds of data where the C takes 0.225 on uniform codes and 0.375 on four values: 1.35x to 1.50x from 65,536 up and 2.14x to 2.48x from 16,384 up. With 65 to 1,024 counters the second table is taken only on data that repeats: 1.39x to 1.46x on four values, and uniform codes stay on the single table at 1.00x to 1.08x. The naive C is not steady from run to run at single sizes (16,384 uniform codes: 3.2 us here, 4.7 us in the second table of the same run), as the log of `bincount_u8` found; the kernel's 3.0 us at 16,384 in the first table is 2.5 to 2.8 us in every `compare`.
 
 **The output 16 bytes behind the input** costs nothing: 1.00x overall, n.s., with 0.93x at 16,384 and 1.02x to 1.03x at 65,536 and 262,144.
 
-**Verdict for a person to confirm:** assembly. It ties the C where nothing but the loop is possible and is 1.4x to 2.5x faster from 8,192 elements with at most 64 counters, and 1.4x on repeating data with up to 1,024.
+**Verdict for a person to confirm:** assembly. It ties the C where nothing but the loop is possible, is 1.35x to 2.5x faster from 65,536 elements with at most 64 counters (1.07x and 2.14x at 16,384 in this run), and 1.4x faster on repeating data with up to 1,024.
 
 What a caller should know:
 
