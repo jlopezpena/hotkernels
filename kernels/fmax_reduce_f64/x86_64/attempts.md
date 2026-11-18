@@ -62,3 +62,11 @@ Figures "per call on runs of L" are from a driver outside the judge: 8,192 eleme
 - **compare:** significantly faster, 1.004x [1.002 – 1.006]
 - **Kept:** yes
 - **Notes:** 1.05x [1.04 – 1.05] at 16 on both distributions (1.6 ns to 1.5 ns), which is the only path changed; the other rows are 0.98x to 1.02x, most of them not significant. Kept for the row at 16, the size nearest the runs this kernel is for.
+
+## 7. The blocks of eight vectors on 32-byte boundaries
+
+- **Idea:** the unexplained row of attempt 5 is the placement of that input, not its NaNs: in the final `run` before this attempt the two distributions had changed places at 4,096 (157 ns and 134 ns). In the driver, runs of 1,024 elements take 42 ns when x is at a multiple of 32 bytes and 62 ns at the three other multiples of 8: half of the loads then straddle two cache lines, and a block's eight loads need twelve of the two load slots a cycle. The quick way may take elements twice, so the first block is taken at x and the following ones from the last multiple of 32 bytes inside it. An x that is not at a multiple of 8 has no such boundary between elements and is left as it is. The first block now starts the eight maxima itself, in place of eight copies of minus infinity.
+- **check:** pass. Outside the judge: 300,000 arrays against NumPy at eight placements, no difference.
+- **compare:** significantly faster, 1.081x [1.073 – 1.089]
+- **Kept:** yes
+- **Notes:** 1.50x at 65,536 on both distributions (3.9 us to 2.6 us), 1.19x at 262,144, 1.09x and 1.10x at 1,024, 1.15x at 4,096 on `some_nan` and 0.99x (not significant) on `random`, 1.04x and 1.05x at the two largest sizes, nothing at 16, 64, 256 and 16,384. Which rows gain is which inputs the judge placed off a multiple of 32. In the driver, runs of 1,024 at the three other placements: 62 ns to 44 ns; at a multiple of 32: 42 ns to 44 ns, and runs of 256 there 12.0 ns to 13.0 ns, which the judge's row at 256 (10.0 ns before and after) does not show. The blocks of four vectors (17 to 127 elements) are not placed.

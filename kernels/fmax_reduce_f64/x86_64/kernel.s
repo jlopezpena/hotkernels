@@ -227,23 +227,49 @@ fmax_reduce_f64:
     #      elements. The last block ends with the array.
 .Lwide:
     lea     rdx, [rdi + rsi * 8 - 256]  # the last block
-    vmovapd ymm0, ymm4
-    vmovapd ymm7, ymm4
-    vmovapd ymm8, ymm4
-    vmovapd ymm9, ymm4
-    vmovapd ymm11, ymm4
-    vmovapd ymm12, ymm4
-    vmovapd ymm13, ymm4
-    vmovapd ymm14, ymm4
-    vxorpd  xmm6, xmm6, xmm6
-    vxorpd  xmm10, xmm10, xmm10
-    mov     rax, rdi
+    # The first block, at x, starts the eight maxima.
+    vmovupd ymm1, [rdi]
+    vmovupd ymm2, [rdi + 32]
+    vmovupd ymm3, [rdi + 64]
+    vmovupd ymm5, [rdi + 96]
+    vmaxpd  ymm0, ymm1, ymm4            # minus infinity for a NaN
+    vmaxpd  ymm7, ymm2, ymm4
+    vmaxpd  ymm8, ymm3, ymm4
+    vmaxpd  ymm9, ymm5, ymm4
+    vorpd   ymm6, ymm1, ymm2
+    vorpd   ymm10, ymm3, ymm5
+    vmovupd ymm1, [rdi + 128]
+    vmovupd ymm2, [rdi + 160]
+    vmovupd ymm3, [rdi + 192]
+    vmovupd ymm5, [rdi + 224]
+    vmaxpd  ymm11, ymm1, ymm4
+    vmaxpd  ymm12, ymm2, ymm4
+    vmaxpd  ymm13, ymm3, ymm4
+    vmaxpd  ymm14, ymm5, ymm4
+    vorpd   ymm1, ymm1, ymm2
+    vorpd   ymm3, ymm3, ymm5
+    vorpd   ymm6, ymm6, ymm1
+    vorpd   ymm10, ymm10, ymm3
+    # The blocks after it start at a multiple of 32 bytes, the first of them
+    # inside the first block, so that no load of the loop straddles two
+    # cache lines. An x that is not at a multiple of 8 has no such boundary
+    # between elements, and its blocks follow the first one directly.
+    lea     rax, [rdi + 256]
+    mov     ecx, eax
+    and     ecx, 31
+    xor     r8d, r8d
+    test    cl, 7
+    cmovnz  ecx, r8d
+    sub     rax, rcx
+    cmp     rax, rdx
+    jae     .Lwidelast
 .p2align 4
 .Lwideblock:
     WIDE rax
     add     rax, 256
     cmp     rax, rdx
     jb      .Lwideblock
+.Lwidelast:
     WIDE rdx
     vmaxpd  ymm0, ymm0, ymm11
     vmaxpd  ymm7, ymm7, ymm12
