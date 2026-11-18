@@ -28,12 +28,6 @@
 .Lrow_end:
     .fill 32, 1, 0
 
-# The order that puts the eight 32-bit groups left by the packs of a block of
-# rows of four back in row order.
-.p2align 5
-.Lunpack:
-    .long 0, 4, 1, 5, 2, 6, 3, 7
-
 # Bytes in one vector.
 .set VEC, 32
 # Rows of four in one block, which is four vectors of m and one of out, and
@@ -41,30 +35,35 @@
 .set FOUR_BLOCK, 32
 .set FOUR_STEP, 8
 
-# 32 rows of four at \src to the 32 bytes at \dst. ymm0 = 0, ymm5 = .Lunpack,
-# ymm6 = -1 in every byte. A lane that is zero compares to -1; the packs keep
-# -1 and 0 as they narrow, and subtracting -1 leaves 0 for a row without a
-# true element and 1 for one with.
+# 32 rows of four at \src to the 32 bytes at \dst. ymm5 = 1 in every byte.
+# The rows are packed as they are, with no compare: a 32-bit lane of bytes
+# that are 0 or 1 is zero or a positive number, signed saturation narrows a
+# positive number to a positive number, and the minimum with 1 leaves 0 or 1.
+# Each vector is put together from two 16-byte loads 64 bytes apart, so that
+# the packs, which work within each half of a register, leave the rows in
+# order and no permute is needed.
 .macro FOUR_ROWS_32 src, dst
-    vpcmpeqd ymm1, ymm0, [\src]
-    vpcmpeqd ymm2, ymm0, [\src + 32]
-    vpcmpeqd ymm3, ymm0, [\src + 64]
-    vpcmpeqd ymm4, ymm0, [\src + 96]
+    vmovdqu xmm1, [\src]
+    vmovdqu xmm2, [\src + 16]
+    vmovdqu xmm3, [\src + 32]
+    vmovdqu xmm4, [\src + 48]
+    vinserti128 ymm1, ymm1, [\src + 64], 1
+    vinserti128 ymm2, ymm2, [\src + 80], 1
+    vinserti128 ymm3, ymm3, [\src + 96], 1
+    vinserti128 ymm4, ymm4, [\src + 112], 1
     vpackssdw ymm1, ymm1, ymm2
     vpackssdw ymm3, ymm3, ymm4
     vpacksswb ymm1, ymm1, ymm3
-    vpermd  ymm1, ymm5, ymm1
-    vpsubb  ymm1, ymm1, ymm6
+    vpminub ymm1, ymm1, ymm5
     vmovdqu [\dst], ymm1
 .endm
 
 # Eight rows of four at \src to the eight bytes at \dst, the same way.
 .macro FOUR_ROWS_8 src, dst
-    vpcmpeqd ymm1, ymm0, [\src]
-    vextracti128 xmm2, ymm1, 1
-    vpackssdw xmm1, xmm1, xmm2
+    vmovdqu xmm1, [\src]
+    vpackssdw xmm1, xmm1, [\src + 16]
     vpacksswb xmm1, xmm1, xmm1
-    vpsubb  xmm1, xmm1, xmm6
+    vpminub xmm1, xmm1, xmm5
     vmovq   [\dst], xmm1
 .endm
 
@@ -168,15 +167,14 @@ any_rows_bool:
     ret
 
 .Lfour:
-    # Rows of four: a row is a 32-bit lane, and it has no true element when
-    # the lane is zero.
+    # Rows of four: a row is a 32-bit lane, and it has a true element when
+    # the lane is not zero.
     shr     rdx, 2                      # rows
     mov     rax, rdx
-    vpxor   xmm0, xmm0, xmm0
-    vpcmpeqd ymm6, ymm6, ymm6           # -1 in every byte
+    vpcmpeqd ymm5, ymm5, ymm5
+    vpabsb  ymm5, ymm5                  # 1 in every byte
     cmp     rdx, FOUR_BLOCK
     jb      .Lfour_small
-    vmovdqa ymm5, [rip + .Lunpack]
     lea     r9, [rdi + rdx * 4 - 4 * FOUR_BLOCK]    # the last block of m
     lea     r10, [rsi + rdx - FOUR_BLOCK]           # and where its rows go
 .p2align 4
@@ -200,6 +198,7 @@ any_rows_bool:
     jb      .Lfour_single
     lea     r9, [rdi + rdx * 4 - 4 * FOUR_STEP]
     lea     r10, [rsi + rdx - FOUR_STEP]
+.p2align 4
 .Lfour_step:
     FOUR_ROWS_8 rdi, rsi
     add     rdi, 4 * FOUR_STEP
