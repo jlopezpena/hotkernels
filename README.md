@@ -126,7 +126,7 @@ At 16 elements most of the gain is NumPy's own call path being skipped, not the 
 - **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is. It runs on macOS ARM64 and on Linux x86-64.
 - **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32`, `compress_scratch_f32`, `tally_u8` and `rank_u8`, used to test the judge itself, each with an ARM64 and an x86-64 version.
 - **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. It runs on macOS ARM64 and on Linux x86-64. Recorded results for both are in `survey/results/`.
-- **Kernels** (`kernels/`): 23 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an ARM64 version. x86-64 versions are not written yet. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
+- **Kernels** (`kernels/`): 23 kernels for 15 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an assembly version per architecture: 22 for ARM64 and 23 for x86-64. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
 - **The package** (`hotkernels/`): what a user installs. A C extension points NumPy at the kernels, and `install()`, `uninstall()`, `enabled()` and `report()` control it. `install()` installs the 21 kernels that return NumPy's result bit for bit, and `install(inexact=True)` the other two.
 - **The delivery tool** (`delivery/`): tests and times the package from Python. Recorded timings are in `delivery/results/`.
 - **An example** (`examples/workload.py`): a NumPy program written without hotkernels in mind, used to show the effect of the one line.
