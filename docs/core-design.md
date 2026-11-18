@@ -59,8 +59,8 @@ kernels/<name>/
   spec.py          signature, dtypes, NumPy oracle, correctness mode
   naive.c          naive C reference: the simplest correct loop
   arm64/kernel.s   hand-written NEON (absent for a kernel shipped as C on ARM64)
-  x86_64/kernel.s  hand-written AVX2 (designed in x86-64-design.md; none exists yet)
-  attempts.md      log of what was tried and what the judge said
+  x86_64/kernel.s  hand-written AVX2 (designed in x86-64-design.md)
+  <arch>/attempts.md   log of what was tried on that architecture and what the judge said
 ```
 
 - `spec.py` and `naive.c` are shared by all architectures.

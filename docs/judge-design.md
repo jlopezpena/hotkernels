@@ -37,7 +37,7 @@ kernels/<name>/        one directory per kernel (the contract from core-design.m
   spec.py
   naive.c
   <arch>/kernel.s      arm64 or x86_64
-  attempts.md
+  <arch>/attempts.md   what was tried on that architecture
 results/               recorded results, committed
 .judge/                build output and raw runs, not committed
 ```
@@ -496,7 +496,7 @@ The NumPy version is pinned in the lock file. Results are only comparable across
 
 An agent told to make a number go up will sometimes do it the wrong way. The judge closes the obvious routes:
 
-- **Limited write access.** During a kernel run, the only files allowed to change are that kernel's `<arch>/kernel.s` and `attempts.md`. The judge checks with git that the spec, `naive.c` and the judge itself match the main branch, and fails the run otherwise.
+- **Limited write access.** During a kernel run, the only files allowed to change are that kernel's `<arch>/kernel.s` and the `attempts.md` beside it. The judge checks with git that the spec, `naive.c` and the judge itself match the main branch, and fails the run otherwise.
 - **A human approves the reference.** `spec.py` and `naive.c` are reviewed by a person when a kernel is created, because everything else is measured against them.
 - **Fixed compiler flags** for the baseline, as above.
 - **Fresh random cases** on every correctness run, as above.

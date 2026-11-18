@@ -30,7 +30,7 @@ That is hill-climbing with a statistical gate, and three details make it work.
 
 **The agent can touch two files.** Its kernel's assembly, and its kernel's log. The spec, the reference loop and the judge are compared with the main branch on every run, and a difference fails the run. An agent cannot make its kernel look better by weakening what it is measured against.
 
-**Every attempt is written down, including the failures.** Each kernel has an `attempts.md` with one entry per attempt: the idea, what `check` said, what `compare` said, whether it was kept, and what was learned. Later runs read the log first, so a dead end is walked once.
+**Every attempt is written down, including the failures.** Each kernel has an `attempts.md` per architecture, beside its `kernel.s`, with one entry per attempt: the idea, what `check` said, what `compare` said, whether it was kept, and what was learned. Later runs read the log first, so a dead end is walked once.
 
 The instruction given to an agent is short. Reach a statistically significant overall speedup of at least 10% over naive C; having reached it, keep going until the ideas run out; if 10% cannot be reached, report the best result and explain why. The explanation is part of the deliverable: "the compiler already emits exactly this" and "this size is limited by memory, not by the loop" are both valid results.
 

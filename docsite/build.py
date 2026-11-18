@@ -178,11 +178,16 @@ def collect_data(md) -> dict:
         The data by name. Each entry is also written to `data/<name>.json`
         in the output for the interactive figures.
     """
+    python_x86_64 = D.python_timings(D.PYTHON_TIMINGS_X86_64)
     return {
         "attempts": D.attempts(partial(render_inline, md)),
         "findings": D.findings(),
         "headline": D.headline(),
         "python": D.python_timings(),
+        # The second architecture, for its chapter of the report.
+        "attempts_x86_64": D.attempts(partial(render_inline, md), D.X86_64),
+        "findings_x86_64": D.findings_x86_64(),
+        "python_x86_64": {"meta": python_x86_64["meta"], "at_size": D.python_at(python_x86_64, D.X86_64_SIZE)},
     }
 
 

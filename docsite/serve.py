@@ -25,7 +25,7 @@ _IGNORED_SUFFIXES = {".pyc"}
 def _sources() -> list[Path]:
     """List every file a build reads: the site's own, and the repository data it quotes."""
     own = [p for p in SITE.rglob("*") if p.is_file() and p.suffix not in _IGNORED_SUFFIXES]
-    return own + [D.README, D.FINDINGS, D.PYTHON_TIMINGS, *D.KERNELS.glob("*/attempts.md")]
+    return own + [D.README, D.FINDINGS, D.PYTHON_TIMINGS, D.PYTHON_TIMINGS_X86_64, *D.KERNELS.glob("*/*/attempts.md")]
 
 
 def _newest_change() -> float:

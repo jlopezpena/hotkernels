@@ -24,7 +24,7 @@ The judge and the survey now run on Linux x86-64 (steps 3 and 4 of the [order of
 | Noise: governor, turbo, load average | Turbo off, a governor or energy preference that saves power, a load average of 2 or more, a shared core | "powersave" is the normal governor under the drivers that let the processor manage itself, and is only a problem under the others |
 | Not mentioned | Every kernel must end with the note that it needs no executable stack | Current Linux refuses to load a library that needs one |
 | Not mentioned | The wrapper passes a seventh and eighth integer argument on the stack | The convention has six integer registers, and the judge's spec allows eight arguments |
-| The attempts logs moved beside each kernel in this step | Not yet; a separate pull request | It touches every kernel directory and the documentation site, and is easier to review alone |
+| The attempts logs moved beside each kernel in this step | Done later, in a pull request of its own after the kernels: `kernels/<name>/<arch>/attempts.md` | It touches every kernel directory and the documentation site, and is easier to review alone |
 | The survey ported by changing its clock and scheduling calls, its flags and its reading of the vectoriser remarks | The remarks needed no change, since clang is the compiler on both. The survey takes the compiler, the flags, the library suffix and the core claim from the judge | One place decides how C is built and where a timing thread runs. A survey and a judge run never share a core |
 | Not mentioned | The survey records which vector instruction sets NumPy uses, the pinned CPU, and the judge's warnings about turbo, power saving and load | NumPy's own loops are the other contender, and which ones it has is what differs between architectures |
 | Not mentioned | The survey places each output buffer half a page from its input | Left to the allocator the output often sat 16 bytes after the input within the page, which made NumPy up to 8x slower and the ratios meaningless. See [open issue 8](#open-issues) |
@@ -36,9 +36,10 @@ The kernels, the package and the findings (steps 5 to 7). Where the building dep
 
 | Proposed | Built | Why |
 |---|---|---|
-| The attempts logs moved beside each kernel, one per architecture | Still one `attempts.md` per kernel, with an "x86-64" part after the ARM64 one and its own numbering | A kernel run may edit two files, and moving 23 logs is a change of its own. The x86-64 headings are ones the documentation site does not count, so its ARM64 figures are unchanged |
+| The attempts logs moved beside each kernel, one per architecture, before the kernels | The kernel runs appended an "x86-64" part to each shared log; the logs were split into `kernels/<name>/arm64/attempts.md` and `kernels/<name>/x86_64/attempts.md` afterwards, in one pull request | A kernel run may edit two files, and moving 23 logs is a change of its own. The documentation site counts the ARM64 logs as before, 188 attempts, and the x86-64 ones for its chapter on that architecture |
 | One family per run, each a `/goal` run of its own | One agent, family after family, in one session; one pull request per family, stacked | It was asked for that way. The rule per change was the same |
 | A kernel's findings written by the pull request that produces them | Written once, at the top of the stack | A kernel run edits two files |
+| Not mentioned | The documentation site has a chapter on the second architecture, with its figures read from the findings table, the recorded Python timings and the x86-64 logs | The site described ARM64 only |
 | `cast_u8_f32` last and probably dropped; `clip` shipping as C | Both have assembly, by small margins | The compiler does not emit the two-instruction `clip`, and stores past the caches help both at the largest size. The verdicts are a person's to confirm |
 | `interp_f64` like any other kernel | Its reference had to be corrected first, in a pull request of its own, and its kernel was judged unlocked on top of it | NumPy's x86-64 build does not fuse the multiply and the add, and the shared reference did ([issue 73](https://github.com/sofeikov/hotkernels/issues/73)) |
 | `tools/generate.py` already picks the kernel directory by architecture | It always took ARM64's. Now it writes a kernel set per architecture, and a source distribution carries both | One source distribution serves both platforms |
@@ -162,7 +163,7 @@ Several candidates do more than make a loop faster. They would remove a caveat t
 
 ### What became of the candidates
 
-Per family, in a line each; the reasons and the judge's figures are in each kernel's `attempts.md` under "x86-64" and in [kernel-findings.md](kernel-findings.md#results-by-family).
+Per family, in a line each; the reasons and the judge's figures are in each kernel's `x86_64/attempts.md` and in [kernel-findings.md](kernel-findings.md#results-by-family).
 
 | Family | Kept | Rejected, with the judge's result | Not tried, and why |
 |---|---|---|---|
