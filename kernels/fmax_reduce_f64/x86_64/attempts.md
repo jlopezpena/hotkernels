@@ -54,3 +54,11 @@ Figures "per call on runs of L" are from a driver outside the judge: 8,192 eleme
 - **compare:** significantly faster, 1.109x [1.108 – 1.109]. A first version that took this path from 64 elements: significantly faster, 1.110x [1.099 – 1.121], but 0.92x and 0.93x at 64 (3.4 ns to 3.7 ns): setting up eight maxima and merging them is a dozen instructions more. From 128 the row at 64 is 1.02x.
 - **Kept:** yes
 - **Notes:** 1.07x at 256, 1.20x at 1,024, 1.46x on `random` and 1.22x on `some_nan` at 4,096, 1.22x at 16,384, 1.10x at 65,536, 1.04x to 1.06x at 262,144, 0.99x and 1.00x at 1,048,576, 1.13x and 1.12x at the two largest sizes; 16 unchanged. 0.032 ns per element at 4,096 on `random`: 5.5 cycles per block, which is its 16 `vmaxpd` and `vorpd` on three ports. The `some_nan` row at 4,096 is 159 ns against 133 ns in both runs, and equal to `random` at 1,024 and 16,384; not explained.
+
+## 6. Three instructions fewer on the way through 5 to 16 elements
+
+- **Idea:** the third of the four vectors was placed with four instructions (32 bytes before the last, or the first if that is before the array). As far before the last vector as the second is after the first covers the same elements and is a subtraction. And the address of the table of infinities is only needed up to four elements and on NumPy's way, so it is taken there, and the quick way reads minus infinity relative to `rip`.
+- **check:** pass. Outside the judge: 200,000 arrays against NumPy, no difference.
+- **compare:** significantly faster, 1.004x [1.002 – 1.006]
+- **Kept:** yes
+- **Notes:** 1.05x [1.04 – 1.05] at 16 on both distributions (1.6 ns to 1.5 ns), which is the only path changed; the other rows are 0.98x to 1.02x, most of them not significant. Kept for the row at 16, the size nearest the runs this kernel is for.

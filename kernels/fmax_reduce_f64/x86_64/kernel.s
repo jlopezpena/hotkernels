@@ -141,10 +141,9 @@
 .type fmax_reduce_f64, @function
 .p2align 4
 fmax_reduce_f64:
-    lea     r10, [rip + .Llimits]
     cmp     rsi, 4
     jbe     .Lsmall
-    vmovapd ymm4, [r10]                 # minus infinity in every lane
+    vmovapd ymm4, [rip + .Llimits]      # minus infinity in every lane
     cmp     rsi, 16
     ja      .Lquickblocks
     # ---- 5 to 16 elements: four vectors, the first four elements, the last
@@ -153,11 +152,9 @@ fmax_reduce_f64:
     lea     rax, [rsi * 8 - 32]         # where the last vector starts
     mov     edx, 32
     cmp     rax, rdx
-    cmovb   rdx, rax
-    lea     rcx, [rax - 32]
-    xor     r8d, r8d
-    test    rcx, rcx
-    cmovs   rcx, r8
+    cmovb   rdx, rax                    # the second vector: 32 bytes in, or the last
+    mov     rcx, rax
+    sub     rcx, rdx                    # the third: as far before the last
     vmovupd ymm1, [rdi]
     vmovupd ymm2, [rdi + rdx]
     vmovupd ymm3, [rdi + rcx]
@@ -256,6 +253,7 @@ fmax_reduce_f64:
 
     # ---- NumPy's loop, for the sign of a zero. At least 5 elements.
 .Lexact:
+    lea     r10, [rip + .Llimits]
     vbroadcastsd ymm0, qword ptr [rdi]
     vmaxpd  ymm0, ymm0, ymm4            # x[0] in every lane, NaN to minus infinity
     lea     rcx, [rsi - 1]
@@ -317,6 +315,7 @@ fmax_reduce_f64:
     # ---- Up to four elements: the first of the equal maxima. The masked
     #      load reads the first n elements and nothing else.
 .Lsmall:
+    lea     r10, [rip + .Llimits]
     lea     rax, [rsi * 8]
     neg     rax
     vmovupd ymm2, [r10 + rax + 32]      # the sign bit in the first n lanes
