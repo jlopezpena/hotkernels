@@ -1881,6 +1881,13 @@ def where_cases() -> Iterator[Case]:
                                        partial(values, dtype, n, arg="b")), _where, None)
                 yield Case("where", f"np.where(c, a, nan) f64 n={n} c bytes are {byte}",
                            partial(_built_each, bad, floats, partial(_given, float("nan"))), _where, None)
+                # With a scalar the binding checks the condition block by block;
+                # this one is clean until its last element.
+                late = partial(_late_bad_mask, n, byte)
+                yield Case("where", f"np.where(c, nan, b) f64 n={n} c bytes are {byte} at the end only",
+                           partial(_built_each, late, partial(_given, float("nan")), others), _where, None)
+                yield Case("where", f"np.where(c, a, b) f64 n={n} c bytes are {byte} at the end only",
+                           partial(_built_each, late, floats, others), _where, None)
 
 
 # Every operation that has a hook, with its exact cases.

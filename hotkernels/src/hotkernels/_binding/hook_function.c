@@ -60,6 +60,10 @@ static hk_function functions[F_COUNT];
 // points per query the pass costs under a third of what NumPy would have
 // spent; with fewer queries than that it would be most of the call.
 #define INTERP_MAX_POINTS_PER_QUERY 64
+// Elements of the buffer np.where spreads a scalar over, and so of each call
+// of the kernel when one side is a scalar: the largest buffer kept on the
+// stack.
+#define WHERE_BLOCK ((npy_intp)(HK_STACK_SCRATCH_BYTES / sizeof(double)))
 
 // numpy.linspace and the float64 type descriptor, fetched on first use.
 static PyObject *numpy_linspace;
@@ -843,16 +847,21 @@ static void prepare_clip(PyObject *object) {
 // Run where_f64 into a new array of the condition's shape and of NumPy type
 // `type_num`. `a` and `b` are the data of the arrays selected from, of the
 // condition's size; either may be NULL, and that side is then the scalar
-// `fill` at every position. The kernel reads n elements from each side, so a
-// scalar is first spread over a buffer of its own, on the stack when it fits
-// and from malloc above that. The result is the binding's own buffer and
-// cannot overlap an input, which the kernel requires.
+// `fill` at every position. The result is the binding's own buffer and cannot
+// overlap an input, which the kernel requires.
+//
+// The kernel reads n elements from each side, so a scalar is spread over a
+// buffer on the stack, WHERE_BLOCK elements long, and the kernel runs block
+// by block with that buffer as the scalar's side. A buffer of n elements
+// would be written in full and read back from wherever it lies; at a million
+// elements that made the call no faster than NumPy's. The blocks give up the
+// kernel's stores past the caches, which it starts from millions of elements.
 //
 // The kernel takes any non-zero byte of the condition as True, as NumPy
 // does, but its spec promises only 0 and 1 and ARM64 runs it as C; the
 // condition is checked first, as for the other mask kernels, and one with
 // another byte is NumPy's. Returns NULL with no exception set when the call
-// goes to NumPy after all: such a condition, or no memory.
+// goes to NumPy after all.
 static HK_NOINLINE PyObject *run_where(PyArrayObject *condition, const void *a, const void *b, double fill,
                                        int type_num) {
     const npy_intp n = PyArray_SIZE(condition);
@@ -861,33 +870,33 @@ static HK_NOINLINE PyObject *run_where(PyArrayObject *condition, const void *a, 
         PyErr_Clear();
         return NULL;
     }
-    double on_stack[HK_STACK_SCRATCH_BYTES / sizeof(double)];
-    double *spread = NULL;
-    if (a == NULL || b == NULL) {
-        const size_t bytes = (size_t)n * sizeof(double);
-        spread = bytes <= sizeof on_stack ? on_stack : malloc(bytes);
-        if (spread == NULL) {
-            Py_DECREF(result);
-            return NULL;
-        }
-        if (a == NULL) a = spread;
-        else b = spread;
-    }
-    bool clean;
+    const bool *c = PyArray_DATA(condition);
+    double *out = PyArray_DATA((PyArrayObject *)result);
+    bool clean = true;
     {
         // The kernel reads each input once and writes only the new array, which
         // no other thread can see yet.
         HK_BEGIN_NOGIL(n)
-        clean = hk_mask_is_clean(PyArray_DATA(condition), (size_t)n);
-        if (clean) {
-            if (spread != NULL) {
-                for (npy_intp i = 0; i < n; i++) spread[i] = fill;
+        if (a != NULL && b != NULL) {
+            clean = hk_mask_is_clean((const uint8_t *)c, (size_t)n);
+            if (clean) where_f64(c, a, b, out, (size_t)n);
+        } else {
+            double spread[WHERE_BLOCK];
+            const npy_intp filled = n < WHERE_BLOCK ? n : WHERE_BLOCK;
+            for (npy_intp i = 0; i < filled; i++) spread[i] = fill;
+            const double *array = a != NULL ? a : b;
+            // Each block's condition is checked just before the kernel reads it,
+            // from the first-level cache. A bad byte drops the whole result.
+            for (npy_intp done = 0; done < n; done += WHERE_BLOCK) {
+                const size_t count = (size_t)(n - done < WHERE_BLOCK ? n - done : WHERE_BLOCK);
+                clean = hk_mask_is_clean((const uint8_t *)c + done, count);
+                if (!clean) break;
+                if (a != NULL) where_f64(c + done, array + done, spread, out + done, count);
+                else where_f64(c + done, spread, array + done, out + done, count);
             }
-            where_f64(PyArray_DATA(condition), a, b, PyArray_DATA((PyArrayObject *)result), (size_t)n);
         }
         HK_END_NOGIL
     }
-    if (spread != NULL && spread != on_stack) free(spread);
     if (!clean) {
         Py_DECREF(result);
         return NULL;
