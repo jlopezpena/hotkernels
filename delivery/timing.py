@@ -279,6 +279,8 @@ TAKEN: tuple[Timed, ...] = (
     Timed("astype", "x.astype(np.float32)", "uint8", _bytes, lambda x: x.astype(np.float32), "cast_u8_f32"),
     Timed("sum", "np.sum(x)", "uint8", _bytes, np.sum, "sum_u8"),
     Timed("sum", "x.sum()", "uint8", _bytes, lambda x: x.sum(), "sum_u8"),
+    Timed("sum", "np.sum(mask)", "bool, half selected", partial(_mask, HALF), np.sum, "sum_u8"),
+    Timed("sum", "mask.sum()", "bool, half selected", partial(_mask, HALF), lambda m: m.sum(), "sum_u8"),
     Timed("count_nonzero", "np.count_nonzero(x)", "int64", partial(_ints, np.int64), np.count_nonzero, "count_nonzero_i64"),
     Timed("count_nonzero", "np.count_nonzero(x)", "float64", partial(_ints, np.float64), np.count_nonzero, "count_nonzero_f64"),
     Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0))", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE), "histogram_f64"),

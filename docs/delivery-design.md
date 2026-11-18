@@ -231,7 +231,7 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 | `searchsorted` | 2 | Method | The array one-dimensional, contiguous float64; the needles a contiguous float64 array of any shape or a Python number; `side` absent, `'left'` or `'right'`, each side with its own kernel ([searchsorted-right-design.md](searchsorted-right-design.md)); no `sorter` |
 | `cumsum` | 3 | Method | Contiguous, no `axis`, `dtype` or `out`. The two float kernels only with `inexact=True` |
 | `astype` | 1 | Method | Contiguous `uint8` to `float32`, other arguments at their defaults |
-| `sum` | 1 | Method and function | Contiguous `uint8`, no other arguments |
+| `sum` | 1 | Method and function | Contiguous `uint8` or boolean, no other arguments. A boolean array is read for bytes other than 0 and 1 first, a block at a time, and one that holds any is NumPy's |
 | `count_nonzero` | 2 | Function | Contiguous, no `axis` |
 | `interp` | 1 | Function | Three contiguous float64 arrays, `xp` and `fp` one-dimensional and the same length; no `left`, `right` or `period`; no NaN in `xp`; at most 64 sample points per query |
 | `histogram` | 1 | Function | Contiguous float64, an integer bin count, no weights or density |
@@ -328,7 +328,7 @@ Review of the ARM64 kernels found inputs where a kernel is wrong, or unsafe, and
 
 - **A kernel never writes into a caller's buffer unless the operation is defined that way.** `clip` with `out=` and masked assignment are. Scratch kernels are not: [judge-design.md](judge-design.md#scratch-output-writing-inside-the-capacity) requires that a scratch kernel only ever sees a buffer the binding owns.
 - **Scratch output.** Allocate `n` elements, run the kernel, copy the reported elements into an array of exactly that size, free the first. This is the faster of the two ways tried. With few elements selected the large buffer barely shows: 9.8x end to end against the judge's 11.0x for the kernel alone.
-- **Result types match NumPy's.** `np.count_nonzero` returns a Python `int`, `np.sum` on `uint8` a `np.uint64`, `np.histogram` a pair of counts and edges. Edges are produced by calling the NumPy function that NumPy itself uses, so they are identical by construction.
+- **Result types match NumPy's.** `np.count_nonzero` returns a Python `int`, `np.sum` on `uint8` a `np.uint64` and on a boolean array a `np.intp`, `np.histogram` a pair of counts and edges. Edges are produced by calling the NumPy function that NumPy itself uses, so they are identical by construction.
 - **`bincount_u8` always counts into 256 entries.** NumPy returns one entry more than the largest value present. The binding cuts the result to that length.
 
 ### Threads
