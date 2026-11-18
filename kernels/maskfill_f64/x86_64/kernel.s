@@ -12,10 +12,19 @@
 # and never computed with, so a NaN, a signed zero or a denormal arrives
 # unchanged. A mask byte is true when it is not zero, whatever its value.
 #
+# A block of 32 with at most SPARSE_MAX selected elements is not blended.
+# `tzcnt` and `blsr` take the positions out of its mask word, and the value
+# is stored to each: no element is loaded, and a cache line with no selected
+# element is not touched at all.
+#
 # Paths, by what is left:
-#   32 or more  blocks of 32: eight blends
+#   32 or more  blocks of 32: one mask word, then four single stores or eight
+#               blends
 #   4..31       one blend per 4
 #   1..3        one element at a time, with a branch
+
+# A block with more selected elements than this is blended.
+.set SPARSE_MAX, 4
 
 # Blend the four elements at x + \xoff by the four mask bytes at mask + \moff.
 # ymm0 = the value in every lane, ymm1 = zeros.
@@ -40,8 +49,47 @@ maskfill_f64:
     mov     rcx, rdx
     shr     rcx, 5                      # blocks of 32
     jz      .Lgroups
+    lea     r9, [rsp - 16]              # eight bytes of our own, below the stack pointer
 .p2align 6
 .Lblock:
+    vpcmpeqb ymm2, ymm1, [rsi]          # 0xff where the mask byte is zero
+    vpmovmskb eax, ymm2
+    not     eax                         # one bit per selected element
+    popcnt  r8d, eax
+    cmp     r8d, SPARSE_MAX
+    ja      .Ldense
+    # Sparse block: a fixed SPARSE_MAX stores and no load. `tzcnt` sets the
+    # carry flag when no bit is left. The store then goes where the one
+    # before it went, writing the value to a selected element a second time,
+    # or, in a block with no bit at all, to the eight bytes below the stack
+    # pointer.
+    mov     r10, r9
+    tzcnt   r8d, eax
+    lea     r11, [rdi + r8 * 8]
+    cmovnc  r10, r11
+    vmovsd  [r10], xmm0
+    blsr    eax, eax
+    tzcnt   r8d, eax
+    lea     r11, [rdi + r8 * 8]
+    cmovnc  r10, r11
+    vmovsd  [r10], xmm0
+    blsr    eax, eax
+    tzcnt   r8d, eax
+    lea     r11, [rdi + r8 * 8]
+    cmovnc  r10, r11
+    vmovsd  [r10], xmm0
+    blsr    eax, eax
+    tzcnt   r8d, eax
+    lea     r11, [rdi + r8 * 8]
+    cmovnc  r10, r11
+    vmovsd  [r10], xmm0
+    add     rsi, 32
+    add     rdi, 256
+    dec     rcx
+    jnz     .Lblock
+    jmp     .Lgroups
+.p2align 4
+.Ldense:
     BLEND   0, 0
     BLEND   4, 32
     BLEND   8, 64
