@@ -247,7 +247,7 @@ The candidates the design lists for this family (`docs/x86-64-design.md`):
 **For a person to decide: the caller's constraints on x86-64.** The table "What a caller must know" has, for the ARM64 `clip` kernels: `x` and `out` must not overlap; reads and writes FPSR; with `lo = +0.0`, data with a negative zero in its first few thousand elements runs at the speed of the C. None of the three is true of this kernel:
 
 - **No path depends on the bounds or the data,** and negative zeros cost nothing.
-- **No status register is read or written.** `vmaxps` and `vminps` raise the invalid flag for a signalling NaN and for nothing else, a quiet NaN included; the ARM64 kernel's compare-and-select path raises it for a quiet NaN as well. So the binding's clearing of flags after `clip` would be needed on x86-64 for signalling NaNs only.
+- **No status register is read.** One flag is still written: `vmaxps` and `vminps` set the invalid flag in MXCSR whenever an operand is a NaN, quiet or signalling, on every path and at every size. So the binding's clearing of flags after `clip` is needed on x86-64 as on ARM64, and for every NaN, where the ARM64 kernel sets the flag for a quiet NaN only on its compare-and-select path.
 - **`out` = `x` gives the right result,** because every element is computed from its own input and clamping twice changes nothing. Tested outside the judge at every size above. A partial overlap is still wrong, as for any vector kernel.
 
 The kernel is not allowed to remove a caveat on its own authority, and nothing in the binding is changed here. The binding sends in-place `clip` to NumPy today (issue 7); on x86-64 it would not have to.
