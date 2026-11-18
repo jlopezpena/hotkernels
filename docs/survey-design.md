@@ -8,6 +8,8 @@ Unlike the other design documents, the measuring part is already done. The harne
 
 The survey was run before the judge existed, so it uses its own small harness. The timings are "naive timings": good enough to rank candidates, not good enough to defend a 10% difference. Every candidate is measured again by the judge before it ships.
 
+A second list of candidates, taken from the NumPy calls of a program in use, is in [second-shortlist-design.md](second-shortlist-design.md).
+
 ## What the survey is
 
 A command-line tool, `uv run survey`, that for each candidate operation times the NumPy statement a user would write against the simplest correct C loop and reports how far NumPy is behind. It answers two questions per candidate:
