@@ -66,6 +66,43 @@
     mov     rax, r11
 .endm
 
+# A block the general way. rax = M, before and after.
+.macro GENERAL_BLOCK
+    GROUP 0
+    GROUP 32
+    GROUP 64
+    GROUP 96
+    add     rcx, BLOCK
+.endm
+
+# The test of the flat loop: jumps to \fail if an element of the block at rcx
+# is above M, which ymm0 holds in every lane.
+.macro FLAT_TEST fail
+    vmovdqu ymm1, [rdi + rcx]
+    vmovdqu ymm2, [rdi + rcx + 32]
+    vmovdqu ymm3, [rdi + rcx + 64]
+    vmovdqu ymm4, [rdi + rcx + 96]
+    vpcmpgtq ymm1, ymm1, ymm0
+    vpcmpgtq ymm2, ymm2, ymm0
+    vpcmpgtq ymm3, ymm3, ymm0
+    vpcmpgtq ymm4, ymm4, ymm0
+    vpor    ymm1, ymm1, ymm2
+    vpor    ymm3, ymm3, ymm4
+    vpor    ymm1, ymm1, ymm3
+    vmovmskpd r8d, ymm1
+    test    r8d, r8d
+    jnz     \fail
+.endm
+
+# A flat block: M sixteen times.
+.macro FLAT_STORE
+    vmovdqu [rsi + rcx], ymm0
+    vmovdqu [rsi + rcx + 32], ymm0
+    vmovdqu [rsi + rcx + 64], ymm0
+    vmovdqu [rsi + rcx + 96], ymm0
+    add     rcx, BLOCK
+.endm
+
 .text
 .globl cummax_i64
 .type cummax_i64, @function
@@ -106,11 +143,7 @@ cummax_i64:
 .p2align 4
 .Lgeneral:
     mov     rdx, rax                    # M before the block
-    GROUP 0
-    GROUP 32
-    GROUP 64
-    GROUP 96
-    add     rcx, BLOCK
+    GENERAL_BLOCK
     cmp     rcx, -BLOCK
     jg      .Ltail
     cmp     rax, rdx
@@ -147,11 +180,28 @@ cummax_i64:
     cmp     rcx, -BLOCK
     jle     .Lrising
     mov     rax, [rdi + rcx - 8]
-    vzeroupper
     jmp     .Ltail
 .Lrisingfail:
     mov     rax, [rdi + rcx - 8]
     jmp     .Lgeneral
+
+    # ---- A block of the flat loop that holds a new maximum: the general way,
+    #      then back to the flat loop, since in data whose maximum rarely
+    #      changes the next block is flat again. If it is not, the blocks
+    #      after it are left to the general loop.
+.Lflatfail:
+    GENERAL_BLOCK
+    cmp     rcx, -BLOCK
+    jg      .Ltail
+    cmp     rax, [rdi + rcx - 8]
+    je      .Lrising
+    vmovq   xmm0, rax
+    vpbroadcastq ymm0, xmm0
+    FLAT_TEST .Lgeneral
+    FLAT_STORE
+    cmp     rcx, -BLOCK
+    jle     .Lflat
+    jmp     .Ltail
 
     # ---- Flat. ymm0 = M in every lane.
 .Lflatenter:
@@ -159,28 +209,10 @@ cummax_i64:
     vpbroadcastq ymm0, xmm0
 .p2align 4
 .Lflat:
-    vmovdqu ymm1, [rdi + rcx]
-    vmovdqu ymm2, [rdi + rcx + 32]
-    vmovdqu ymm3, [rdi + rcx + 64]
-    vmovdqu ymm4, [rdi + rcx + 96]
-    vpcmpgtq ymm1, ymm1, ymm0           # an element above M
-    vpcmpgtq ymm2, ymm2, ymm0
-    vpcmpgtq ymm3, ymm3, ymm0
-    vpcmpgtq ymm4, ymm4, ymm0
-    vpor    ymm1, ymm1, ymm2
-    vpor    ymm3, ymm3, ymm4
-    vpor    ymm1, ymm1, ymm3
-    vmovmskpd r8d, ymm1
-    test    r8d, r8d
-    jnz     .Lgeneral
-    vmovdqu [rsi + rcx], ymm0
-    vmovdqu [rsi + rcx + 32], ymm0
-    vmovdqu [rsi + rcx + 64], ymm0
-    vmovdqu [rsi + rcx + 96], ymm0
-    add     rcx, BLOCK
+    FLAT_TEST .Lflatfail
+    FLAT_STORE
     cmp     rcx, -BLOCK
     jle     .Lflat
-    vzeroupper
 
     # ---- Fewer than 16 elements left: groups of four, then one at a time.
 .Ltail:

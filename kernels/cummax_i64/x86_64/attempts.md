@@ -22,4 +22,12 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **check:** pass
 - **compare:** significantly faster, 1.030x [1.025 – 1.035]
 - **Kept:** yes
-- **Notes:** `random`: 1.17x at 1,024, 1.16x at 4,096, 1.14x at 65,536, 1.00x at 16,384; `rising`: 1.09x at 4,096, 1.07x at 16,384; 0.98x to 0.99x at 16 and 64, which pay two more compares; nothing from 262,144 up. The judge's 128.6 ns at 1,024 random elements is still twice the micro-benchmark's 65 to 80: the judge does not time one array over and over, so each new maximum in the flat loop costs its mispredicted exit, and after it two blocks done the general way.
+- **Notes:** `random`: 1.17x at 1,024, 1.16x at 4,096, 1.14x at 65,536, 1.00x at 16,384; `rising`: 1.09x at 4,096, 1.07x at 16,384; 0.98x to 0.99x at 16 and 64, which pay two more compares; nothing from 262,144 up. The judge's 128.6 ns at 1,024 random elements is still twice the micro-benchmark's 65 to 80: below 4,096 elements the judge times a pool of arrays in turn (four of 1,024, 64 of 64) and not one array over and over, so a new maximum in the flat loop costs its mispredicted exit, and after it two blocks done the general way.
+
+## 3. After a new maximum in the flat loop, straight back to the flat loop
+
+- **Idea:** a block that fails the flat test is done the general way and then, under attempt 1's rule, M has changed, so the next block is done the general way too before the flat loop is tried again. In data whose maximum rarely changes the next block is flat. So: after such a block go back to the flat test at once, and leave the blocks to the general loop only if that test fails as well.
+- **check:** pass
+- **compare:** significantly faster, 1.004x [1.003 – 1.005]
+- **Kept:** yes
+- **Notes:** `random`: 1.04x at 256, 1.01x at 64 and 1,024, nothing elsewhere; `rising` unchanged. Far less than expected, and it showed what attempt 2's note got wrong: the judge's pool at 256 and 1,024 elements is 4,096 elements in all, 32 KB of input and 32 KB of output, which is more than the 48 KB first-level cache. The judge never times this kernel inside the first-level cache from 64 elements up; its 0.12 ns per element at 1,024 is the second-level cache's speed, the same as at 16,384, and not the cost of new maxima.
