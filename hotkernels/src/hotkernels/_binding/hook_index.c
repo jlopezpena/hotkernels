@@ -23,6 +23,7 @@ static inline bool is_mask(PyObject *index) {
 }
 
 // The compress kernels on a buffer of the binding's own. See binding.h.
+// int64 elements go to the float64 kernel and are counted as its calls.
 // As with nonzero, the kernel's output is scratch, so it runs on a buffer of
 // n elements and the selected elements are copied into an array of exactly
 // their number. Shared with the function hooks for np.compress and
@@ -32,6 +33,9 @@ HK_NOINLINE PyObject *hk_try_compress(PyObject *array, PyObject *selector) {
     int type_num;
     if (hk_is_flat(array, NPY_DOUBLE)) kernel = HK_COMPRESS_F64, type_num = NPY_DOUBLE;
     else if (hk_is_flat(array, NPY_FLOAT)) kernel = HK_COMPRESS_F32, type_num = NPY_FLOAT;
+    // The float64 kernel moves 64-bit elements and never computes with one,
+    // so it selects int64 elements as they are.
+    else if (hk_is_flat(array, NPY_INT64)) kernel = HK_COMPRESS_F64, type_num = NPY_INT64;
     else return NULL;
     if (!hk_is_flat(selector, NPY_BOOL)) return NULL;
     PyArrayObject *x = (PyArrayObject *)array, *mask = (PyArrayObject *)selector;

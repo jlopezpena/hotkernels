@@ -221,7 +221,8 @@ PyObject *hk_try_argext(PyObject *array, bool want_max);
 PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi);
 
 // The elements of `x` where `mask` is True, as a new one-dimensional array:
-// the compress kernels. `x` is contiguous float32 or float64 and `mask` a
+// the compress kernels. `x` is contiguous float32, float64 or int64 (which
+// the float64 kernel selects, as bit patterns) and `mask` a
 // contiguous boolean array of the same size, each of any shape; both are
 // read in C order. A caller whose NumPy operation needs more, such as both
 // being one-dimensional, tests that first. In hook_index.c.
