@@ -36,11 +36,19 @@
 # ahead, it keeps a store just behind the input from holding up the loads
 # that follow it.
 #
+# From 24 MB of output, the size of this processor's third-level cache, the
+# wide version stores with `vmovntdq`. An ordinary store first reads the
+# cache line it is about to overwrite; this one does not, which takes a third
+# of the memory traffic away. The output is then not in any cache when the
+# kernel returns, which costs a caller nothing at a size no cache holds.
+#
 # Paths, by n:
-#   0..4          one element at a time
-#   5..511        wide
-#   512..131071   narrow
-#   131072..      wide
+#   0..4               one element at a time
+#   5..511             wide
+#   512..131,071       narrow
+#   131,072..3,145,727 wide
+#   3,145,728..        wide, 0..3 elements first to align out, stores past
+#                      the caches
 
 # From this many bytes of input the narrow version is used. Below it the
 # array is short enough that the number of steps decides.
@@ -48,6 +56,27 @@
 # From this many bytes the wide version is used again: input and output
 # together no longer fit the 2 MB second-level cache of this processor.
 .set NARROW_END_BYTES, 131072 * 8
+# From this many bytes of output the stores go past the caches: 24 MB, the
+# third-level cache of this processor.
+.set STREAM_MIN_BYTES, 24 * 1024 * 1024
+
+# Two vectors of the wide version. ymm0 = V, the last output vector; ymm1 =
+# the previous D; ymm2 = the D of the vector at rcx. \store is the instruction
+# that stores an output vector.
+.macro WIDEPAIR store
+    vperm2i128 ymm3, ymm1, ymm2, 0x21
+    vpaddq  ymm3, ymm3, ymm2            # W
+    vmovdqu ymm1, [rdi + rcx + 32]
+    vpaddq  ymm1, ymm1, [rdi + rcx + 24]    # D of the next vector
+    vpaddq  ymm0, ymm0, ymm3
+    vperm2i128 ymm4, ymm2, ymm1, 0x21
+    vpaddq  ymm4, ymm4, ymm1            # W of the next vector
+    vmovdqu ymm2, [rdi + rcx + 64]
+    vpaddq  ymm2, ymm2, [rdi + rcx + 56]    # D of the one after
+    \store [rsi + rcx], ymm0
+    vpaddq  ymm0, ymm0, ymm4
+    \store [rsi + rcx + 32], ymm0
+.endm
 
 .text
 .globl cumsum_i64
@@ -75,19 +104,7 @@ cumsum_i64:
     lea     r9, [rdx - 96]              # last offset from which three vectors are in reach
 .p2align 6
 .Lwidepair:
-    # ymm0 = V, ymm1 = previous D, ymm2 = D of the vector at rcx.
-    vperm2i128 ymm3, ymm1, ymm2, 0x21
-    vpaddq  ymm3, ymm3, ymm2            # W
-    vmovdqu ymm1, [rdi + rcx + 32]
-    vpaddq  ymm1, ymm1, [rdi + rcx + 24]    # D of the next vector
-    vpaddq  ymm0, ymm0, ymm3
-    vperm2i128 ymm4, ymm2, ymm1, 0x21
-    vpaddq  ymm4, ymm4, ymm1            # W of the next vector
-    vmovdqu ymm2, [rdi + rcx + 64]
-    vpaddq  ymm2, ymm2, [rdi + rcx + 56]    # D of the one after
-    vmovdqu [rsi + rcx], ymm0
-    vpaddq  ymm0, ymm0, ymm4
-    vmovdqu [rsi + rcx + 32], ymm0
+    WIDEPAIR vmovdqu
     add     rcx, 64
     cmp     rcx, r9
     jbe     .Lwidepair
@@ -117,7 +134,7 @@ cumsum_i64:
 
 .Lchoose:
     cmp     rdx, NARROW_END_BYTES
-    jae     .Lwide
+    jae     .Lbeyond
 
     # ---- Narrow. Element 0 is stored on its own and the vectors start at
     #      element 1, with [0, x[0]] as the output vector before them. No
@@ -176,6 +193,48 @@ cumsum_i64:
     vmovdqu [rsi + rcx + 16], xmm0
     add     rcx, 32
     vpextrq rax, xmm0, 1                # the last output
+    jmp     .Ltailtest
+
+    # ---- Beyond the second-level cache: wide, and from STREAM_MIN_BYTES with
+    #      stores that go past the caches.
+.Lbeyond:
+    cmp     rdx, STREAM_MIN_BYTES
+    jb      .Lwide
+    # Such a store needs an address that is a multiple of 32: 0..3 elements
+    # one at a time first. If out is not a multiple of 8 there is no such
+    # address, and the ordinary wide path is used.
+    mov     r8d, esi
+    neg     r8d
+    and     r8d, 31
+    test    r8d, 7
+    jnz     .Lwide
+    test    r8d, r8d
+    jz      .Lstreamstart
+.Lstreamhead:
+    add     rax, [rdi + rcx]
+    mov     [rsi + rcx], rax
+    add     rcx, 8
+    cmp     rcx, r8
+    jb      .Lstreamhead
+.Lstreamstart:
+    # The elements before rcx count as zero from here on, and their sum, in
+    # rax, as the output before it in every lane.
+    vmovq   xmm0, rax
+    vpbroadcastq ymm0, xmm0
+    vpxor   xmm1, xmm1, xmm1
+    vmovdqu ymm2, [rdi + rcx]
+    vpermq  ymm3, ymm2, 0x90            # x0 x0 x1 x2
+    vpblendd ymm3, ymm3, ymm1, 0x03     # 0  x0 x1 x2
+    vpaddq  ymm2, ymm2, ymm3            # D of the first vector
+    lea     r9, [rdx - 96]
+.p2align 6
+.Lstreampair:
+    WIDEPAIR vmovntdq
+    add     rcx, 64
+    cmp     rcx, r9
+    jbe     .Lstreampair
+    sfence                              # the stores above are ordered before what follows
+    jmp     .Lwidesingle
 
 .Ltailtest:
     cmp     rcx, rdx
