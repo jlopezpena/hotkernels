@@ -29,3 +29,11 @@ Every element is 17 bytes read and 8 written, so beyond the first-level cache th
 - **compare:** significantly faster, 1.051x [1.046 – 1.056]; a second run 1.051x [1.049 – 1.053]
 - **Kept:** yes
 - **Notes:** 1.31x at 4,194,304 (2.97 ms to 2.27 ms) and at 16,777,216 (12.25 ms to 9.32 ms) with half_true, 1.33x and 1.28x with mostly_true; 1.28x to 1.34x in the second run. Every other size 0.99x to 1.01x.
+
+## 4. Bring the output to a multiple of 32 bytes at every size from 64
+
+- **Idea:** a 32-byte store that straddles two cache lines costs more than one that does not, and with out 16 bytes off a multiple of 32, as memory from the C allocator often is, every second store does. In a micro-benchmark outside the judge at 4,096 and 16,384 elements, in the second-level cache: 0.150 ns per element with all three of a, b and out at multiples of 32, 0.176 with out alone 16 bytes off, 0.176 with a and b off and out not, 0.184 to 0.195 with all three off. So the first block is done where out is, and the blocks after it start up to three elements in, where out is a multiple of 32, as attempt 3 already did for its own stores. No branch and no scalar loop: the elements between are written twice. Where a and b sit as out does, which is the usual case for arrays that came from the same allocator, this aligns all three.
+- **check:** pass. The program of attempt 3 again: 156,114 runs, no failure.
+- **compare:** significantly faster, 1.048x [1.042 – 1.054]
+- **Kept:** yes
+- **Notes:** half_true 1.07x at 256, 1.11x at 1,024, 1.12x at 4,096, 1.27x at 16,384, 1.18x at 65,536, 1.05x at 262,144, nothing from 1,048,576, where the judge's output already is at a multiple of 32. mostly_true the same except 16,384 at 1.00x, where its output already was. **0.90x at 64** in both: five blocks where there were four.

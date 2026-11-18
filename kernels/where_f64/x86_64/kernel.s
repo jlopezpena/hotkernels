@@ -24,14 +24,17 @@
 # input. Under sixteen elements the same is done with groups of four, whose
 # masks come from `vpmovsxbq`.
 #
+# From ALIGN_MIN elements out is brought to a multiple of 32 bytes, so that
+# no store straddles two cache lines: the first block is done where out is,
+# and the blocks after it start up to three elements in, where out is at such
+# a multiple. An out that is not a multiple of 8 cannot be brought there.
+#
 # From STREAM_MIN_N elements the blocks store with `vmovntdq`. An ordinary
 # store first reads the cache line it is about to overwrite; this one does
 # not, which takes a quarter of the memory traffic away. The output is then in
 # no cache when the kernel returns, which costs a caller nothing at a size no
-# cache holds. These stores need out at a multiple of 32 bytes: the first
-# block is stored the ordinary way, and the blocks after it start up to three
-# elements in, where out is at such a multiple. An out that is not a multiple
-# of 8 cannot be brought there and takes the ordinary stores throughout.
+# cache holds. These stores need out at a multiple of 32 bytes; an out that
+# is not a multiple of 8 takes the ordinary stores.
 #
 # Paths, by n:
 #   STREAM_MIN_N or more  the same blocks, stored past the caches
@@ -52,6 +55,8 @@
     .fill 8, 1, 4 * \g + 3
     .endr
 
+# From this many elements out is brought to a multiple of 32 bytes.
+.set ALIGN_MIN, 64
 # From this many elements the stores go past the caches: 24 MB of output, the
 # third-level cache of this processor.
 .set STREAM_MIN_N, 3 * 1024 * 1024
@@ -82,6 +87,21 @@
     SELECT 3, ymm5, ymm9, \a, \b, \o, \store
 .endm
 
+# Move the four pointers on by the up to three elements that bring out to a
+# multiple of 32 bytes, after a first block has been done where they were.
+# For an out that is not a multiple of 8 the count is as arbitrary as the
+# place it leads to, and as harmless. r8 is free by now.
+.macro ALIGN
+    mov     r8d, ecx
+    neg     r8d
+    and     r8d, 24                     # bytes until out is a multiple of 32
+    add     rsi, r8
+    add     rdx, r8
+    add     rcx, r8
+    shr     r8d, 3                      # the same in elements
+    add     rdi, r8
+.endm
+
 # One group of 4 elements at index \i, for the arrays under 16 elements.
 .macro GROUP i
     vpmovsxbq ymm1, dword ptr [rdi + \i]
@@ -108,10 +128,12 @@ where_f64:
     lea     r11, [rsi + r8 * 8 - 128]
     lea     rax, [rdx + r8 * 8 - 128]
     lea     r9, [rcx + r8 * 8 - 128]
+    cmp     r8, ALIGN_MIN
+    jb      .Lfew
+    BLOCK   rdi, rsi, rdx, rcx          # the first block, wherever out is
     cmp     r8, STREAM_MIN_N
     jae     .Lstream
-    cmp     rdi, r10
-    jae     .Llast
+    ALIGN
 .p2align 6
 .Lblock:
     BLOCK   rdi, rsi, rdx, rcx
@@ -126,20 +148,17 @@ where_f64:
     vzeroupper
     ret
 
-    # Stores past the caches. Only an out at a multiple of 8 can be brought
-    # to a multiple of 32.
+.Lfew:
+    cmp     rdi, r10
+    jb      .Lblock
+    jmp     .Llast
+
+    # Stores past the caches. An out that is not a multiple of 8 was not
+    # brought to a multiple of 32 and takes the ordinary stores.
 .Lstream:
+    ALIGN
     test    cl, 7
     jnz     .Lblock
-    BLOCK   rdi, rsi, rdx, rcx
-    mov     r8d, ecx
-    neg     r8d
-    and     r8d, 31                     # bytes until out is a multiple of 32
-    add     rsi, r8
-    add     rdx, r8
-    add     rcx, r8
-    shr     r8d, 3                      # the same in elements
-    add     rdi, r8
 .p2align 6
 .Lstreamblock:
     BLOCK   rdi, rsi, rdx, rcx, vmovntdq
