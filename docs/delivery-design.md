@@ -139,7 +139,7 @@ A C extension of about 260 lines, written to be thrown away, applied each kind o
 | Inner loop | A ufunc's loop for one type, through `PyUFunc_ReplaceLoopBySignature` | Yes |
 | Type slot | The `argmax` and `argmin` entries a NumPy type holds, through `PyDataType_GetArrFuncs` | The accessor is public API; writing through it is not a documented use |
 | Function | The call pointer inside a NumPy function object such as `np.argmax` | No. Its position is given by the object's type, which is a CPython guarantee |
-| Method | The C function pointer in `ndarray`'s method table | No |
+| Method | The C function pointer in `ndarray`'s method table, and since the second shortlist one entry of the ufunc type's: `accumulate`, which every ufunc object shares | No |
 | Indexing | The two pointers behind `a[i]` and `a[i] = v` in `ndarray`'s type | No |
 
 The last three keep NumPy's objects and change one pointer inside them. The alternative is to replace the objects: assign a new function to `np.argmax`, or put a new method into `ndarray`'s dictionary. Both were tried. Replacing is worse in every respect measured:
@@ -160,6 +160,7 @@ The last three keep NumPy's objects and change one pointer inside them. The alte
 | Inner loop, float64 `clip` | `np.clip(x, 0, 1)`, `x.clip(0, 1)`, `out=`, in place, contiguous arrays of any shape (as one flat run) | `np.clip(x, 0, None)`, which NumPy sends to `np.maximum` |
 | Function, `np.argmax` | Every call of the function, however it was imported or spelled | `x.argmax()` |
 | Method, five methods | The method, a bound method saved earlier, and the NumPy function of the same name where that function calls the method: `np.searchsorted`, `np.digitize`, `np.clip`, `np.argmax` | `np.sum(x)`, which does not go through `x.sum()` |
+| Method, the ufunc type's `accumulate` (built with the second shortlist) | `np.maximum.accumulate(x)`, the same for every other ufunc, and a bound method saved earlier: one entry serves every ufunc object, so the wrapper tells them apart by `self` | Not examined: whether NumPy's own functions, such as `np.cumsum`, go through the method. Only `np.maximum` and `np.fmax` have kernels, and no NumPy function was found that accumulates with them |
 | Indexing | `x[mask]`, `x[mask] = v`, `operator.getitem` | Subclasses of `ndarray`, whenever they were defined; `x.__getitem__(mask)` called by name |
 
 Two details matter for the design:
@@ -232,6 +233,7 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 | `searchsorted` | 2 | Method | The array one-dimensional, contiguous float64; the needles a contiguous float64 array of any shape or a Python number; `side` absent, `'left'` or `'right'`, each side with its own kernel ([searchsorted-right-design.md](searchsorted-right-design.md)); no `sorter` |
 | `cumsum` | 4 | Method | Contiguous, no `axis`, `dtype` or `out`. The two float kernels only with `inexact=True`. A boolean array, which has a kernel of its own and gives `np.intp`, is read for bytes other than 0 and 1 first |
 | `astype` | 1 | Method | Contiguous `uint8` to `float32`, other arguments at their defaults |
+| `np.maximum.accumulate(x)`, `np.fmax.accumulate(x)` | 2 | Method, of the ufunc type | One-dimensional, contiguous, at least one element; `axis` absent, 0 or -1, no `dtype` or `out`. int64 under either ufunc (`cummax_i64`); float64 under `np.fmax` only (`cumfmax_f64`), after the array is read for signalling NaNs, which NumPy does not ignore and the kernel does. `np.maximum` on float64 propagates NaN and is NumPy's. Any other ufunc's `accumulate` goes on after two pointer comparisons, uncounted. Counted as its own operation, `accumulate` |
 | `sum` | 1 | Method and function | Contiguous `uint8` or boolean, no other arguments. A boolean array is read for bytes other than 0 and 1 first, a block at a time, and one that holds any is NumPy's |
 | `count_nonzero` | 2 | Function | Contiguous, no `axis` |
 | `interp` | 1 | Function | Three contiguous float64 arrays, `xp` and `fp` one-dimensional and the same length; no `left`, `right` or `period`; no NaN in `xp`; at most 64 sample points per query |

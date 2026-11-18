@@ -73,7 +73,7 @@ Importing the package changes nothing; only `install()` does. Calling it twice i
 `print(hotkernels.report())` after your code has run:
 
 ```text
-hotkernels 0.2.0: installed, 23 of 25 kernels (NumPy 2.5.5)
+hotkernels 0.2.0: installed, 25 of 27 kernels (NumPy 2.5.5)
 
 NumPy call         Elements Kernel    Result            Kernel calls  Left to NumPy
 np.argmax          float32  assembly  exact                        0              0
@@ -106,6 +106,8 @@ A kernel takes a call only when the array is a plain, contiguous `ndarray` of th
 | `np.where(mask, a, b)` | float64, int64 | `mask` is a boolean array and `a` and `b` are arrays of its exact shape and one element type, of any number of dimensions; or, for float64, one of `a` and `b` is such an array and the other a single number: a Python float, a Python int up to 2^53, or an `np.float64`. Shapes that would broadcast, and mixed element types, stay with NumPy |
 | `np.cumsum(x)`, `x.cumsum()` | int64, bool; float32 and float64 with `inexact=True` | No `axis`, `dtype` or `out` |
 | `x.astype(np.float32)` | uint8 | Other arguments at their defaults |
+| `np.maximum.accumulate(x)` | int64 | `x` is one-dimensional, with at least one element; no `dtype` or `out`, and `axis` left out, 0 or -1 |
+| `np.fmax.accumulate(x)` | int64, float64 | As for `np.maximum.accumulate`, and a float64 `x` holds no signalling NaN |
 | `np.sum(x)`, `x.sum()` | uint8, bool | No other arguments |
 | `np.count_nonzero(x)` | int64, float64 | No `axis` |
 | `np.histogram(x, bins, range)` | float64 | An integer bin count; no weights or density |
@@ -124,6 +126,8 @@ How much faster each one is, from Python and at three sizes, is in [the results]
 - **`x[mask] = v` rewrites elements it does not change**, and so do `np.putmask` and `np.copyto(x, v, where=mask)`. On a dense mask the kernel stores unselected elements back with their own bits. The result is identical; the array must be writable throughout, which a normal array is.
 - **A mask holding a byte other than 0 or 1 goes to NumPy.** NumPy treats any non-zero byte as True, and a boolean view of other data can hold a 2. Every mask is read once before a kernel sees it, in the indexing syntax, in the function forms, in `mask.sum()`, in `np.cumsum(mask)` and in `np.where(mask, a, b)` alike.
 - **The mask functions are counted under the indexing syntax.** In `report()`, `np.compress` and `np.extract` count on the `x[mask]` rows, `np.putmask` and `np.copyto` on `x[mask] = v`, and `np.where(mask)` on `np.nonzero`. `np.copyto` without `where` is another operation and is not counted at all. `np.where(mask, a, b)` has a row of its own, `np.where(c, a, b)`, whose element type reads `float64`: it counts int64 calls too, for the same reason as `x[mask]` below. `mask.sum()` counts on the `np.sum` row, whose element type reads `uint8`: one kernel adds the bytes of both. In the same way `x[mask]` on int64 counts on the float64 row of `x[mask]`: that kernel moves 64-bit elements without computing on them, so it serves both types.
+- **`np.maximum.accumulate` on floats stays with NumPy.** It carries a NaN forward from where it appears, which no kernel does. `np.fmax.accumulate`, the running maximum that skips NaN, is served on float64 and gives NumPy's result bit for bit, the sign of a zero and the payload of a leading NaN included.
+- **A float64 array holding a signalling NaN goes to NumPy in `np.fmax.accumulate`.** NumPy turns one into a quiet NaN and forgets the maximum so far; the kernel would skip it. Arithmetic never produces a signalling NaN, so you only meet one in data built bit by bit, but every float64 array is read for them before the kernel sees it.
 - **`np.clip(x, 0, 1)` is faster by less than `np.clip(x, -1, 1)`.** A lower bound of exactly zero needs extra care for negative zeros. It is still several times faster than NumPy.
 - **A small `np.clip` is fast when its bounds are plain numbers.** `np.clip(x, lo, hi)` and `x.clip(lo, hi)` skip NumPy's own call path, most of a call on a small array, when the bounds are Python floats or ints, or NumPy scalars of the array's own type, and there is no `out`, `dtype`, `casting` or `where`. The result has the element type NumPy gives it: a float32 array clipped to Python floats stays float32. Other calls, such as `np.float64` bounds on a float32 array (NumPy returns float64), `out=`, or a bound of `None`, go through NumPy's call path first; the kernel still serves them where it served them before, and they gain only on larger arrays.
 - **`np.isin` is fastest when the test values are close together**: all between 0 and 65,534, or all within 32,767 of the first one. Otherwise it runs at the speed of compiled C, which is still ahead of NumPy.
