@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
+from itertools import accumulate
 from typing import Callable
 
 import numpy as np
@@ -282,6 +283,55 @@ def _cumsum_bool() -> bool:
     return result.dtype == np.intp and bool(np.array_equal(result, np.arange(PROBE_N) // PROBE_STRIDE + 1))
 
 
+def _running_max_probe() -> list[float]:
+    """Return the values of the running-maximum probes, as Python floats.
+
+    0, 1, -2, 3, -4, ...: the odd elements are each a new maximum and the even
+    ones never are, so a kernel that kept the wrong one fails. Every value is
+    a whole number below 2^53, exact in both int64 and float64.
+    """
+    return [float(i if i % 2 else -i) for i in range(PROBE_N)]
+
+
+def _running_max(values: list[float]) -> list[float]:
+    """Return the running maximum of `values` in plain Python, a NaN never replacing the value so far.
+
+    Args:
+        values: The elements; the first is not NaN.
+
+    Returns:
+        Element i is the largest of the elements up to i that are not NaN.
+    """
+    return list(accumulate(values, lambda so_far, v: v if v > so_far else so_far))
+
+
+def _cummax(ufunc: np.ufunc) -> bool:
+    """Probe the ufunc method hook: `ufunc.accumulate(x)` on int64, for np.maximum or np.fmax.
+
+    Args:
+        ufunc: `np.maximum` or `np.fmax`; on integers both are the running maximum.
+
+    Returns:
+        Whether the result is int64 and holds the running maximum.
+    """
+    values = _running_max_probe()
+    result = ufunc.accumulate(np.array(values, np.int64))
+    return result.dtype == np.int64 and result.tolist() == [int(v) for v in _running_max(values)]
+
+
+def _cumfmax() -> bool:
+    """Probe the ufunc method hook: `np.fmax.accumulate(x)` on float64 with a NaN at every PROBE_STRIDE-th position after the first.
+
+    A kernel that let a NaN through, or that NumPy's NaN-propagating
+    `np.maximum` answered, fails.
+    """
+    values = _running_max_probe()
+    for i in range(PROBE_STRIDE, PROBE_N, PROBE_STRIDE):
+        values[i] = float("nan")
+    result = np.fmax.accumulate(np.array(values, np.float64))
+    return result.dtype == np.float64 and result.tolist() == _running_max(values)
+
+
 def _astype() -> bool:
     """Probe the method hook: `x.astype(np.float32)` on bytes."""
     result = np.full(PROBE_N, PROBE_BYTE, np.uint8).astype(np.float32)
@@ -421,6 +471,11 @@ HOOKS: tuple[Hook, ...] = (
         Probe("clip_f32", partial(_clip_with, np.float32, _clip_method)),
         Probe("clip_f64", partial(_clip_with, np.float64, _clip_method)),
     )),
+    Hook("ufunc.accumulate", METHOD, (
+        Probe("cummax_i64", partial(_cummax, np.maximum)),
+        Probe("cummax_i64", partial(_cummax, np.fmax)),
+        Probe("cumfmax_f64", _cumfmax),
+    )),
     Hook("index.get", INDEXING, (
         Probe("compress_f32", partial(_compress, np.float32)),
         Probe("compress_f64", partial(_compress, np.float64)),
@@ -461,4 +516,7 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("searchsorted_right_f64", "  side='right'", "float64", "searchsorted", ("method.searchsorted",)),
     KernelInfo("interp_f64", "np.interp", "float64", "interp", ("function.interp",)),
     KernelInfo("where_f64", "np.where(c, a, b)", "float64", "where", ("function.where",)),
+    # np.maximum.accumulate does not fit the report's column of 19 characters.
+    KernelInfo("cummax_i64", "maximum.accumulate", "int64", "accumulate", ("ufunc.accumulate",)),
+    KernelInfo("cumfmax_f64", "fmax.accumulate", "float64", "accumulate", ("ufunc.accumulate",)),
 )

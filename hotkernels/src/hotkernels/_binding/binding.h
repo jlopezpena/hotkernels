@@ -44,7 +44,7 @@ typedef enum {
     HK_CAST_U8_F32, HK_SUM_U8, HK_COUNT_NONZERO_I64, HK_COUNT_NONZERO_F64,
     HK_HISTOGRAM_F64, HK_BINCOUNT_U8, HK_ISIN_I64,
     HK_SEARCHSORTED_F64, HK_SEARCHSORTED_RIGHT_F64, HK_INTERP_F64,
-    HK_WHERE_F64,
+    HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -55,7 +55,7 @@ typedef enum {
     HK_OP_ARGMAX, HK_OP_ARGMIN, HK_OP_CLIP, HK_OP_COMPRESS, HK_OP_MASKFILL,
     HK_OP_NONZERO, HK_OP_CUMSUM, HK_OP_ASTYPE, HK_OP_SUM, HK_OP_COUNT_NONZERO,
     HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN, HK_OP_SEARCHSORTED, HK_OP_INTERP,
-    HK_OP_WHERE,
+    HK_OP_WHERE, HK_OP_ACCUMULATE,
     HK_OPERATION_COUNT
 } hk_operation;
 
@@ -173,6 +173,27 @@ static inline bool hk_mask_is_clean(const uint8_t *mask, size_t n) {
 static inline bool hk_has_nan(const double *values, size_t n) {
     bool seen = false;
     for (size_t i = 0; i < n; i++) seen |= values[i] != values[i];
+    return seen;
+}
+
+// True when any of the `n` doubles at `values` is a signalling NaN: exponent
+// all ones, the top bit of the fraction (the quiet bit) clear, and the
+// fraction not zero. With the sign cleared those are exactly the bit patterns
+// from 0x7ff0000000000001 to 0x7ff7ffffffffffff, so one subtraction and one
+// unsigned comparison test all three; patterns below the range wrap round to
+// large numbers. The bits are copied out with memcpy, which the compiler
+// turns into a plain load, and the loop has no branch, so it becomes vector
+// code. NumPy answers a signalling NaN in np.fmax with a quiet NaN, where a
+// kernel that ignores NaN would skip it.
+static inline bool hk_has_signalling_nan(const double *values, size_t n) {
+    const uint64_t magnitude = 0x7fffffffffffffffULL, lowest = 0x7ff0000000000001ULL;
+    const uint64_t span = 0x7ff7ffffffffffffULL - lowest;
+    bool seen = false;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t bits;
+        memcpy(&bits, &values[i], sizeof bits);
+        seen |= (bits & magnitude) - lowest <= span;
+    }
     return seen;
 }
 

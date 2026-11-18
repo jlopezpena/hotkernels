@@ -1890,6 +1890,149 @@ def where_cases() -> Iterator[Case]:
                            partial(_built_each, late, floats, others), _where, None)
 
 
+# ------------------------------------------------------------- accumulate
+
+# Bit patterns of the short float64 cases of the running maximum. NumPy
+# computes an accumulation of two elements with its operands the other way
+# round from a longer one, which shows only where two elements compare equal
+# or are both NaN: two zeros of opposite sign, and two NaNs with different
+# payloads. Each pattern is also run with a third element.
+_POS_ZERO = 0x0000000000000000
+_NEG_ZERO = 0x8000000000000000
+_QUIET_NAN = 0x7FF8000000000000
+_PAYLOAD_NAN = 0xFFF8000000000123
+_OTHER_NAN = 0x7FF80000000ABCDE
+_ONE = 0x3FF0000000000000
+_NEG_INF = 0xFFF0000000000000
+_SHORT_FLOATS: tuple[tuple[int, ...], ...] = (
+    (_POS_ZERO, _NEG_ZERO), (_NEG_ZERO, _POS_ZERO), (_NEG_ZERO, _NEG_ZERO), (_POS_ZERO, _POS_ZERO),
+    (_QUIET_NAN, _PAYLOAD_NAN), (_PAYLOAD_NAN, _QUIET_NAN), (_QUIET_NAN, _ONE), (_ONE, _QUIET_NAN),
+    (_PAYLOAD_NAN, _NEG_ZERO), (_NEG_INF, _QUIET_NAN), (_ONE, _ONE),
+    (_POS_ZERO, _NEG_ZERO, _POS_ZERO), (_NEG_ZERO, _POS_ZERO, _NEG_ZERO), (_NEG_ZERO, _POS_ZERO, _POS_ZERO),
+    (_QUIET_NAN, _PAYLOAD_NAN, _OTHER_NAN), (_PAYLOAD_NAN, _NEG_ZERO, _POS_ZERO), (_QUIET_NAN, _ONE, _OTHER_NAN),
+)
+# The int64 values of the short cases: two or three elements in each order,
+# with the extremes of the type.
+_INT64_MIN, _INT64_MAX = int(np.iinfo(np.int64).min), int(np.iinfo(np.int64).max)
+_SHORT_INTS: tuple[tuple[int, ...], ...] = (
+    (5, 3), (3, 5), (5, 5), (_INT64_MIN, _INT64_MAX), (_INT64_MAX, _INT64_MIN), (-1, 0, -1), (_INT64_MAX, -1, 0),
+)
+# Element count of the case whose only signalling NaN is its last element:
+# above the size from which the binding releases the interpreter lock.
+ACCUMULATE_LATE_N = 20000
+
+
+def _maximum_accumulate(x):
+    """Return `np.maximum.accumulate(x)`."""
+    return np.maximum.accumulate(x)
+
+
+def _fmax_accumulate(x):
+    """Return `np.fmax.accumulate(x)`."""
+    return np.fmax.accumulate(x)
+
+
+def _accumulate_spellings(ufunc: np.ufunc) -> tuple[Spelling, ...]:
+    """Return the ways of writing an accumulation with `ufunc`, np.maximum or np.fmax.
+
+    The kernels take a one-dimensional array with `axis` absent, 0 or -1 and
+    no `dtype` or `out`, however the arguments are passed. A contiguous array
+    of two dimensions is NumPy's, even with the default axis.
+
+    Args:
+        ufunc: `np.maximum` or `np.fmax`.
+
+    Returns:
+        The spellings, the ones that take a kernel first.
+    """
+    name = f"np.{ufunc.__name__}.accumulate"
+    plain = _maximum_accumulate if ufunc is np.maximum else _fmax_accumulate
+    return (
+        Spelling(f"{name}(x)", plain, any_shape=False),
+        Spelling(f"{name}(x, 0)", lambda x: ufunc.accumulate(x, 0), any_shape=False, sweep_values=False),
+        Spelling(f"{name}(x, axis=-1)", lambda x: ufunc.accumulate(x, axis=-1), any_shape=False,
+                 sweep_values=False),
+        Spelling(f"{name}(array=x)", lambda x: ufunc.accumulate(array=x), any_shape=False, sweep_values=False),
+        Spelling(f"{name}(x, 0, None, None)", lambda x: ufunc.accumulate(x, 0, None, None), any_shape=False,
+                 sweep_values=False),
+        Spelling(f"{name}(x, axis=0, dtype=None, out=None)",
+                 lambda x: ufunc.accumulate(x, axis=0, dtype=None, out=None), any_shape=False, sweep_values=False),
+        Spelling(f"{name}(x, axis=None)", lambda x: ufunc.accumulate(x, axis=None), NEVER),
+        Spelling(f"{name}(x, axis=1)", lambda x: ufunc.accumulate(x, axis=1), NEVER),
+        Spelling(f"{name}(x, axis=np.int64(0))", lambda x: ufunc.accumulate(x, axis=np.int64(0)), NEVER),
+        Spelling(f"{name}(x, dtype=x.dtype)", lambda x: ufunc.accumulate(x, dtype=np.asarray(x).dtype), NEVER),
+        Spelling(f"{name}(x, out=o)",
+                 lambda x: ufunc.accumulate(x, out=np.empty(np.shape(x), np.asarray(x).dtype)), NEVER),
+    )
+
+
+# Accumulations through the same hook that no kernel serves.
+_OTHER_ACCUMULATIONS = (
+    Spelling("np.minimum.accumulate(x)", np.minimum.accumulate, NEVER),
+    Spelling("np.add.accumulate(x)", np.add.accumulate, NEVER),
+    Spelling("np.fmin.accumulate(x)", np.fmin.accumulate, NEVER),
+)
+
+
+def _from_bits(patterns: tuple[int, ...]) -> np.ndarray:
+    """Return a float64 array holding exactly the given bit patterns."""
+    return np.array(patterns, np.uint64).view(np.float64)
+
+
+def _quiet_nans_only(n: int) -> np.ndarray:
+    """Return the float64 array of `unusual_nans` with each signalling NaN made quiet.
+
+    The negative quiet NaNs with a payload stay, so the kernel takes it.
+    """
+    x = unusual_nans("f64", n)
+    bits = x.view(np.uint64)
+    bits[::_SIGNALLING_EVERY] = _QUIET_NAN
+    return x
+
+
+def _late_signalling_nan(n: int) -> np.ndarray:
+    """Return random float64 values whose only signalling NaN is the last element."""
+    x = values("f64", n)
+    x.view(np.uint64)[-1] = _UNUSUAL_NANS[8][1]
+    return x
+
+
+def accumulate_cases() -> Iterator[Case]:
+    """Yield the cases of `np.maximum.accumulate` and `np.fmax.accumulate`.
+
+    Both ufuncs take cummax_i64 on int64. np.fmax takes cumfmax_f64 on
+    float64 unless the array holds a signalling NaN; np.maximum on float64
+    propagates NaN and is NumPy's. Other ufuncs' accumulations pass through
+    the hook uncounted.
+    """
+    yield from unary_cases("accumulate", {"i64": "cummax_i64"}, ("f64", "f32", "i32", "u64"),
+                           (*_accumulate_spellings(np.maximum), *_OTHER_ACCUMULATIONS), empty_takes=False)
+    yield from unary_cases("accumulate", {"i64": "cummax_i64", "f64": "cumfmax_f64"}, ("f32", "i32", "u64"),
+                           _accumulate_spellings(np.fmax), empty_takes=False)
+    # np.maximum on float64 over every value class, NaNs included: NumPy's.
+    for n, _, label, maker in value_arrays("f64", FEW_SIZES):
+        yield Case("accumulate", f"np.maximum.accumulate(x) f64 {label}", partial(_made, maker),
+                   _maximum_accumulate, None)
+    for patterns in _SHORT_FLOATS:
+        text = " ".join(f"{p:#x}" for p in patterns)
+        yield Case("accumulate", f"np.fmax.accumulate(x) f64 x=[{text}]", partial(_made, partial(_from_bits, patterns)),
+                   _fmax_accumulate, "cumfmax_f64")
+        yield Case("accumulate", f"np.maximum.accumulate(x) f64 x=[{text}]",
+                   partial(_made, partial(_from_bits, patterns)), _maximum_accumulate, None)
+    for numbers in _SHORT_INTS:
+        for text, call in (("np.maximum.accumulate(x)", _maximum_accumulate), ("np.fmax.accumulate(x)", _fmax_accumulate)):
+            yield Case("accumulate", f"{text} i64 x={list(numbers)}",
+                       partial(_made, partial(np.array, numbers, np.int64)), call, "cummax_i64")
+    # A signalling NaN is NumPy's: it answers with a quiet NaN where the kernel would skip it.
+    for n in VALUE_SIZES:
+        yield Case("accumulate", f"np.fmax.accumulate(x) f64 n={n} x=signalling and negative NaNs",
+                   partial(_made, partial(unusual_nans, "f64", n)), _fmax_accumulate, None)
+        yield Case("accumulate", f"np.fmax.accumulate(x) f64 n={n} x=negative NaNs with a payload",
+                   partial(_made, partial(_quiet_nans_only, n)), _fmax_accumulate, "cumfmax_f64")
+    yield Case("accumulate", f"np.fmax.accumulate(x) f64 n={ACCUMULATE_LATE_N} x=signalling NaN last only",
+               partial(_made, partial(_late_signalling_nan, ACCUMULATE_LATE_N)), _fmax_accumulate, None)
+
+
 # Every operation that has a hook, with its exact cases.
 OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "argmax": partial(argext_cases, "argmax"),
@@ -1908,6 +2051,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "searchsorted": searchsorted_cases,
     "interp": interp_cases,
     "where": where_cases,
+    "accumulate": accumulate_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the

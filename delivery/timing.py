@@ -135,6 +135,12 @@ def _ints(dtype: type, n: int) -> tuple:
     return (_rng(n).integers(0, 10, n).astype(dtype),)
 
 
+def _spread_ints(n: int) -> tuple:
+    """Build int64 values drawn from the whole range of the type, so that a new maximum is rare after the start."""
+    info = np.iinfo(np.int64)
+    return (_rng(n).integers(info.min, info.max, n, dtype=np.int64, endpoint=True),)
+
+
 def _bytes(n: int) -> tuple:
     """Build uniformly random bytes."""
     return (_rng(n).integers(0, 256, n, dtype=np.uint8),)
@@ -296,6 +302,9 @@ TAKEN: tuple[Timed, ...] = (
     Timed("where", "np.where(mask, a, np.nan)", "float64, mostly true", partial(_selected, np.float64, MOSTLY),
           lambda m, a, b: np.where(m, a, np.nan), "where_f64"),
     Timed("cumsum", "np.cumsum(x)", "int64", partial(_ints, np.int64), np.cumsum, "cumsum_i64"),
+    Timed("accumulate", "np.maximum.accumulate(x)", "int64", _spread_ints, np.maximum.accumulate, "cummax_i64"),
+    Timed("accumulate", "np.fmax.accumulate(x)", "float64", partial(_floats, np.float64), np.fmax.accumulate,
+          "cumfmax_f64"),
     Timed("cumsum", "np.cumsum(mask)", "bool, half selected", partial(_mask, HALF), np.cumsum, "cumsum_bool"),
     Timed("cumsum", "np.cumsum(x)", "float32", partial(_floats, np.float32), np.cumsum, "cumsum_f32", inexact=True),
     Timed("cumsum", "np.cumsum(x)", "float64", partial(_floats, np.float64), np.cumsum, "cumsum_f64", inexact=True),
@@ -330,6 +339,9 @@ LEFT: tuple[Timed, ...] = (
     Timed("sum", "x.sum()", "float64", partial(_floats, np.float64), lambda x: x.sum(), None),
     Timed("count_nonzero", "np.count_nonzero(x)", "int32", partial(_ints, np.int32), np.count_nonzero, None),
     Timed("cumsum", "np.cumsum(x)", "float64, exact kernels only", partial(_floats, np.float64), np.cumsum, None),
+    Timed("accumulate", "np.add.accumulate(x)", "int64", partial(_ints, np.int64), np.add.accumulate, None),
+    Timed("accumulate", "np.maximum.accumulate(x)", "float64", partial(_floats, np.float64), np.maximum.accumulate,
+          None),
     Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0), density=False)", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE, density=False), None),
     Timed("bincount", "np.bincount(x)", "int64", partial(_ints, np.int64), np.bincount, None),
     Timed("isin", "np.isin(x, nine_values)", "int64", _narrow_ints, lambda x: np.isin(x, ISIN_TEST + [3]), None),
