@@ -19,6 +19,12 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       # Shared runners are too noisy to time anything, so the speed fixture is skipped.
       - run: uv run judge selftest --no-speed
+      # The one kernel whose reference C differs by architecture: NumPy's ARM64
+      # build fuses the last multiply and add of np.interp and its x86-64 build
+      # does not. Checked on each platform, reference and assembly, against the
+      # NumPy of that platform. `--unlocked` because CI checks what the pull
+      # request holds, a changed reference included; the lock is for kernel runs.
+      - run: uv run judge check interp_f64 --unlocked
       # Every hooked NumPy call, with and without hotkernels installed, on the
       # NumPy in uv.lock.
       - run: uv run delivery check
@@ -59,6 +65,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv run judge selftest --no-speed
+      # As in the macOS job: the reference of interp_f64 differs by architecture.
+      - run: uv run judge check interp_f64 --unlocked
       # Every hooked NumPy call, with and without hotkernels installed, on the
       # NumPy in uv.lock, with the x86-64 kernels.
       - run: uv run delivery check

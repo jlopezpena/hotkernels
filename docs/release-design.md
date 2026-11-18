@@ -212,7 +212,24 @@ The pipeline was built for one platform, macOS on ARM64. The second, Linux on x8
 - **macOS jobs that publish nothing may run on the maintainer's own Mac.** Hosted macOS runners are often not assigned for a quarter of an hour. [`pick-runner.yml`](../.github/workflows/pick-runner.yml) sends the judge job of `ci.yml` and the `build` and `test` jobs of a pull request to a self-hosted runner when it is online, busy or not, and to a hosted one otherwise. It is never used for a pull request from a fork or for a tag, so a published wheel is never built or tested on a personal machine. On the Mac, `build` makes the wheels with `uv build` and the settings `[tool.cibuildwheel]` gives, because `cibuildwheel` installs Pythons system-wide and the runner's account may not; a pull request therefore does not exercise `cibuildwheel` itself unless it falls back to a hosted runner. A tag always does.
 - **C kernels in a wheel are compiled for the oldest processor that platform's wheels claim to run on:** `apple-m1` on macOS, the x86-64-v3 level on Linux. The `kernel_cpu` build option carries either.
 - **A note's speed figure names its platform** once the package ships for more than one.
-- **Re-measuring needs every platform.** Step 5 of the release pull request runs on the maintainer's machine, which is one platform. How the other platform's figures are re-measured is not decided. It is [open issue 6](x86-64-design.md#open-issues) of the x86-64 design.
+- **Re-measuring needs every platform.** Step 5 of the release pull request runs on the maintainer's machine, which is one platform. How the other platform's figures are re-measured was [open issue 6](x86-64-design.md#open-issues) of the x86-64 design. A rule is proposed below; it is not decided.
+
+### Re-measuring on two platforms: proposed
+
+**Proposed, for the maintainer to accept, change or replace.** Nothing in the release tool enforces it yet.
+
+1. **A figure names its machine.** Every speed in the release notes and in the highlights says which processor it was measured on. AGENTS.md already asks this of a note once the package ships for more than one architecture.
+2. **Step 5 runs once per platform, on a machine of that platform, on the release pull request.** `uv run delivery time --record` writes `delivery/results/<machine>.md`, one file per machine, with the revision it was taken at, so the two runs do not touch each other's file and can be committed to the same pull request from two machines. `uv run judge run` for a kernel whose note claims a speed runs on the machine of the note's architecture.
+3. **A platform may be carried instead of re-measured when nothing of its own changed.** If no file under `kernels/*/<arch>/`, no shared `spec.py` or `naive.c`, and nothing under `hotkernels/` differs between the revision recorded in that platform's results file and the release commit, its figures are the recorded ones and the notes quote them with that revision's date. Otherwise the platform is re-measured or the release waits.
+4. **The highlights end with one line per machine,** in place of today's single "Measured on" line.
+
+Why this and not the alternatives:
+
+- **Both machines every time** is rule 2 without rule 3. It is the honest default and costs a second machine for every release, including one that only changed the other platform's kernels.
+- **One platform's figures only,** with the other's left out of the notes, makes a release say nothing about half its users.
+- **Measuring in CI** needs runners that are quiet, and the judge's own design says shared runners are too noisy to time anything.
+
+What would make rule 3 checkable: `uv run release verify` comparing each results file's recorded revision with the tagged commit by the paths above. That is a change to the release tool and is not made here.
 
 ## Out of scope
 
