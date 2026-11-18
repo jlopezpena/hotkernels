@@ -98,7 +98,7 @@ A kernel takes a call only when the array is a plain, contiguous `ndarray` of th
 |---|---|---|
 | `np.argmax(x)`, `np.argmin(x)`, `x.argmax()`, `x.argmin()` | float32, float64 | For these types, including strided input and `axis=` (one kernel call per row or column). A strided run or a row shorter than 128 elements stays with NumPy, which is as fast there |
 | `np.clip(x, lo, hi)`, `x.clip(lo, hi)` | float32, float64 | Scalar bounds with `lo <= hi`; the output is not the input. Small arrays gain most with bounds that are Python numbers and no `out` |
-| `x[mask]` | float32, float64, int64 | Both one-dimensional and the same length |
+| `x[mask]` | float32, float64, int64 | The mask has the shape of `x`, of any number of dimensions. A mask over the rows of a two-dimensional `x` stays with NumPy |
 | `np.compress(mask, x)`, `np.extract(mask, x)` | float32, float64, int64 | `x` and `mask` the same size, `x` of any shape. For `np.compress` the mask is one-dimensional and there is no `axis` or `out` |
 | `x[mask] = v` | float64 | As for `x[mask]`, and `v` is a Python float or int |
 | `np.putmask(x, mask, v)`, `np.copyto(x, v, where=mask)` | float64 | `v` is a Python float or int, and `x` and `mask` are the same size (`np.putmask`) or the same shape (`np.copyto`, with no `casting`), of any shape |

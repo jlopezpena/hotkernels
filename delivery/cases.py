@@ -55,6 +55,8 @@ COLUMNS = 2
 BAD_MASK_BYTES = (2, 255)
 # Element count of the one-off cases that need a single ordinary size.
 ORDINARY_N = 1000
+# Shape of the three-dimensional layout of ORDINARY_N elements.
+CUBE_SHAPE = (-1, 5, 4)
 # Element count of a mask whose only bad byte is its last: more than two of
 # the blocks in which the binding checks a mask before summing it.
 SUM_BOOL_LATE_N = 40000
@@ -695,6 +697,19 @@ def _reshaped(maker: Callable[[], np.ndarray], order: str = "C") -> Callable[[],
     return lambda: np.asarray(maker().reshape(-1, COLUMNS), order=order)
 
 
+def _cube(maker: Callable[[], np.ndarray]) -> Callable[[], np.ndarray]:
+    """Return a maker of the same values as `maker`'s, in three dimensions.
+
+    Args:
+        maker: Builds a one-dimensional array whose length CUBE_SHAPE's
+            last two lengths divide.
+
+    Returns:
+        A function that builds the three-dimensional array, in C order.
+    """
+    return lambda: maker().reshape(CUBE_SHAPE).copy()
+
+
 def _compress_shape_cases(dtype: str, kernel: str | None) -> Iterator[Case]:
     """Yield the cases of `np.compress` and `np.extract` with arrays of two dimensions.
 
@@ -723,6 +738,39 @@ def _compress_shape_cases(dtype: str, kernel: str | None) -> Iterator[Case]:
         make = lambda x_maker=x_maker, mask_maker=mask_maker: (x_maker(), mask_maker())
         yield Case("compress", f"np.compress(mask, x) {dtype} {text}", make, _compress_call, by_compress)
         yield Case("compress", f"np.extract(mask, x) {dtype} {text}", make, _extract_call, by_extract)
+
+
+def _select_shape_cases(dtype: str, kernel: str | None) -> Iterator[Case]:
+    """Yield the cases of `x[mask]` with arrays of more than one dimension.
+
+    A mask of the shape of `x` selects elements in C order, which the kernel
+    takes for contiguous arrays. A mask of fewer dimensions selects rows, and
+    one of the same size and another shape is an error.
+
+    Args:
+        dtype: Element type of `x`, as a spec name.
+        kernel: The compress kernel for that type, or None.
+
+    Yields:
+        The cases.
+    """
+    n = ORDINARY_N
+    x_flat = partial(values, dtype, n)
+    mask_flat = partial(values, "bool", n, arg="mask")
+    row_mask = partial(values, "bool", n // COLUMNS, arg="mask")
+    shapes = (
+        ("both two-dimensional", _reshaped(x_flat), _reshaped(mask_flat), kernel),
+        ("both three-dimensional", _cube(x_flat), _cube(mask_flat), kernel),
+        ("both two-dimensional, Fortran order", _reshaped(x_flat, "F"), _reshaped(mask_flat, "F"), None),
+        ("x two-dimensional, mask over its rows", _reshaped(x_flat), row_mask, None),
+        ("x two-dimensional, mask of the same size and one dimension", _reshaped(x_flat), mask_flat, None),
+        ("both two-dimensional, shapes transposed", _reshaped(x_flat), lambda: mask_flat().reshape(COLUMNS, -1), None),
+        ("both empty and two-dimensional", lambda: np.zeros((0, COLUMNS), np_dtype(dtype)),
+         lambda: np.zeros((0, COLUMNS), np.bool_), kernel),
+    )
+    for text, x_maker, mask_maker, expect in shapes:
+        make = lambda x_maker=x_maker, mask_maker=mask_maker: (x_maker(), mask_maker())
+        yield Case("compress", f"x[mask] {dtype} {text}", make, lambda x, mask: x[mask], expect)
 
 
 def _compress_call(x, mask):
@@ -802,10 +850,7 @@ def compress_cases() -> Iterator[Case]:
                         other = partial(values, "bool", n + change, arg="mask")
                         yield Case("compress", f"{spelling.text} {dtype} n={n} mask {text}",
                                    partial(_x_and_mask, dtype, n, CONTIGUOUS, other), spelling.call, None)
-        rows = next(v for v in VARIANTS if v.name == "rows")
-        yield Case("compress", f"x[mask] {dtype} two-dimensional",
-                   partial(_x_and_mask, dtype, ORDINARY_N, rows, lambda: _rows(values("bool", ORDINARY_N, arg="mask"))),
-                   select.call, None)
+        yield from _select_shape_cases(dtype, kernel)
         yield from _compress_shape_cases(dtype, kernel)
 
 
@@ -921,8 +966,9 @@ def _maskfill_shape_cases(dtype: str, takes: str | None) -> Iterator[Case]:
 
     `np.putmask` needs only the sizes of `x` and the mask to match and reads
     both in C order. `np.copyto` broadcasts the mask against `x`, so the
-    kernel takes it only for matching shapes. `x[mask] = v` with more than
-    one dimension is left to NumPy.
+    kernel takes it only for matching shapes. `x[mask] = v` is taken for a
+    mask of the shape of `x`; a mask of another shape selects rows or is an
+    error, and is NumPy's.
 
     Args:
         dtype: Element type of `x`, as a spec name.
@@ -936,13 +982,18 @@ def _maskfill_shape_cases(dtype: str, takes: str | None) -> Iterator[Case]:
     mask_flat = partial(values, "bool", n, arg="mask")
     shapes = (
         # (text, x, mask, taken by x[mask] = v, by putmask, by copyto)
-        ("both two-dimensional", _reshaped(x_flat), _reshaped(mask_flat), None, takes, takes),
+        ("both two-dimensional", _reshaped(x_flat), _reshaped(mask_flat), takes, takes, takes),
+        ("both three-dimensional", _cube(x_flat), _cube(mask_flat), takes, takes, takes),
+        ("both two-dimensional, shapes transposed", _reshaped(x_flat), lambda: mask_flat().reshape(COLUMNS, -1),
+         None, takes, None),
+        ("x two-dimensional, mask over its rows", _reshaped(x_flat), partial(values, "bool", n // COLUMNS, arg="mask"),
+         None, None, None),
         ("x two-dimensional, mask one-dimensional", _reshaped(x_flat), mask_flat, None, takes, None),
         ("x one-dimensional, mask two-dimensional", x_flat, _reshaped(mask_flat), None, takes, None),
         ("x two-dimensional, Fortran order", _reshaped(x_flat, "F"), _reshaped(mask_flat, "F"), None, None, None),
         ("x zero-dimensional", lambda: np.array(x_flat()[0]), lambda: np.array(True), None, None, None),
         ("x empty two-dimensional", lambda: np.zeros((0, COLUMNS), np_dtype(dtype)),
-         lambda: np.zeros((0, COLUMNS), np.bool_), None, takes, takes),
+         lambda: np.zeros((0, COLUMNS), np.bool_), takes, takes, takes),
     )
     for text, x_maker, mask_maker, *expects in shapes:
         make = lambda x_maker=x_maker, mask_maker=mask_maker: (x_maker(), mask_maker())

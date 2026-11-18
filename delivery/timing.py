@@ -44,6 +44,8 @@ MIN_CALLS = 3
 MAX_CALLS = 200_000
 # Seed of all timing data.
 SEED = 7
+# Columns of the two-dimensional arrays timed. Every timed size is a multiple of it.
+TIMED_COLUMNS = 4
 # Share of a mask that is True in the two mask distributions.
 HALF = 0.5
 FEW = 0.05
@@ -140,6 +142,12 @@ def _masked(dtype: type, share: float, n: int) -> tuple:
     """Build data and a mask that selects `share` of it."""
     rng = _rng(n)
     return (rng.standard_normal(n).astype(dtype), rng.random(n) < share)
+
+
+def _masked_rows(dtype: type, share: float, n: int) -> tuple:
+    """Build two-dimensional data of TIMED_COLUMNS columns and a mask of its shape that selects `share` of it."""
+    x, mask = _masked(dtype, share, n)
+    return (x.reshape(-1, TIMED_COLUMNS), mask.reshape(-1, TIMED_COLUMNS))
 
 
 def _mask(share: float, n: int) -> tuple:
@@ -269,6 +277,8 @@ TAKEN: tuple[Timed, ...] = (
     Timed("compress", "np.compress(mask, x)", "float64, half selected", partial(_masked, np.float64, HALF), _compress, "compress_f64"),
     Timed("compress", "np.extract(mask, x)", "float64, half selected", partial(_masked, np.float64, HALF), _extract, "compress_f64"),
     Timed("maskfill", "x[mask] = 0.0", "float64, few selected", partial(_masked, np.float64, FEW), partial(_assign, 0.0), "maskfill_f64"),
+    Timed("maskfill", "x[mask] = 0.0", "float64, two-dimensional, half selected", partial(_masked_rows, np.float64, HALF), partial(_assign, 0.0), "maskfill_f64"),
+    Timed("compress", "x[mask]", "float64, two-dimensional, half selected", partial(_masked_rows, np.float64, HALF), lambda x, m: x[m], "compress_f64"),
     Timed("maskfill", "np.putmask(x, mask, 0.0)", "float64, half selected", partial(_masked, np.float64, HALF), partial(_putmask, 0.0), "maskfill_f64"),
     Timed("maskfill", "np.copyto(x, 0.0, where=mask)", "float64, half selected", partial(_masked, np.float64, HALF), partial(_copyto, 0.0), "maskfill_f64"),
     Timed("nonzero", "np.nonzero(mask)", "bool, half selected", partial(_mask, HALF), np.nonzero, "nonzero_bool"),

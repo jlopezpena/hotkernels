@@ -630,12 +630,6 @@ static PyObject *call_putmask(HK_VECTORCALL_PARAMETERS) {
     return functions[F_PUTMASK].original(callable, args, nargsf, kwnames);
 }
 
-// True when two arrays have the same shape.
-static bool same_shape(PyArrayObject *a, PyArrayObject *b) {
-    return PyArray_NDIM(a) == PyArray_NDIM(b) &&
-           PyArray_CompareLists(PyArray_DIMS(a), PyArray_DIMS(b), PyArray_NDIM(a));
-}
-
 // np.copyto(dst, src, where=mask) for a contiguous writable float64 `dst`, a
 // Python float or int as `src`, and a contiguous boolean mask of the same
 // shape, with no `casting`. NumPy broadcasts the mask against `dst`, so a
@@ -652,7 +646,7 @@ static HK_NOINLINE bool try_copyto(PyObject *const *args, Py_ssize_t nargs, PyOb
     *masked = bound[WHERE] != NULL;
     if (bound[DST] == NULL || bound[SRC] == NULL || bound[WHERE] == NULL || bound[CASTING] != NULL) return false;
     if (!hk_is_plain_array(bound[DST]) || !hk_is_plain_array(bound[WHERE])) return false;
-    if (!same_shape((PyArrayObject *)bound[DST], (PyArrayObject *)bound[WHERE])) return false;
+    if (!hk_same_shape((PyArrayObject *)bound[DST], (PyArrayObject *)bound[WHERE])) return false;
     return hk_try_maskfill(bound[DST], bound[WHERE], bound[SRC]);
 }
 
