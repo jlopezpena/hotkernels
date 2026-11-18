@@ -1,0 +1,283 @@
+{
+  "meta": {
+    "cpu": "Apple M4 Max",
+    "os": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
+    "numpy": "2.5.5",
+    "python": "3.14.8",
+    "git": "6a4fe1c",
+    "load_average": 1.82,
+    "libraries": {
+      "numpy": "2.5.5",
+      "pandas": "3.1.1",
+      "scikit-image": "0.26.0",
+      "scipy": "1.18.1"
+    }
+  },
+  "rows": [
+    {
+      "workload": "example",
+      "title": "examples/workload.py: clean a signal, summarise an image, look up ids",
+      "ours": true,
+      "size": "S",
+      "identical": true,
+      "numpy_ns": 29319959,
+      "hotkernels_ns": 4879625,
+      "rounds": 30,
+      "counts": [
+        {
+          "numpy_call": "np.argmax",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.argmin",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.clip",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "x[mask]",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "x[mask] = v",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.nonzero",
+          "elements": "bool",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.cumsum",
+          "elements": "int64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "x.astype(float32)",
+          "elements": "uint8",
+          "calls": 1,
+          "left_to_numpy": 1
+        },
+        {
+          "numpy_call": "np.sum",
+          "elements": "uint8",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.count_nonzero",
+          "elements": "int64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.histogram",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.bincount",
+          "elements": "uint8",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.isin",
+          "elements": "int64",
+          "calls": 1,
+          "left_to_numpy": 0
+        }
+      ],
+      "speedup": 6.008650049952609
+    },
+    {
+      "workload": "azimint_naive",
+      "title": "NPBench azimint_naive: mean intensity per radial bin, one mask per bin",
+      "ours": false,
+      "size": "S",
+      "identical": true,
+      "numpy_ns": 10918000,
+      "hotkernels_ns": 9933917,
+      "rounds": 88,
+      "counts": [
+        {
+          "numpy_call": "x[mask]",
+          "elements": "float64",
+          "calls": 1000,
+          "left_to_numpy": 0
+        }
+      ],
+      "speedup": 1.0990629376106122
+    },
+    {
+      "workload": "azimint_naive",
+      "title": "NPBench azimint_naive: mean intensity per radial bin, one mask per bin",
+      "ours": false,
+      "size": "M",
+      "identical": true,
+      "numpy_ns": 92232750,
+      "hotkernels_ns": 80228666,
+      "rounds": 11,
+      "counts": [
+        {
+          "numpy_call": "x[mask]",
+          "elements": "float64",
+          "calls": 1000,
+          "left_to_numpy": 0
+        }
+      ],
+      "speedup": 1.1496233777587677
+    },
+    {
+      "workload": "pandas_filter",
+      "title": "pandas: s[s > 0] on a float64 Series",
+      "ours": false,
+      "size": "S",
+      "identical": true,
+      "numpy_ns": 10764458,
+      "hotkernels_ns": 1749542,
+      "rounds": 85,
+      "counts": [
+        {
+          "numpy_call": "x[mask]",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.nonzero",
+          "elements": "bool",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "x.astype(float32)",
+          "elements": "uint8",
+          "calls": 0,
+          "left_to_numpy": 1
+        }
+      ],
+      "speedup": 6.152729114248186
+    },
+    {
+      "workload": "pandas_filter",
+      "title": "pandas: s[s > 0] on a float64 Series",
+      "ours": false,
+      "size": "M",
+      "identical": true,
+      "numpy_ns": 108951167,
+      "hotkernels_ns": 19386958,
+      "rounds": 8,
+      "counts": [
+        {
+          "numpy_call": "x[mask]",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.nonzero",
+          "elements": "bool",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "x.astype(float32)",
+          "elements": "uint8",
+          "calls": 0,
+          "left_to_numpy": 1
+        }
+      ],
+      "speedup": 5.619817559825528
+    },
+    {
+      "workload": "equalize_hist",
+      "title": "scikit-image: exposure.equalize_hist on a float64 image",
+      "ours": false,
+      "size": "S",
+      "identical": true,
+      "numpy_ns": 8859959,
+      "hotkernels_ns": 7978833,
+      "rounds": 39,
+      "counts": [
+        {
+          "numpy_call": "np.cumsum",
+          "elements": "int64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "x.astype(float32)",
+          "elements": "uint8",
+          "calls": 0,
+          "left_to_numpy": 3
+        },
+        {
+          "numpy_call": "np.histogram",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.interp",
+          "elements": "float64",
+          "calls": 0,
+          "left_to_numpy": 1
+        }
+      ],
+      "speedup": 1.1104329417597787
+    },
+    {
+      "workload": "equalize_hist",
+      "title": "scikit-image: exposure.equalize_hist on a float64 image",
+      "ours": false,
+      "size": "M",
+      "identical": true,
+      "numpy_ns": 98465667,
+      "hotkernels_ns": 88945500,
+      "rounds": 11,
+      "counts": [
+        {
+          "numpy_call": "np.cumsum",
+          "elements": "int64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "x.astype(float32)",
+          "elements": "uint8",
+          "calls": 0,
+          "left_to_numpy": 3
+        },
+        {
+          "numpy_call": "np.histogram",
+          "elements": "float64",
+          "calls": 1,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "np.interp",
+          "elements": "float64",
+          "calls": 0,
+          "left_to_numpy": 1
+        }
+      ],
+      "speedup": 1.1070337116548898
+    }
+  ]
+}

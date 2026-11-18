@@ -1,6 +1,8 @@
 # Workloads: timing hotkernels on code it did not write
 
-This is a proposal for review. It adds a third level of timing, above the judge and above `delivery time`: whole programs and library functions that a user runs, written by other people, timed with and without `hotkernels.install()`.
+This began as a proposal and is being built in the steps of [Order of work](#order-of-work). Steps 1 and 2 are done; [Status](#status) says what exists, and [What changed in the building](#what-changed-in-the-building) where it departs from the proposal. The rest of the text stands as proposed.
+
+It adds a third level of timing, above the judge and above `delivery time`: whole programs and library functions that a user runs, written by other people, timed with and without `hotkernels.install()`.
 
 ## Summary
 
@@ -9,6 +11,24 @@ This is a proposal for review. It adds a third level of timing, above the judge 
 - **The "Left to NumPy" counts are the useful output.** They show which condition of the binding real code does not meet: a strided column, a short row under `axis=1`, a weighted histogram, more than 64 sample points in `np.interp`. That is a list of work ranked by real use, which the survey could not give.
 - **Proposed:** `uv run delivery workloads`. It runs each workload both ways, checks that the results are the same, and records the time, the speedup and `report()`'s counts per workload. Workloads come from two sources: code taken from published benchmark suites, and functions of downstream libraries called as their users call them.
 - **Not proposed:** adopting `asv` or `pyperf`, or running NumPy's own `asv` suite. See [Considered and not proposed](#considered-and-not-proposed).
+
+## Status
+
+- **Step 2 is done.** `uv run --group workloads delivery workloads` runs four workloads: `examples/workload.py`, NPBench's `azimint_naive`, a pandas boolean filter and scikit-image's `equalize_hist`. A run on an Apple M4 Max at a load average of 1.8 is in [delivery/results/apple-m4-max-workloads.md](../delivery/results/apple-m4-max-workloads.md). At size `M`: the pandas filter 5.62x faster, `azimint_naive` 1.15x, `equalize_hist` 1.11x, with identical results.
+- **Steps 3 and 4 are not.** The rest of the probe's list, the NPBench controls, the issues for calls left to NumPy, and the README table.
+
+## What changed in the building
+
+| Proposed | Built | Why |
+|---|---|---|
+| Sizes for about 10, 100 and 1,000 ms on "the reference machine" | Set on an Apple M4 Max | The M1 Pro the other figures come from was not at hand |
+| NPBench's presets followed | NPBench's 1,000 bins kept, element counts set by time | NPBench's sizes take 20 times longer here than the targets. With 1,000 bins each mask selects 0.1% of the elements, so building the masks costs most of the run: `azimint_naive` gains 1.15x, against 1.38x in the probe's 100 bins |
+| Every workload at `S`, `M` and `L` | The pandas filter has no `L`, and `examples/workload.py` only `S` | `L` would need 2.4 GB per copy of the Series. The example fixes its own element count |
+| Module-level names `SOURCE`, `LICENCE`, `SIZES`, `make_data` and `run` | One `Workload` object per module, with the same fields, a `title`, whether the project wrote it, and the libraries it needs | One object is easier to check than five names, and the runner needs to know what to skip |
+| Open decision 1: where the libraries live | A `workloads` dependency group in the root `pyproject.toml`, not installed by default | One lock file. A workload whose library is missing is skipped and the run says so |
+| Open decision 2: pinned or current versions | Pinned by `uv.lock` | As proposed |
+| Open decision 3: licences of copied code | Copied files under `delivery/workloads/vendor/`, with NPBench's `LICENSE` beside them and the pyFAI notice in the file header | The BSD licence asks for its notice with the source; CC-BY asks for the credit, which the header gives |
+| Open decision 4: a summary figure | None | As proposed |
 
 ## What is wrong today
 
@@ -136,7 +156,9 @@ No release note: nothing in `hotkernels/` changes.
 - Timing on x86-64. The runner works there unchanged; its recorded run waits for the x86-64 package ([x86-64-design.md](x86-64-design.md)).
 - Running the workloads in CI. Correctness at size `S` may go in CI later; timing never does.
 
-## Decisions still open
+## Decisions that were open
+
+All four are settled; see [What changed in the building](#what-changed-in-the-building). The text is as it was reviewed.
 
 1. **Where the libraries live.** A `workloads` dependency group in the root `pyproject.toml`, or a separate project under `delivery/workloads/` with its own lock file, so a library upgrade does not touch the main lock.
 2. **Pinned or current library versions.** Pinned gives figures that can be repeated. Current shows what a user installing today gets, and catches a library that changes its spelling of a call. Proposed: pinned, updated by hand.

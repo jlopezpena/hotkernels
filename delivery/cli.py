@@ -18,6 +18,8 @@ from . import check as C
 from . import demo as D
 from . import numpy_suite
 from . import timing as T
+from . import workload_timing as W
+from . import workloads as WL
 from .cases import INEXACT_OPERATIONS, OPERATIONS, Case
 from .render import render
 
@@ -151,6 +153,60 @@ def demo() -> None:
     outcome = D.run()
     log.info("%s", render("demo.txt.j2", demo=outcome).rstrip("\n"))
     raise typer.Exit(EXIT_OK if outcome.identical and outcome.speedup > 1 else EXIT_FAILED)
+
+
+def _workload_cases(only: Optional[str], size: Optional[str]) -> tuple[list, list, list]:
+    """Choose which workloads run, at which sizes.
+
+    Args:
+        only: Name of the one workload to run, or None for all.
+        size: Name of the one size to run, or None for every size but the largest.
+
+    Returns:
+        (workloads chosen, (workload, size) pairs to run, (name, missing
+        libraries) for each chosen workload that cannot run here).
+    """
+    sizes = (size,) if size else WL.SIZE_NAMES[:-1]
+    chosen = [w for w in WL.load() if only in (None, w.name)]
+    runnable = [w for w in chosen if not w.missing()]
+    skipped = [(w.name, w.missing()) for w in chosen if w.missing()]
+    cases = [(w, name) for w in runnable for name in sizes if name in w.sizes]
+    return runnable, cases, skipped
+
+
+@app.command()
+def workloads(
+    only: Optional[str] = typer.Option(None, help="Run one workload, for example `azimint_naive`."),
+    size: Optional[str] = typer.Option(None, help="Run one size: S, M or L. Default: S and M."),
+    record: bool = typer.Option(False, help="Write the results to delivery/results/."),
+) -> None:
+    """Run code not written for hotkernels with and without it: results, times and counts.
+
+    Needs the libraries of the `workloads` dependency group: `uv run --group
+    workloads delivery workloads`. Times are only meaningful on native
+    hardware and an idle machine.
+
+    Args:
+        only: Workload to restrict the run to.
+        size: Size to restrict the run to.
+        record: Whether to write a JSON file and a Markdown report.
+    """
+    if size is not None and size not in WL.SIZE_NAMES:
+        raise typer.BadParameter(f"size must be one of {', '.join(WL.SIZE_NAMES)}", param_hint="--size")
+    meta = W.describe_run()
+    chosen, cases, skipped = _workload_cases(only, size)
+    outcomes = W.run(cases)
+    failed = [f"{o.workload} ({o.size})" for o in outcomes if not o.identical]
+    context = {"meta": meta, "outcomes": outcomes, "skipped": skipped, "failed": failed,
+               "workloads": chosen, "busy_load": BUSY_LOAD}
+    log.info("%s", render("workloads.txt.j2", **context).rstrip("\n"))
+    if record:
+        RESULTS.mkdir(exist_ok=True)
+        stem = f"{_slug(meta['cpu']) or 'unknown-machine'}-workloads"
+        (RESULTS / f"{stem}.json").write_text(json.dumps({"meta": meta, "rows": W.as_rows(outcomes)}, indent=2) + "\n")
+        (RESULTS / f"{stem}.md").write_text(render("workloads.md.j2", **context))
+        log.info("recorded in %s", RESULTS / f"{stem}.md")
+    raise typer.Exit(EXIT_OK if not failed else EXIT_FAILED)
 
 
 @app.command(name="numpy-tests")
