@@ -22,8 +22,11 @@
 # Paths of the quick way, none of which branches on n inside its range:
 #   5..16       four vectors: the first four elements, the last four, and
 #               two between them.
-#   17..        blocks of four vectors into four maxima; the last block ends
+#   17..127     blocks of four vectors into four maxima; the last block ends
 #               with the array and overlaps the block before it.
+#   128..       blocks of eight vectors into eight maxima, the same way; the
+#               blocks between the first and the last start at multiples of
+#               32 bytes.
 #
 # NumPy's way: four running maxima, one per lane of a vector, all starting
 # at x[0]; the elements from x[1] on in groups of four, each element into
