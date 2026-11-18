@@ -15,3 +15,11 @@ The kernel does the same work whatever the elements are, so the two timing distr
 - **compare:** n/a (first version). `run`: 3.06x [3.05 – 3.07] over naive C over all six tables, 55.1x over NumPy. Rows of 22: 3.95x (sparse) and 3.85x (dense); rows of 4: 2.49x and 2.45x; rows of 64: 2.97x and 2.98x.
 - **Kept:** yes
 - **Notes:** rows of 22 at 4,096 elements: 65.6 ns, 0.35 ns per row, about 1.85 cycles where the loop is six instructions. Rows of 4: 0.30 ns per row. Rows of 64: 0.52 ns per row. No row (16 elements, width 22 or 64): 1.2 ns against the 1.5 of the reference, which divides. The table with the output 16 bytes behind the input is level with the other: 1.00x from 4,096 to 1,048,576.
+
+## 2. Four rows per step in the rows of up to 32
+
+- **Idea:** four `vptest` and four `setnz` per step, the rows addressed as `rdi`, `rdi + cols`, `rdi + 2 * cols` and `rdi + 3 * cols`, so one add moves the position and one compare ends the loop for four rows.
+- **check:** pass
+- **compare:** significantly faster, 1.122x [1.115 – 1.129]
+- **Kept:** yes
+- **Notes:** rows of 22: 1.20x (1.43x at 256, 1.27x at 4,096, 1.14x from 65,536 up); rows of 4, which take the same path: 1.16x; rows of 64 unchanged. 4,096 elements in rows of 22 take 50.3 ns: 0.27 ns per row, 1.4 cycles. The four `vptest` need port 0, and the four `setnz` and the branch need port 0 or 6: nine instructions on two ports is 1.1 cycles per row at best, and that is the limit of one flag per row.

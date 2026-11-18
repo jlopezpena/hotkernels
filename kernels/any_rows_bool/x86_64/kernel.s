@@ -48,6 +48,29 @@ any_rows_bool:
     sub     rax, rcx
     vmovdqu ymm0, [rax]                 # the first cols bytes set
     lea     r10, [r9 - VEC]             # the last place a vector can be loaded
+    lea     r11, [rcx + rcx * 2]
+    mov     rax, r10
+    sub     rax, r11                    # the last place four rows can start
+    jb      .Lrow
+    cmp     rdi, rax
+    ja      .Lrow
+    lea     rdx, [rcx * 4]
+.p2align 4
+.Lrow4:
+    vptest  ymm0, [rdi]
+    setnz   byte ptr [rsi]
+    vptest  ymm0, [rdi + rcx]
+    setnz   byte ptr [rsi + 1]
+    vptest  ymm0, [rdi + rcx * 2]
+    setnz   byte ptr [rsi + 2]
+    vptest  ymm0, [rdi + r11]
+    setnz   byte ptr [rsi + 3]
+    add     rdi, rdx
+    add     rsi, 4
+    cmp     rdi, rax
+    jbe     .Lrow4
+    cmp     rdi, r10
+    ja      .Lrows_done
 .Lrow:
     vptest  ymm0, [rdi]
     setnz   byte ptr [rsi]
@@ -55,6 +78,7 @@ any_rows_bool:
     inc     rsi
     cmp     rdi, r10
     jbe     .Lrow
+.Lrows_done:
     mov     rdx, r9
     sub     rdx, rdi                    # elements left
     cmp     rdx, rcx
