@@ -13,3 +13,11 @@ The output is eight bytes for every byte read, so beyond the first-level cache t
 - **compare:** n/a (first version). `run`: 1.36x [1.36 – 1.37] over naive C overall, 28.0x over NumPy.
 - **Kept:** yes
 - **Notes:** 2.54x at 4,096 (0.074 ns per element, 12.7 cycles per block of 32), 1.25x at 16,384 and 65,536, 1.07x at 262,144, 0.78x at 1,048,576 in this run and 1.17x in the second table of the same run. The second table, with the output 16 bytes behind the input within a page, is 0.73x of the first at 4,096 and 0.67x at 16,384, and its own "apart" column has 16,384 at 1.6 us where the first table has 2.5 us: the same code at two placements of the output. Where a 32-byte store falls relative to the 64-byte lines decides the speed here.
+
+## 2. Bring the output to a multiple of 32 bytes first
+
+- **Idea:** up to three elements one at a time until `out` is a multiple of 32, from 35 elements up, so that no store of a block straddles two cache lines. The mask is a byte per element, so any head length is possible; an `out` that is not a multiple of 8 is left as it is.
+- **check:** pass
+- **compare:** significantly faster, 1.046x [1.038 – 1.054]
+- **Kept:** yes
+- **Notes:** 1.10x at 1,024, 1.36x at 65,536, 1.12x at 1,048,576; 0.93x to 0.95x at 16 and 64, which pay one more compare. 4,096 is unchanged at 0.073 ns per element.

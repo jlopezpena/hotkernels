@@ -47,6 +47,9 @@
 
 # Where `pdep` puts the mask bits of a block: the upper half of each byte.
 .set SPREAD, 0xF0F0F0F0F0F0F0F0
+# From this many elements the output is first brought to a multiple of 32
+# bytes: enough for the three elements that may take and one block after them.
+.set ALIGN_MIN, 35
 # The bits `pext` takes from four mask bytes: the lowest of each.
 .set LOW_BITS, 0x01010101
 
@@ -67,6 +70,31 @@
 cumsum_bool:
     vpxor   xmm0, xmm0, xmm0            # T: the count so far, in every lane
     lea     r10, [rip + .Ltable]
+    cmp     rdx, ALIGN_MIN
+    jb      .Lblocks
+    # Up to three elements one at a time, until out is a multiple of 32, so
+    # that no store of a block straddles two cache lines. An out that is not
+    # a multiple of 8 cannot be brought there and is left as it is.
+    mov     ecx, esi
+    neg     ecx
+    and     ecx, 31                     # bytes until out is a multiple of 32
+    test    cl, 7
+    jnz     .Lblocks
+    shr     ecx, 3
+    jz      .Lblocks
+    sub     rdx, rcx
+    xor     eax, eax
+.Lhead:
+    movzx   r8d, byte ptr [rdi]
+    add     rax, r8
+    mov     [rsi], rax
+    inc     rdi
+    add     rsi, 8
+    dec     ecx
+    jnz     .Lhead
+    vmovq   xmm0, rax
+    vpbroadcastq ymm0, xmm0
+.Lblocks:
     mov     r8, rdx
     and     r8, -32                     # elements in whole blocks
     jz      .Lfours
