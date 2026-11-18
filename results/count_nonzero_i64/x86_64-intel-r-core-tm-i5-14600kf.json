@@ -1,0 +1,291 @@
+{
+  "distributions": {
+    "random": {
+      "sizes": [
+        {
+          "n": 16,
+          "samples": 300,
+          "median_ns": {
+            "kernel": 2.2657943637552935,
+            "naive": 1.8908696729200822,
+            "numpy": 134.37311218985977
+          },
+          "vs_naive": {
+            "speedup": 0.8345283681376024,
+            "lo": 0.8337425842792149,
+            "hi": 0.8348288501642228,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 59.3050783157355,
+            "lo": 59.22635803547792,
+            "hi": 59.38090294424574,
+            "significant": true
+          }
+        },
+        {
+          "n": 64,
+          "samples": 300,
+          "median_ns": {
+            "kernel": 3.927037019611533,
+            "naive": 4.417194811609926,
+            "numpy": 140.21502115655852
+          },
+          "vs_naive": {
+            "speedup": 1.124816188273896,
+            "lo": 1.124461291370336,
+            "hi": 1.125288545416704,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 35.705041856322694,
+            "lo": 35.66986435455268,
+            "hi": 35.73611862065814,
+            "significant": true
+          }
+        },
+        {
+          "n": 256,
+          "samples": 300,
+          "median_ns": {
+            "kernel": 11.151727211945621,
+            "naive": 14.846603098927295,
+            "numpy": 167.5539976631614
+          },
+          "vs_naive": {
+            "speedup": 1.3313276783728856,
+            "lo": 1.3312275324156264,
+            "hi": 1.331425598252317,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 15.024936897997216,
+            "lo": 15.014392599632467,
+            "hi": 15.030843567318314,
+            "significant": true
+          }
+        },
+        {
+          "n": 1024,
+          "samples": 300,
+          "median_ns": {
+            "kernel": 41.697322249143625,
+            "naive": 53.9681934535156,
+            "numpy": 275.4485294117647
+          },
+          "vs_naive": {
+            "speedup": 1.2942843938767314,
+            "lo": 1.2893490457574674,
+            "hi": 1.3064996462116396,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 6.605904517463872,
+            "lo": 6.602640600301391,
+            "hi": 6.608944977101166,
+            "significant": true
+          }
+        },
+        {
+          "n": 4096,
+          "samples": 300,
+          "median_ns": {
+            "kernel": 161.36578862314155,
+            "naive": 204.98208068810158,
+            "numpy": 598.9822503008423
+          },
+          "vs_naive": {
+            "speedup": 1.2702945428341246,
+            "lo": 1.270101865766639,
+            "hi": 1.270474060860842,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 3.711953168088951,
+            "lo": 3.7104252846721137,
+            "hi": 3.713180920652341,
+            "significant": true
+          }
+        },
+        {
+          "n": 16384,
+          "samples": 300,
+          "median_ns": {
+            "kernel": 852.1303236797273,
+            "naive": 1406.179125528914,
+            "numpy": 1805.4485559566788
+          },
+          "vs_naive": {
+            "speedup": 1.6501925661519183,
+            "lo": 1.650057125519261,
+            "hi": 1.6503438232133014,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 2.1187469871512934,
+            "lo": 2.11847482938664,
+            "hi": 2.1190584005280955,
+            "significant": true
+          }
+        },
+        {
+          "n": 65536,
+          "samples": 300,
+          "median_ns": {
+            "kernel": 3429.6198630136987,
+            "naive": 3677.272222222222,
+            "numpy": 6505.90522875817
+          },
+          "vs_naive": {
+            "speedup": 1.0722098568063763,
+            "lo": 1.07207954095136,
+            "hi": 1.072373171320276,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 1.896975609139742,
+            "lo": 1.8967946992207416,
+            "hi": 1.8971543299124862,
+            "significant": true
+          }
+        },
+        {
+          "n": 262144,
+          "samples": 300,
+          "median_ns": {
+            "kernel": 17285.815789473687,
+            "naive": 24907.23076923077,
+            "numpy": 26882.094594594593
+          },
+          "vs_naive": {
+            "speedup": 1.4409057155635197,
+            "lo": 1.438505905065455,
+            "hi": 1.4442887505941784,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 1.5551533651633973,
+            "lo": 1.5535689172449492,
+            "hi": 1.5580959467922375,
+            "significant": true
+          }
+        },
+        {
+          "n": 1048576,
+          "samples": 300,
+          "median_ns": {
+            "kernel": 93886.42857142858,
+            "naive": 111414.14285714286,
+            "numpy": 117957.35714285714
+          },
+          "vs_naive": {
+            "speedup": 1.186690606431783,
+            "lo": 1.1855053875743489,
+            "hi": 1.1880099614672566,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 1.256383472432498,
+            "lo": 1.2554890617779608,
+            "hi": 1.2580663069070215,
+            "significant": true
+          }
+        },
+        {
+          "n": 4194304,
+          "samples": 296,
+          "median_ns": {
+            "kernel": 782079.5,
+            "naive": 899578.0,
+            "numpy": 1012547.5
+          },
+          "vs_naive": {
+            "speedup": 1.1502385627036638,
+            "lo": 1.144961487875051,
+            "hi": 1.1538652581335294,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 1.2946861540290981,
+            "lo": 1.2893091309682554,
+            "hi": 1.3016027736323017,
+            "significant": true
+          }
+        },
+        {
+          "n": 16777216,
+          "samples": 65,
+          "median_ns": {
+            "kernel": 4058137.0,
+            "naive": 4443629.0,
+            "numpy": 4860771.0
+          },
+          "vs_naive": {
+            "speedup": 1.0949923573304696,
+            "lo": 1.090655016594075,
+            "hi": 1.0997151618630197,
+            "significant": true
+          },
+          "vs_numpy": {
+            "speedup": 1.1977838599337578,
+            "lo": 1.1927592664223046,
+            "hi": 1.202997116564746,
+            "significant": true
+          }
+        }
+      ],
+      "overall": {
+        "vs_naive": {
+          "speedup": 1.2057243306652499,
+          "lo": 1.2048933960831947,
+          "hi": 1.2069654526926492,
+          "significant": true
+        },
+        "vs_numpy": {
+          "speedup": 4.308645242602025,
+          "lo": 4.306226877209613,
+          "hi": 4.311545268791983,
+          "significant": true
+        }
+      }
+    }
+  },
+  "overall": {
+    "vs_naive": {
+      "speedup": 1.2057243306652499,
+      "lo": 1.2048933960831947,
+      "hi": 1.2069654526926492,
+      "significant": true
+    },
+    "vs_numpy": {
+      "speedup": 4.308645242602025,
+      "lo": 4.306226877209613,
+      "hi": 4.311545268791983,
+      "significant": true
+    }
+  },
+  "kernel": "count_nonzero_i64",
+  "samples": 300,
+  "subject": "kernel",
+  "baselines": [
+    "naive",
+    "numpy"
+  ],
+  "warnings": [],
+  "environment": {
+    "arch": "x86_64",
+    "machine": "Intel(R) Core(TM) i5-14600KF",
+    "os": "Linux 7.0.0-43-generic",
+    "clang": "Ubuntu clang version 21.1.8 (6ubuntu1)",
+    "numpy": "2.5.5",
+    "python": "3.13.15",
+    "git_head": "5ad3a94",
+    "git_dirty": true,
+    "reference_locked": true,
+    "timestamp": "2026-11-18T18:49:04+00:00"
+  },
+  "correctness": {
+    "cases": 7268,
+    "fresh_seed": 1594724536
+  }
+}
