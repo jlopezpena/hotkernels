@@ -70,3 +70,98 @@ Figures "per call on runs of L" are from a driver outside the judge: 8,192 eleme
 - **compare:** significantly faster, 1.081x [1.073 – 1.089]
 - **Kept:** yes
 - **Notes:** 1.50x at 65,536 on both distributions (3.9 us to 2.6 us), 1.19x at 262,144, 1.09x and 1.10x at 1,024, 1.15x at 4,096 on `some_nan` and 0.99x (not significant) on `random`, 1.04x and 1.05x at the two largest sizes, nothing at 16, 64, 256 and 16,384. Which rows gain is which inputs the judge placed off a multiple of 32. In the driver, runs of 1,024 at the three other placements: 62 ns to 44 ns; at a multiple of 32: 42 ns to 44 ns, and runs of 256 there 12.0 ns to 13.0 ns, which the judge's row at 256 (10.0 ns before and after) does not show. The blocks of four vectors (17 to 127 elements) are not placed.
+
+## Where it stands
+
+Final `judge run` (unlocked): 6.28x [6.27 – 6.29] over naive C on `random`, 6.35x [6.35 – 6.35] on `some_nan`, 6.31x [6.31 – 6.32] over the two; 6.08x and 6.69x over NumPy, which is timed from Python with its per-call overhead.
+
+`random`:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 1.5 ns | 5.2 ns | 3.40x [3.40 – 3.40] | 284.0 ns | 184x [184 – 184] |
+| 64 | 3.4 ns | 18.3 ns | 5.45x [5.45 – 5.45] | 289.2 ns | 86.1x [85.99 – 86.20] |
+| 256 | 10.1 ns | 97.3 ns | 9.60x [9.59 – 9.60] | 307.3 ns | 30.3x [30.28 – 30.33] |
+| 1,024 | 34.5 ns | 447.1 ns | 13.0x [12.95 – 12.96] | 419.8 ns | 12.2x [12.14 – 12.18] |
+| 4,096 | 136.1 ns | 1.8 us | 13.6x [13.54 – 13.56] | 703.5 ns | 5.17x [5.17 – 5.17] |
+| 16,384 | 651.3 ns | 7.4 us | 11.4x [11.42 – 11.42] | 1.8 us | 2.78x [2.78 – 2.79] |
+| 65,536 | 2.6 us | 29.8 us | 11.3x [11.35 – 11.35] | 6.3 us | 2.40x [2.40 – 2.40] |
+| 262,144 | 17.0 us | 119.4 us | 7.01x [7.00 – 7.02] | 26.0 us | 1.52x [1.52 – 1.53] |
+| 1,048,576 | 134.3 us | 477.9 us | 3.56x [3.56 – 3.56] | 134.3 us | 1.00x [1.00 – 1.00] n.s. |
+| 4,194,304 | 789.1 us | 2.10 ms | 2.66x [2.64 – 2.72] | 921.6 us | 1.17x [1.16 – 1.18] |
+| 16,777,216 | 3.82 ms | 8.48 ms | 2.22x [2.21 – 2.23] | 4.43 ms | 1.16x [1.15 – 1.16] |
+| overall |  |  | 6.28x [6.27 – 6.29] |  | 6.08x [6.07 – 6.08] |
+
+`some_nan`:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 1.5 ns | 5.2 ns | 3.37x [3.37 – 3.37] | 341.9 ns | 223x [223 – 223] |
+| 64 | 3.4 ns | 18.6 ns | 5.46x [5.46 – 5.47] | 393.1 ns | 115x [115 – 115] |
+| 256 | 10.1 ns | 97.5 ns | 9.68x [9.67 – 9.69] | 408.9 ns | 40.6x [40.52 – 40.62] |
+| 1,024 | 34.1 ns | 447.1 ns | 13.1x [13.09 – 13.10] | 477.5 ns | 14.0x [13.95 – 14.02] |
+| 4,096 | 134.5 ns | 1.8 us | 13.7x [13.69 – 13.71] | 770.7 ns | 5.73x [5.72 – 5.73] |
+| 16,384 | 651.2 ns | 7.4 us | 11.4x [11.42 – 11.42] | 1.9 us | 2.88x [2.88 – 2.88] |
+| 65,536 | 2.6 us | 29.8 us | 11.4x [11.35 – 11.36] | 6.4 us | 2.42x [2.42 – 2.43] |
+| 262,144 | 16.4 us | 119.3 us | 7.27x [7.27 – 7.27] | 25.5 us | 1.55x [1.55 – 1.56] |
+| 1,048,576 | 129.7 us | 477.7 us | 3.68x [3.68 – 3.69] | 129.5 us | 1.00x [1.00 – 1.00] |
+| 4,194,304 | 746.2 us | 2.08 ms | 2.78x [2.77 – 2.79] | 864.9 us | 1.16x [1.16 – 1.16] |
+| 16,777,216 | 3.85 ms | 8.44 ms | 2.19x [2.19 – 2.20] | 4.41 ms | 1.14x [1.14 – 1.15] |
+| overall |  |  | 6.35x [6.35 – 6.35] |  | 6.69x [6.69 – 6.70] |
+
+The kernel has no output buffer, so `run` prints no second table.
+
+**Per call on runs, from the driver** (ns per call, x at a multiple of 32 bytes; the naive C column is for random data):
+
+| runs of | random | naive C | 5% NaN | positive zeros only | negative values, a zero in eight | NaN only |
+|---|---|---|---|---|---|---|
+| 2 | 1.0 | 5.6 | 1.1 | 1.0 | 1.0 | 1.5 |
+| 4 | 1.0 | 10.5 | 1.0 | 1.0 | 1.0 | 1.8 |
+| 5 | 1.5 | 1.9 | 1.5 | 1.7 | 2.4 | 2.0 |
+| 8 | 1.5 | 3.6 | 1.5 | 1.4 | 2.9 | 1.9 |
+| 16 | 1.5 | 5.7 | 1.5 | 1.4 | 2.9 | 2.3 |
+| 32 | 2.0 | 9.9 | 2.0 | 2.0 | 4.2 | 3.5 |
+| 64 | 3.6 | 18.4 | 3.6 | 3.5 | 6.7 | 7.7 |
+| 128 | 6.7 | 39.9 | 6.7 | 6.7 | 12.5 | 11.9 |
+| 1,024 | 44.2 | 437.6 | 44.4 | 44.3 | 93.2 | 113.7 |
+| mixed 1 to 4 | 1.0 | 10.3 | 1.2 | 1.0 | 1.0 | 5.7 |
+| mixed 5 to 16 | 1.6 | 10.2 | 1.6 | 1.5 | 3.7 | 6.4 |
+| mixed 2 to 8 | 3.4 | 11.1 | 3.3 | 3.3 | 5.2 | 5.9 |
+| mixed 2 to 32 | 4.1 | 11.6 | 4.2 | 4.2 | 6.5 | 9.4 |
+| mixed 2 to 64 | 5.6 | 13.7 | 5.5 | 5.6 | 8.6 | 12.1 |
+| mixed 17 to 64 | 5.6 | 14.4 | 5.6 | 5.6 | 9.0 | 12.7 |
+
+"Mixed" is 65,536 runs of random length in the range, which the branch predictor cannot learn; a binding of `reduceat` calls like that. Inside the ranges 1 to 4 and 5 to 16 the kernel has no branch on the length and the mixed figure is the fixed one. Across them it pays for the branch between the paths, and from 33 elements for the count of the block loop: 3.4 to 5.6 ns against 1.0 to 3.6 ns. The driver ran on a core whose sibling other work may have used, and its long runs are slower than the judge's (44 ns against 34.5 ns at 1,024).
+
+**Three kinds of input that are slower than the tables**, none of which the judge times:
+
+- **A zero maximum with a sign bit somewhere** (negative values, a negative zero or a NaN with its sign bit set, and no positive value): the quick way cannot tell whether a negative zero is present, and NumPy's order is gone through as well. Twice the time of the quick way: 2.9 ns on runs of 16, 0.09 ns per element on long ones. Non-negative data, all-zero runs included, stays on the quick way.
+- **Every element a NaN** (or minus infinity the maximum): a second pass a vector at a time. 2.3 ns on runs of 16, 0.11 ns per element at 1,024. With one to four elements the second look is one element at a time with a branch each: 1.5 to 1.8 ns on fixed lengths, 5.7 ns on mixed ones.
+- **x not at a multiple of 32 bytes, 17 to 127 elements:** those blocks are not placed (attempt 7 places the blocks from 128 elements). Not measured separately.
+
+**What the judge's cases exercise.** The `zeros` class (both signs at random, every length to 65 and around every power of two) goes from the quick way to NumPy's order and checks the sign of the result at every count of groups and leftover elements, and up to four elements through the masked load. `nan_all` reaches the second look, but its NaNs all have the same bits, so it cannot tell x[0] from the last element: that rule, NaNs among zeros, and minus infinity among NaNs were checked outside the judge only (300,000 arrays against NumPy at eight placements, NaNs of four payloads and both signs). Nothing in the judge has a signaling NaN.
+
+**What the kernel requires of its caller:**
+
+- n is at least 1.
+- No element is a signaling NaN. The kernel ignores one as it ignores any NaN; NumPy's leftover elements go through the C library's `fmax`, which does not. What NumPy returns for one was not looked at.
+- The bits promised are those of a NumPy that runs its AVX2 loop for this reduction. Where NumPy runs its AVX-512 loop the two can differ in the sign of a zero maximum with zeros of both signs present, and in which NaN an array of NaNs returns. That was not run; it is a person's decision whether the binding may serve such a machine.
+- `vmaxpd` and `vcmpordpd` are given quiet NaNs. If that leaves the invalid flag set in MXCSR, a binding that sits inside NumPy's floating-point error check has to clear it, as for `cumfmax_f64`. Not looked into here.
+
+What holds it at each size:
+
+- **Up to 16:** the count of instructions: about 30 for 5 to 16 elements. The calls of a run are independent, so they overlap in the processor and the length of the chain through a result does not show.
+- **17 to 127:** twelve instructions per 16 elements and the loop's count.
+- **128 to 4,096:** the ports: 16 `vmaxpd` and `vorpd` per 64 elements on three ports, 5.5 cycles, 0.033 ns per element.
+- **16,384 and 65,536:** the second-level cache, 0.040 ns per element. NumPy is at about 0.10 there.
+- **From 262,144:** the third-level cache and memory; equal to NumPy at 1,048,576, 1.14x to 1.17x over it above.
+
+Not tried:
+
+- **Leaving the `vorpd` out of the quick way** and or-ing the bits in a pass of its own when the maximum is a zero. By count that is 2 vectors a cycle in place of 1.5 from 128 elements inside the first-level cache, and three instructions fewer up to 16; it makes all-zero runs, which sparse data is full of, pay for a second pass.
+- **Telling a negative zero from a negative value in the quick way** (`vpcmpgtq` against the smallest integer, or-ed), so that only a zero maximum with a negative zero present takes NumPy's order. Two instructions per vector in place of one.
+- **NumPy's order for a zero maximum by looking for the zeros** from the end of each lane, in place of the second full pass.
+- **One path for 5 to 32 or to 64 elements without a branch on the length** (eight or sixteen loads at clamped offsets). It would take the branch between paths out of mixed lengths and cost short runs instructions; `compare` times one length at a time and cannot see the gain.
+- **Placing the blocks of four vectors** on 32-byte boundaries, as attempt 7 does for the blocks of eight.
+- **The lanes of NumPy's order from loads at multiples of 32 bytes.** Its groups start at x[1], so for an x at a multiple of 32 every group load is 8 bytes off and every other one straddles two cache lines.
+- **Arrays beyond the second-level cache** (prefetch, another loop). The kernel is for short runs.
