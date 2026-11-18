@@ -18,7 +18,8 @@
 # probe is inside a whatever the data, sorted or not. A NaN in a (they are last) compares false and is never passed, which is right for
 # every needle that is not NaN.
 #
-# Up to 64 searches run in step. Their positions live in out, which is
+# Up to 64 searches run in step, and up to 512 when a does not fit the
+# second-level cache. Their positions live in out, which is
 # exactly one 64-bit slot per needle, and their needles stay in v. A step is,
 # per four searches, a load of the positions, one `vgatherqpd` for the four
 # probes, one compare with the needles, one add of `half` under the compare's
@@ -42,7 +43,7 @@
 # Paths, by the number of needles:
 #   0        nothing
 #   1..3     one search at a time, in general registers
-#   4..      chunks of up to 64 in step, four per vector; then, if the count
+#   4..      chunks of up to 64 or 512 in step, four per vector; then, if the count
 #            is not a multiple of four, one more vector that ends with the
 #            last needle and overlaps the one before it
 #
@@ -54,8 +55,15 @@
 # below the stack pointer). ymm8 half in every lane, ymm9 the gather's mask,
 # ymm15 collects "this needle is a NaN".
 
-# Needles per chunk, in bytes of v: 64.
+# Needles per chunk, in bytes of v: 64 while a fits the second-level cache.
 .set CHUNK_BYTES, 512
+# From this many elements a no longer does (2 MB), and the chunk is larger.
+.set LARGE_N, 262144
+# Needles per chunk for such an a: 512. The more searches are in step, the
+# more cache misses are in flight at once; measured, 256 and 1,024 are both
+# about 1.5x faster than 64 from a million elements up, and 1,024 is 10%
+# slower than 64 when a is in the second-level cache.
+.set LARGE_CHUNK_BYTES, 4096
 
 # One step for the four searches in \lo against the needles in \key. A gather
 # clears its mask register, and it merges into its destination, which is
@@ -91,6 +99,11 @@ searchsorted_f64:
     cmp     r8, 4
     jb      .Lfew
     mov     [rsp - 8], rbx
+    mov     eax, CHUNK_BYTES
+    mov     r9d, LARGE_CHUNK_BYTES
+    cmp     rcx, LARGE_N
+    cmovae  eax, r9d
+    mov     [rsp - 16], rax             # bytes of v per chunk
     vpxor   xmm15, xmm15, xmm15
     xor     r10d, r10d
     test    rcx, rcx
@@ -102,7 +115,8 @@ searchsorted_f64:
     shl     rax, 5                      # where the whole vectors end
     cmp     r10, rax
     jae     .Lremainder
-    lea     r11, [r10 + CHUNK_BYTES]
+    mov     r11, r10
+    add     r11, [rsp - 16]
     cmp     r11, rax
     cmova   r11, rax                    # where this chunk ends
     # The first step: every search probes a[half - 1].
