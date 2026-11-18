@@ -137,7 +137,7 @@ sequenceDiagram
   alt not a mask, or conditions not met
     H->>N: original function, same arguments
     N-->>P: result
-  else plain 1-D float64 and a mask of the same length
+  else plain contiguous float64 and a mask of the same shape
     H->>H: scratch buffer of n elements (on the stack up to 2 KB)
     H->>H: scan the mask once: every byte 0 or 1?
     H->>K: x, mask, scratch, n
