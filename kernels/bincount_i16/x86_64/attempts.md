@@ -27,3 +27,27 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** significantly faster, 1.189x [1.183 – 1.194]
 - **Kept:** yes
 - **Notes:** uniform codes, 64 counters: 1.33x at 16,384, 1.47x to 1.52x from 65,536 to 4,194,304 (0.152 ns per element against 0.22), 1.34x at 16,777,216. Four distinct values: 2.26x at 16,384, 2.41x to 2.48x from 65,536 to 4,194,304 (0.151 ns per element against 0.375). Nothing changes below 8,192 elements or with 1,000 counters (1.01x). The table costs about 300 ns to clear and add up (a micro-benchmark outside the judge, the path forced at 1,024 elements), which uniform codes pay back near 6,000 elements and four values near 2,000; the judge times no size between 4,096 and 16,384, so the threshold is the micro-benchmark's. **What it costs on data the judge does not time:** when most groups of four hold an element outside 0..63, each takes the failed test and then the one-at-a-time path: 0.81 ns per element against the C's 0.57 at 262,147 elements drawn from [-8, 300) with 30 counters (0.70x). A caller that only sends elements inside `[0, bins)` never sees this.
+
+## 4. Sixteen elements per step: the pair indexes from `vpmaddwd`
+
+- **Idea:** attempt 3 takes 3.1 cycles for four elements and two increments, more than the stores need, so spend fewer instructions on the indexes: one 32-byte load, `vptest` against `0xFFC0` in every element, `vpmaddwd` with (1, 64) for the eight pair indexes, taken out through `vmovq`, `vpextrq` and a shift each.
+- **check:** pass
+- **compare:** significantly slower, 0.981x [0.978 – 0.983]
+- **Kept:** no
+- **Notes:** uniform codes 1.13x to 1.19x from 16,384 to 1,048,576 (0.127 ns per element at 1,048,576 against 0.152); four distinct values 0.73x to 0.77x at the same sizes (0.212 against 0.152). Eight increments whose addresses arrive together run into one another when two of them are the same counter, which with sixteen possible pairs is often. Two variants, in a micro-benchmark outside the judge only. **The indexes stored to the stack and loaded back** as eight 32-bit loads: 0.26 to 0.31 ns per element on uniform codes, half the speed of attempt 3, whether the store was one of 32 bytes or two of 16. **Two pair tables taking alternate pairs** (32 KB), so that neighbouring pairs never share a counter: uniform 0.144 ns per element at 262,144, four values 0.160, both between attempt 3 and this one, and one repeated value 0.35 against attempt 3's 0.62; not taken further, its only clear gain being on data the judge does not time.
+
+## 5. A second table for up to 1,024 counters
+
+- **Idea:** above 64 counters the pair table is too large, and four distinct values still cost 0.375 ns per element there. Count every other element in a second table of `bins` counters below the stack pointer and add it to `counts` at the end, as `bincount_u8` does with four: an element that repeats the one before it then updates another counter. Up to 1,024 counters (8 KB of stack) and from 8,192 elements.
+- **check:** pass
+- **compare:** significantly faster, 1.035x [1.031 – 1.039]
+- **Kept:** no (superseded by attempt 6, which was compared with the same `HEAD`)
+- **Notes:** four distinct values with 1,000 counters 1.36x to 1.42x from 16,384 up (0.262 ns per element against 0.37), but uniform codes with 1,000 counters 0.90x to 0.95x at the same sizes (0.242 against 0.217): slower than the naive C on data that does not repeat. Two things found in a micro-benchmark outside the judge. **The second table must not sit at the same place in a page as `counts`:** 4,096 uniform codes into 64 counters took 0.33 ns per element with the table where the stack pointer happened to put it and 0.19 with it half a page from `counts`; a load waits for an earlier store whose address has the same low 12 bits. **That is also the likely cost on uniform codes:** the loads of `x` pass the place in the page of a table of counters twice as often with two tables as with one. Not confirmed.
+
+## 6. The second table only where a sample of the data repeats
+
+- **Idea:** attempt 5, taken only when at least 32 of the first 256 elements equal their successor (16 compares of 32 bytes, `vpmovmskb`, `popcnt`). Uniform codes over 64 values have about 4 such elements in 256 and four distinct values about 64.
+- **check:** pass. Outside the judge, the 3,168 runs of attempt 3 again, none wrong.
+- **compare:** significantly faster, 1.047x [1.045 – 1.049]
+- **Kept:** yes
+- **Notes:** four distinct values with 1,000 counters 1.36x to 1.42x from 16,384 up, as in attempt 5; uniform codes with 1,000 counters 0.99x to 1.02x; the two tables with 64 counters 1.00x. The sample is the first 256 elements, so data that changes character after them gets the path that suits its start: both paths are right on any data, and the worse choice costs what attempt 5's figures show, a tenth on data that does not repeat and four tenths on data that does. Where the one-in-eight line should be was not measured: only uniform codes over 64 values and over 4 were timed.

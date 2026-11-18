@@ -28,9 +28,20 @@
 # The table's counters cannot overflow: the path is for n below 2^32, so
 # there are fewer than 2^31 pairs, and no counter and no total reaches 2^31.
 #
+# With more counters than that, up to SECOND_MAX_BINS, and from SECOND_MIN_N
+# elements, the kernel looks at the first SAMPLE elements. If one in eight
+# equals its successor, every other element is counted in a second table of
+# bins counters below the stack pointer, added to counts at the end, so that
+# an element that repeats the one before it does not wait for its store.
+# The second table is placed half a page from counts within a page, because
+# a load also waits for a store to the same place in another page. On data
+# that does not repeat, the second table costs more than it saves: twice as
+# many of the loads of x share a place in the page with a counter.
+#
 # Paths:
-#   bins <= PAIR_CODES and PAIRS_MIN_N <= n < 2^32   the pair table
-#   otherwise                                        one counter per element
+#   bins <= PAIR_CODES and PAIRS_MIN_N <= n < 2^32               the pair table
+#   else bins <= SECOND_MAX_BINS, n >= SECOND_MIN_N, repeats     two tables
+#   otherwise                                                    one counter per element
 
 # From this many counters `rep stosq` clears them; below it, a loop of
 # 32-byte stores, which has no start-up cost.
@@ -54,13 +65,29 @@
 # The twelve bits of a pair's index.
 .set PAIR_MASK, PAIR_CODES * PAIR_CODES - 1
 
-# Count the element at [rdi + \offset]: sign-extend, test against bins,
-# increment its counter.
-.macro COUNT_ELEMENT offset
+# The second table is for at most this many counters, 8 KB of them, and from
+# this many elements.
+.set SECOND_MAX_BINS, 1024
+.set SECOND_MIN_N, 8192
+# The second table is used when at least SAMPLE_REPEATS of the first SAMPLE
+# elements equal their successor, one in eight: uniform codes over eight
+# values or fewer, or runs.
+.set SAMPLE, 256
+.set SAMPLE_REPEATS, 32
+# A page of memory. A load is held up by an earlier store to the same place
+# in another page, so the second table is put half a page from counts.
+.set PAGE, 4096
+# Bytes of stack: the second table, a page to place it in, and eight so that
+# the stack pointer stays a multiple of 16.
+.set SECOND_FRAME, SECOND_MAX_BINS * 8 + PAGE + 8
+
+# Count the element at [rdi + \offset] in the table at \table: sign-extend,
+# test against bins, increment its counter.
+.macro COUNT_ELEMENT offset, table=rsi
     movsx   rax, word ptr [rdi + \offset]
     cmp     rax, r9
     jae     1f
-    inc     qword ptr [rsi + rax * 8]
+    inc     qword ptr [\table + rax * 8]
 1:
 .endm
 
@@ -116,6 +143,26 @@ bincount_i16:
     shr     rax, 32
     jz      .Lpairs
 .Lsingle:
+    cmp     r9, SECOND_MAX_BINS
+    ja      .Lonetable
+    cmp     rdx, SECOND_MIN_N
+    jb      .Lonetable
+    # How many of the first SAMPLE elements equal the one after them.
+    xor     eax, eax
+    xor     ecx, ecx
+.Lsample:
+    vmovdqu ymm0, [rdi + rcx]
+    vpcmpeqw ymm0, ymm0, [rdi + rcx + 2]
+    vpmovmskb r8d, ymm0                 # two bits for each equal pair
+    popcnt  r8d, r8d
+    add     eax, r8d
+    add     ecx, 32
+    cmp     ecx, SAMPLE * 2
+    jb      .Lsample
+    vzeroupper
+    cmp     eax, SAMPLE_REPEATS * 2
+    jae     .Ltwotables
+.Lonetable:
     mov     r8, rdx
     shr     r8, 2                       # steps of four elements
     jz      .Llast
@@ -138,6 +185,55 @@ bincount_i16:
     jnz     .Lone
 .Ldone:
     ret
+
+.Ltwotables:
+    sub     rsp, SECOND_FRAME
+    lea     r10, [rsi + PAGE / 2]
+    sub     r10, rsp
+    and     r10, PAGE - 1
+    add     r10, rsp                    # the second table, half a page from counts within a page
+    vpxor   xmm0, xmm0, xmm0
+    lea     rax, [r9 * 8 + 63]
+    and     rax, -64                    # its bytes, in whole steps of 64
+.Lclearsecond:
+    vmovdqu [r10 + rax - 32], ymm0
+    vmovdqu [r10 + rax - 64], ymm0
+    sub     rax, 64
+    jnz     .Lclearsecond
+    mov     r8, rdx
+    shr     r8, 2                       # steps of four elements, at least one
+.p2align 4
+.Ltwostep:
+    COUNT_ELEMENT 0, rsi
+    COUNT_ELEMENT 2, r10
+    COUNT_ELEMENT 4, rsi
+    COUNT_ELEMENT 6, r10
+    add     rdi, 8
+    dec     r8
+    jnz     .Ltwostep
+    # Add the second table to counts: four counters at a time, then one.
+    xor     eax, eax
+    mov     rcx, r9
+    and     rcx, -4
+    jz      .Laddone
+.Laddfour:
+    vmovdqu ymm0, [r10 + rax * 8]
+    vpaddq  ymm0, ymm0, [rsi + rax * 8]
+    vmovdqu [rsi + rax * 8], ymm0
+    add     rax, 4
+    cmp     rax, rcx
+    jb      .Laddfour
+.Laddone:
+    cmp     rax, r9
+    jae     .Ladded
+    mov     rcx, [r10 + rax * 8]
+    add     [rsi + rax * 8], rcx
+    inc     rax
+    jmp     .Laddone
+.Ladded:
+    vzeroupper
+    add     rsp, SECOND_FRAME
+    jmp     .Llast                      # 0 to 3 elements left, straight into counts
 
 .Lpairs:
     sub     rsp, FRAME
