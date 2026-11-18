@@ -1,0 +1,259 @@
+# A second shortlist: what a program in use calls
+
+This is a proposal for review. It adds a second list of candidates to the one in [survey-design.md](survey-design.md). The first list came from operations chosen in advance. This one comes from the NumPy calls of one program in production use: which of them the kernels serve, which they miss, and which no kernel covers. It proposes what to build, in what order, and how the work is tracked across the two architectures.
+
+Every figure here is x86-64's, measured on an Intel Core i5-14600KF. No ARM64 figure has been taken for these candidates.
+
+## Summary
+
+- **The source is one private codebase.** A data pipeline of about 14,000 lines of Python that leans on NumPy, polars and numba. Its NumPy calls were recorded while its own test suite ran, and the operations no kernel serves were timed against naive C in the survey's manner. No code from it appears here; calls are given by their NumPy spelling.
+- **The existing kernels are reached.** Thirteen of the 21 installed kernels ran, 213,063 times in all, most of them `np.searchsorted` and `x[mask]` on float64. Eight were never reached.
+- **Three new kernels where assembly has room:** `np.cumsum` on a boolean array (NumPy is 18x behind naive C at 131,072 elements), a running maximum (`np.maximum.accumulate`, `np.fmax.accumulate`: 8.6x and 1.3x, on a C loop the compiler leaves scalar), and `np.hypot` (7 ns per element; 12x behind the square-root form, which is not bit-identical).
+- **Four where NumPy is behind and the gain over compiled C is uncertain:** `np.where(c, a, b)` (3.4x to 8.5x), reductions over short rows such as `m.any(axis=1)` (20x at every size), `np.fmax.reduceat` (5x at every size) and `np.bincount` on 16-bit and 64-bit integers (3.7x). They are worth building either way; the judge decides whether each ships as assembly or as C.
+- **Three calls an existing kernel could take with a change to the binding only:** `mask.sum()`, `x[mask]` on int64, and `x[mask] = v` on a two-dimensional array.
+- **Most of the recorded time is not in a loop at all.** `np.median`, `np.round` and `np.clip` on int64 took 63% of it, on arrays of about 30 elements, where NumPy's own call path is nearly the whole cost. These are hooks above NumPy's wrapper, as `np.clip` on floats already has, not assembly.
+- **What is not known.** The program's real runs were not recorded, only its tests, whose arrays hold tens of elements. So the list says which calls occur and with which element types, not how a real run's time divides. The order below is provisional until one is recorded.
+
+## Where the candidates come from
+
+### The program
+
+A pipeline that parses large feeds into tables, aligns two time series, and computes reports and model inputs from them. Per run it holds arrays of about 130,000 elements (one per time step) and about three million (one per time step and tracked object), and it also works through many short arrays in Python loops. Its heaviest numeric loop is compiled with numba, which calls no NumPy function that hotkernels can reach.
+
+It is private. This document names no file, function or data of it.
+
+### What was recorded
+
+Four things, by throwaway scripts that are not in the repository:
+
+1. **Calls.** `sys.monitoring` (Python 3.12 and later) reported every call from the program's own code into NumPy, with the caller's line, the size and element type of the first array, and the time to return. Operators and subscripts are not calls and are not seen. It ran twice: once for functions and ufuncs on plain NumPy (1,074,562 calls from 381 call sites), which the times below are from, and once with array methods as well and hotkernels installed (1,124,106 calls from 493 call sites).
+2. **Subscripts.** The program's modules were rewritten as they were imported, so that `a[b]` and `a[b] = v` recorded the array's type and dimensions when `b` was a boolean or integer array. One module, the one holding the numba code, was left out, and 28 tests that pass otherwise failed under the rewrite, so these counts are a lower bound.
+3. **`report()`.** The same test run with `hotkernels.install()`: kernel calls and calls left to NumPy.
+4. **NumPy against naive C.** For each operation no kernel serves, the NumPy statement against the simplest C loop, compiled with the judge's flags (`clang -O3 -march=native`), at 32, 512, 8,192, 131,072 and 2,097,152 elements. Where NumPy allocates its result the C side allocates and frees its output on every call. The median of seven interleaved samples, on one pinned performance core. Every C loop was checked against NumPy on the timed input.
+
+Machine: Intel Core i5-14600KF, Linux 7.0, CPython 3.13.15, NumPy 2.5.3, clang 21.1.8, hotkernels 0.2.0. Load average 0.5 to 0.7. The timings were taken twice; where a figure moved by more than a tenth between the two passes, both ends are given. They are naive timings, as the survey's are: good enough to rank candidates, and each candidate is measured again by the judge before it ships.
+
+### Limits
+
+- **Tests, not runs.** The program's test suite ran, 703 tests, on arrays of tens of elements. A real run needs data that was not available. The call counts say what the code does; they do not say how a real run's time divides between short arrays and long ones.
+- **The recorded calls are a small part of the run.** The calls the program's own code makes into NumPy functions took about 2.5 s of a test run of 45 s, once the tracer's cost is taken off. Arithmetic and comparisons written as operators are not in that figure. The rest is parsing, polars, compiled code and the tests themselves.
+- **The tracer costs about 0.26 µs per call,** which is in every time below. A call that takes 0.2 µs untraced shows as 0.5.
+- **One program, one architecture.** NumPy's own vector code differs by architecture, so a gap here says nothing certain about ARM64.
+- **The outcome of the tests did not change.** With hotkernels installed the same tests passed and the same failed as without it.
+
+## What the existing kernels took
+
+From `report()` over the test run:
+
+| NumPy call | Elements | Kernel calls | Left to NumPy |
+|---|---|---|---|
+| `np.searchsorted` | float64 | 78,592, and 805 with `side='right'` | 6,852 |
+| `x[mask]` | float64 | 91,014 | 101,693 |
+| `x[mask]` | float32 | 7,488 | |
+| `np.argmin` | float64 | 14,018 | 0 |
+| `np.nonzero` | bool | 12,782 | 832 |
+| `x[mask] = v` | float64 | 5,891 | 8,448 |
+| `np.cumsum` | int64 | 1,373 | 5,756 |
+| `np.clip` | float64 | 426 | 12 |
+| `np.isin` | int64 | 424 | 123 |
+| `np.argmin` | float32 | 235 | |
+| `np.argmax` | float64, float32 | 13, 2 | 264 |
+| `np.bincount` | uint8 | 0 | 261 |
+| `np.interp` | float64 | 0 | 1,521 |
+| `np.histogram` | float64 | 0 | 3 |
+| `np.sum` | uint8 | 0 | 20,709 |
+| `x.astype(np.float32)` | uint8 | 0 | 44,622 |
+| `np.count_nonzero` | int64, float64 | 0 | 1 |
+
+"Left to NumPy" is counted per NumPy call, for every caller in the process: the program, NumPy's own Python code (`np.unique` and `np.median` index by mask themselves), polars and the test tools. What the program's own code does is in the other records:
+
+- **`np.searchsorted`:** 94% of its calls are on float64 and are served. The rest are on float32 (3,154), int64 (1,656) and int32 (412).
+- **`x[mask]` in its own code:** 3,065 on a one-dimensional int64 array, 1,966 on a two-dimensional float64 array with a mask over its rows, 556 on float64 and 470 on float32 in one dimension, 615 on strided arrays. Only the float ones in one dimension are served.
+- **`x[mask] = v` in its own code:** 3,920 on float64 in one dimension with a number, which are served. Left: 880 on a two-dimensional float64 array with a mask of the same shape, 390 on float32, 412 on int64 with an array of values, and 1,137 that select rows of a two-dimensional array.
+- **`np.cumsum`:** 1,889 of 2,378 calls are on a boolean array. No kernel takes them.
+- **`np.clip`:** 78,131 of 80,913 calls are on an int64 array, clamping the indices a search returned. They never reach a hook, so `report()` does not count them. The float calls with one bound, `np.clip(x, 0, None)`, go to NumPy's `maximum` and are not counted either.
+- **`np.bincount`:** on int16 and int64, never uint8.
+- **`np.sum` and `astype`:** never on uint8.
+- **`a[idx]` with an integer array** is the commonest subscript of all: 18,507, nearly three times the mask selections. It is not a target; see [below](#not-targets).
+
+## Where the time went
+
+The calls that took the most recorded time, without hotkernels installed:
+
+| Call | Calls | Share of recorded time | Mean elements | Elements |
+|---|---|---|---|---|
+| `np.median` | 169,039 | 38% | 30 | float64 |
+| `np.round(x, 2)` | 37,083 | 16% | 19 | float64, some float32 |
+| `np.clip` | 80,913 | 9% | 31 | int64 |
+| `np.where(c, a, b)` | 99,153 | 6% | 79 | int64, float64 |
+| `np.searchsorted` | 86,077 | 5% | 648 | float64 |
+| `np.isnan` | 178,970 | 3% | 58 | float64 |
+| `np.abs` | 159,938 | 3% | 32 | float64 |
+| `np.maximum` | 81,113 | 2% | 30 | int64 |
+| `np.isclose` | 1,641 | 2% | | numbers, not arrays |
+| `np.diff` | 9,579 | 2% | 22 | float64, int64, float32 |
+| `np.hypot` | 78,268 | 2% | 31 | float64 |
+| `np.unique` | 1,955 | 2% | 16 | int64 |
+| `np.cumsum` | 2,378 | 1% | 34 | bool, some int64 and float64 |
+| `np.flatnonzero` | 10,226 | 1% | 17 | bool |
+
+Two things stand out:
+
+- **One loop makes most of these calls.** Each pass searches a sorted array, clamps the indices with `np.clip`, picks between two candidates with `np.where`, takes `np.hypot`, drops NaN with a mask and takes `np.median`, on arrays as long as a few dozen items. That length does not grow with the data: a real run makes more passes, not longer ones.
+- **At these sizes the time is NumPy's call path.** `np.median` of 32 elements takes 4.8 µs, `np.clip` on 32 int64 elements 1.75 µs, `np.round(x, 2)` 1.1 µs. The C loops take 58, 6 and 12 ns.
+
+## NumPy against naive C
+
+NumPy's time divided by the naive C loop's. Above 1 the C loop is faster.
+
+| NumPy statement | Elements | 32 | 512 | 8,192 | 131,072 | 2,097,152 | ns per element at 131,072: NumPy / C |
+|---|---|---|---|---|---|---|---|
+| `np.cumsum(mask)` | bool | 156x | 15.4x | 8.73x | 18.5x | 1.52x | 3.60 / 0.19 |
+| `m.any(axis=1)`, rows of 22 | bool | 138x | 41.0x | 18.3x | 20.5x | 20.5x | 0.71 / 0.03 |
+| `np.hypot(a, b)`, against `sqrt(a*a + b*b)` | float64 | 18.3x | 6.36x | 11.6x | 12.2x | 10.2x | 7.09 / 0.58 |
+| `np.hypot(a, b)`, against a loop calling `hypot` | float64 | 4.11x | 1.48x | 1.24x | 1.08x | 1.09x | 7.05 / 6.52 |
+| `np.maximum.accumulate(x)` | int64 | 28.6x | 9.09x – 10.4x | 9.33x – 10.7x | 8.62x | 2.97x | 1.55 / 0.18 |
+| `np.fmax.accumulate(x)` | float64 | 10.4x | 1.44x | 1.20x | 1.33x | 1.31x | 2.28 / 1.71 |
+| `np.where(c, a, b)`, half true | float64 | 44.2x | 5.39x | 2.29x | 8.49x | 3.59x | 2.63 / 0.30 |
+| `np.where(c, a, b)`, half true | int64 | 44.3x | 5.41x | 2.59x – 6.83x | 8.42x | 3.58x – 3.96x | 2.62 / 0.31 |
+| `np.where(c, a, np.nan)`, 95% true | float64 | 76.0x | 7.22x | 3.00x | 3.35x | 1.62x | 0.60 / 0.17 |
+| `np.where(np.isnan(x), 0, x)` | float64 | 175x | 17.0x | 4.07x | 4.32x | 2.31x | 0.72 / 0.16 |
+| `np.fmax.reduceat(x, starts)`, runs of 16 | float64 | 18.7x | 5.13x | 5.33x | 5.35x | 4.98x | 3.38 / 0.63 |
+| `mask.sum()` | bool | 249x | 29.1x | 6.01x | 4.53x | 4.29x | 0.21 / 0.05 |
+| `np.bincount(x, minlength=64)` | int16 | 41.3x | 8.71x | 4.71x | 3.71x | 4.27x – 4.96x | 0.75 / 0.20 |
+| `np.argsort(x, kind="stable")`, 50 distinct values | int16 | 26.5x | 5.77x | 2.33x – 3.41x | 2.90x | 3.27x | 2.72 / 0.94 |
+| `np.round(x, 2)` | float64 | 93.6x | 7.49x | 2.00x | 1.71x | 2.50x | 0.66 / 0.38 |
+| `np.median(x)` | float64 | 84.3x | 7.26x | 3.80x | 0.67x | 1.17x | 4.65 / 6.98 |
+| `np.clip(x, lo, hi)` | int64 | 279x | 20.5x | 2.88x | 1.40x | 0.96x | 0.23 / 0.16 |
+| `np.diff(x)` | float64 | 125x – 143x | 15.6x – 19.6x | 2.88x – 3.39x | 1.11x – 1.85x | 0.97x | 0.19 – 0.29 / 0.16 |
+| `np.repeat(a, counts)` | int64 | 13.2x | 2.45x | 2.30x – 2.59x | 1.29x | 0.78x | 6.97 / 5.35 |
+| `a[idx]`, sorted indices | float64 | 19.2x | 4.37x | 1.91x | 1.53x | 1.00x | 0.47 / 0.30 |
+| `mask.astype(float)` | bool | 35.7x | 4.57x – 6.29x | 1.54x – 1.83x | 1.30x – 1.64x | 1.06x – 1.31x | 0.13 – 0.17 / 0.10 |
+| `np.isnan(x)` | float64 | 38.2x | 3.71x | 0.76x | 0.55x | 0.67x | 0.09 / 0.16 |
+| `np.nanmax(x)` | float64 | 32.6x | 1.69x – 2.68x | 0.16x | 0.06x | 0.06x | 0.10 / 1.74 |
+
+How to read it:
+
+- **The column at 32 elements is the call, not the loop.** Every row is 10x or more behind there, including the ones NumPy wins at size. A kernel only gets that factor if a hook reaches it before NumPy's wrapper.
+- **A gap that stays above 2x from 8,192 to 2,097,152 elements is in the loop.** That is `m.any(axis=1)`, `np.hypot`, `np.fmax.reduceat`, `np.where`, `mask.sum()`, `np.bincount` and `np.maximum.accumulate`.
+- **`np.cumsum(mask)` falls to 1.5x at 2,097,152 elements** because it writes eight bytes for every byte it reads, and beyond the caches the writing is the cost.
+- **`np.where` with a mask that is half true is NumPy's worst case:** it takes a branch per element. With a mask that is 95% true it is 3.4x behind at 131,072 elements, not 8.5x. The int64 figure at 8,192 elements moved between passes, 2.6x and 6.8x, as a branch predictor that has half learnt a repeated mask would make it.
+- **The naive C is not the limit for the loops that carry a value from one element to the next.** clang's own remarks say it leaves the running maxima and `np.cumsum(mask)` scalar, and `np.bincount` as well. It vectorises `np.where`, `mask.sum()`, `np.clip`, `np.round`, the square-root form of `hypot` and the loop over one run of `np.fmax.reduceat`.
+- **`sqrt(a*a + b*b)` is not `np.hypot`.** On two million pairs of normally distributed values 16.7% of the results differ, each by one unit in the last place. It also overflows where `hypot` does not.
+
+## The shortlist
+
+Each row is a family: one NumPy operation, one or more kernels. "Hook" says how the call would reach it, with the hooks of [delivery-design.md](delivery-design.md#which-hook-serves-which-kernel).
+
+### New kernels where assembly has room
+
+| # | Kernel | NumPy call | NumPy vs naive C at 131,072 | Hook | Technique |
+|---|---|---|---|---|---|
+| 1 | `cumsum_bool` | `np.cumsum(mask)`, int64 result | 18.5x behind | Method, as `cumsum_i64` | A prefix sum of bytes within a block, widened to 64 bits and added to a carried total. Exact |
+| 2 | `cummax_i64`, `cumfmax_f64` | `np.maximum.accumulate(x)`, `np.fmax.accumulate(x)` | 8.6x, 1.3x | Open: see [decision 2](#decisions-still-open) | A prefix maximum within a vector, then against the carried maximum. Exact for both, unlike a float prefix sum. `np.minimum.accumulate` was in the first survey for the same reason (1.4x behind on x86-64) and had no caller then |
+| 3 | `hypot_f64` | `np.hypot(a, b)` | 12.2x behind the square-root form | Inner loop | Open: see [decision 1](#decisions-still-open). NumPy calls the C library once per element |
+
+### New kernels where the gain over compiled C is uncertain
+
+clang vectorises the first three of these loops, and for the fourth the gain over C is known to be small. NumPy is behind all four, so each is worth a kernel; where assembly does not beat the C, the C ships, as `cast_u8_f32` does on ARM64. The same guess was made for six kernels in the first survey and was wrong for five ([kernel-findings.md](kernel-findings.md)), so assembly is attempted for each.
+
+| # | Kernel | NumPy call | NumPy vs naive C at 131,072 | Hook | Note |
+|---|---|---|---|---|---|
+| 4 | `where_f64` | `np.where(c, a, b)` with two arrays, or an array and a number | 3.4x to 8.5x behind | Function: `np.where` is hooked already, for its one-argument form | The first survey found it 4.5x to 10x behind on x86-64 and level on ARM64. A selection moves elements without reading them as numbers, so the int64 call is expected to take the same code |
+| 5 | `any_rows_bool` | `m.any(axis=1)` on a two-dimensional boolean array | 20x behind, at every size | Method and function | NumPy pays its per-row cost on every short row. The C loop was compiled for rows of exactly 22; a kernel takes any row length. [workloads-design.md](workloads-design.md#what-was-verified) found the same shape in scikit-learn: `argmax(axis=1)` over rows of three |
+| 6 | `fmax_reduceat_f64` | `np.fmax.reduceat(x, starts)` | 5.4x behind, at every size | Open: see [decision 2](#decisions-still-open) | Timed on runs of 16 elements. The program also calls `np.logical_or.reduceat` |
+| 7 | `bincount_i16`, `bincount_i64` | `np.bincount(x)` on int16 and int64 | 3.7x behind for int16 | Function, as `bincount_u8` | NumPy first converts the array to 64-bit integers. The first survey had the int64 loop 2.4x behind. The several-tables technique of `bincount_u8` applies, and there it was worth 1.04x to 1.24x over the C |
+
+### Existing kernels, more calls
+
+No new assembly. Each needs cases in `delivery check`, and the first two a spec that says the kernel is right for the type.
+
+| # | Call | Served by | What changes |
+|---|---|---|---|
+| 8 | `mask.sum()`, `np.sum(mask)` | `sum_u8` | The binding accepts a boolean array and returns NumPy's type for it. A mask holding bytes other than 0 and 1 goes to NumPy, as for the mask kernels ([issue 8](https://github.com/sofeikov/hotkernels/issues/8)). NumPy is 4.5x behind naive C here, and `sum_u8` is ahead of the C |
+| 9 | `x[mask]` and `x[mask] = v` on int64 | `compress_f64`, `maskfill_f64` | Neither kernel reads an element as a number on either architecture; they move 64-bit values. A spec for int64 would confirm it, and the binding would accept the type. This is the commonest mask selection in the program's own code |
+| 10 | `x[mask] = v` on a two-dimensional array with a mask of the same shape | `maskfill_f64` | The indexing hook asks for one dimension. `np.putmask` already takes any shape through the same kernel |
+
+`x[mask] = v` on float32 would need a kernel of its own, `maskfill_f32`. It is not proposed until a run shows it on long arrays.
+
+### Calls on short arrays
+
+Where the gain is the call path. Each is a function or method hook that calls a plain C loop before NumPy's wrapper runs, as the hooks for `np.clip`, `x.argmax()` and `x.argmin()` do ([issue 17](https://github.com/sofeikov/hotkernels/issues/17)). None is expected to need assembly, and none is faster than NumPy on long arrays.
+
+| # | Call | NumPy per call at 32 elements | Naive C | At 131,072 elements |
+|---|---|---|---|---|
+| 11 | `np.median(x)`, one-dimensional float64 | 4.8 µs | 58 ns | NumPy is ahead of a naive selection, 0.67x. The hook would take short arrays only |
+| 12 | `np.clip(x, lo, hi)` on int64 | 1.75 µs | 6 ns | 1.4x behind, level at 2,097,152 |
+| 13 | `np.round(x, decimals)` on float64 | 1.1 µs | 12 ns | 1.7x behind: NumPy makes three passes |
+
+`np.diff` (0.9 µs against 6 ns) and `np.nanmax` and `np.nanmin` (1.5 µs against 45 ns) have the same shape and fewer calls. They wait for a run that shows them.
+
+### Not targets
+
+Measured, and level with naive C or ahead of it at size:
+
+- **`np.isnan`** and **`np.nanmax`**: NumPy has vector code for both. `np.nanmax` is 17x ahead of the naive loop at 131,072 elements.
+- **`a[idx]` with an integer array:** level at 2,097,152 elements, 1.5x behind at 131,072. A loop of AVX2 gathers was no faster than the scalar loop in the caches and slower beyond them.
+- **`np.diff`, `np.repeat`, `mask.astype(float)`:** level from 131,072 elements up.
+- **`np.argsort(x, kind="stable")` on a few distinct small integers:** a counting sort is 2.9x to 3.3x ahead of NumPy's radix sort, but it is a different algorithm for a special case, the program calls it once per run, and the scatter does not vectorise. Not proposed.
+- **`np.searchsorted` on int64 and float32:** 6% of the program's searches. NumPy's int64 search was 5x ahead of naive C in the first survey.
+- **Code compiled with numba.** It does not call NumPy at run time.
+
+## Order of work
+
+Provisional. A recorded real run ([decision 3](#decisions-still-open)) may reorder it or remove rows.
+
+| Step | Candidates | Why here |
+|---|---|---|
+| 1 | The candidates of rows 1 to 7 added to the survey and recorded on both architectures | The figures above are from a script outside the repository, and from one architecture. The survey is where a candidate's gap is recorded |
+| 2 | Rows 8 to 10: `mask.sum()`, int64 mask selection and assignment, two-dimensional `x[mask] = v` | No new assembly, and the kernels exist on both architectures |
+| 3 | Row 1: `cumsum_bool` | Largest gap that assembly can add to; the hook exists; exact |
+| 4 | Row 4: `where_f64` | Most call sites of any candidate; the function hook exists |
+| 5 | Rows 11 to 13: the short-array hooks | Most of the recorded time, in C only. After step 2 because they add hooks, not conditions |
+| 6 | Row 2: the running maxima, and row 6: `reduceat` | Both wait for decision 2 |
+| 7 | Row 5: reductions over short rows | A new shape for the judge: a kernel over rows |
+| 8 | Row 7: `bincount` on int16 and int64 | Technique known; one caller per run |
+| 9 | Row 3: `hypot_f64` | Waits for decision 1 |
+
+## How the work is tracked
+
+A family's kernels are written twice, once per architecture, on different machines and at different times. The spec and the naive C are written once, and so is the binding.
+
+- **One issue per family,** holding what is shared: the NumPy call, the conditions, the figures from this document, and any decision.
+- **Sub-issues under it,** each closed by one pull request:
+
+  | Sub-issue | Label | Waits for |
+  |---|---|---|
+  | `spec.py` and `naive.c`, and the survey rows | `spec` | |
+  | The x86-64 kernel | `arch:x86-64` | The spec merged, since the judge locks it against `main` |
+  | The ARM64 kernel | `arch:arm64` | The spec merged |
+  | The binding, `delivery check` cases and the user-facing pages | `binding` | One architecture's kernel |
+
+- **The two architecture sub-issues are independent.** The package already installs a different number of kernels per architecture, so one can be released before the other. Each pull request leaves its own release note.
+- **Rows 8 to 13 are one issue each,** with no architecture sub-issues: the binding and a C loop are the same on both.
+- **A milestone holds the round together** and gives its order.
+
+The labels `spec`, `binding`, `arch:x86-64` and `arch:arm64` do not exist yet. The issues are opened when this document is merged.
+
+## Decisions still open
+
+1. **`np.hypot`: bit-identical or not.** NumPy's result is the C library's `hypot`, which differs between glibc and macOS and may differ between versions of each. Three options: reproduce each library's algorithm in the kernel and check it against that library; ship the square-root form under `install(inexact=True)`, as float `cumsum` is, with a stated bound and its overflow range left to NumPy; or not build it. Proposed: decide after a real run shows how much time `np.hypot` takes.
+2. **A hook for `accumulate` and `reduceat`.** Both are methods of the ufunc object, not of the array. Either the inner loop of `np.maximum` and `np.fmax` is replaced and recognises the pattern of an accumulation, as the `clip` loop recognises scalar bounds, or the ufunc type's method is hooked, which is a fifth kind of hook. The first reaches every caller; whether an inner loop can tell an accumulation from a reduction by its arguments has not been checked.
+3. **A recorded real run.** The same recording over one real run of the program gives each call's share at real sizes and settles the order. It needs the program's production data.
+4. **Whether short-array hooks belong here.** Rows 11 to 13 are C loops behind a hook, and their gain is NumPy's wrapper. `np.clip` on floats set the precedent. `np.median` goes further: it is a Python function in NumPy, and the hook replaces all of it for the cases it takes.
+5. **ARM64.** Nothing here was measured there. Step 1 of the order does it. A candidate that is level with naive C on ARM64, as `np.where` was in the first survey, is built for x86-64 only.
+6. **Recording as a feature.** The call recording answers the open question of [issue 89](https://github.com/sofeikov/hotkernels/issues/89): `sys.monitoring` sees every call from chosen code into NumPy at about 0.26 µs each, and does not see operators or subscripts. Whether the scripts become `hotkernels.profile()` is that issue's to decide.
+
+## Out of scope
+
+- Any change to the program the calls come from.
+- Fusing the calls of its inner loop into one. [core-design.md](core-design.md#later) lists fusion without a plan; this loop is an example of a chain worth fusing.
+- Kernels for strided arrays and for row selection of a two-dimensional array, which the program also does.
+
+## Documents that change
+
+| Document | Change |
+|---|---|
+| `docs/survey-design.md` | A pointer to this document |
+
+When the candidates are built, each pull request updates the documents its kernel or hook makes untrue, as [AGENTS.md](../AGENTS.md#documentation-moves-with-the-change) lists them. This document changes nothing a user of the package gets, so it leaves no release note.
