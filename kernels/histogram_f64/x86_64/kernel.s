@@ -80,7 +80,7 @@
 # route, rax and rdx scratch. xmm0 lo, xmm1 hi, xmm2 width, xmm3 nbins as a
 # double, xmm4 step (the scalar route's constants); ymm5-ymm7 scratch; ymm8
 # -lo, ymm9 S * 4096; xmm10 ones, xmm11 0xffe, xmm12 the limit of z, xmm13
-# zeros (32-bit lanes).
+# minus ones (32-bit lanes).
 
 .section .rodata
 .p2align 4
@@ -164,21 +164,25 @@ histogram_f64:
     dec     eax                         # nbins * 4096 - 1
     vmovd   xmm12, eax
     vpbroadcastd xmm12, xmm12
-    vpxor   xmm13, xmm13, xmm13
+    vpcmpeqd xmm13, xmm13, xmm13        # minus one
 .p2align 6
 .Lblock:
     vaddpd  ymm5, ymm8, [rdi]           # v - lo
     vmulpd  ymm5, ymm5, ymm9            # t * 4096
     vcvttpd2dq xmm5, ymm5               # z
+    # Both tests leave their verdict in the sign bit of a lane, using only
+    # additions and logic: those run on all three vector ports of this
+    # processor, and a compare or a minimum on two of them, which the
+    # multiply and the conversion already need.
     vpaddd  xmm6, xmm5, xmm10
     vpand   xmm6, xmm6, xmm11
-    vpcmpeqd xmm6, xmm6, xmm13          # fraction bits all 0 or all 1
-    vpminud xmm7, xmm5, xmm12
-    vpcmpeqd xmm7, xmm7, xmm5           # z within the limit
-    vpandn  xmm6, xmm6, xmm7            # accepted
+    vpaddd  xmm6, xmm6, xmm13           # negative: fraction bits all 0 or all 1
+    vpsubd  xmm7, xmm12, xmm5
+    vpor    xmm7, xmm7, xmm5            # negative: z negative or above the limit
+    vpor    xmm6, xmm6, xmm7
     vmovmskps eax, xmm6
-    cmp     eax, 15
-    jne     .Lslowblock
+    test    eax, eax
+    jnz     .Lslowblock
     vpsrld  xmm5, xmm5, 12              # the four bins
     vmovq   rax, xmm5
     vpextrq rdx, xmm5, 1
