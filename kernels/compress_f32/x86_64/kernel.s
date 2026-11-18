@@ -82,19 +82,20 @@ compress_f32:
     shl     rax, ENTRY_SHIFT
     mov     r8d, eax
     and     r8d, ENTRY_BITS
-    shr     rax, 8
     STEP    [rdi]
-    mov     r8d, eax
+    rorx    r8, rax, 8
     and     r8d, ENTRY_BITS
-    shr     rax, 8
     STEP    [rdi + 32]
-    mov     r8d, eax
+    rorx    r8, rax, 16
     and     r8d, ENTRY_BITS
-    shr     rax, 8
     STEP    [rdi + 64]
-    mov     r8d, eax
-    and     r8d, ENTRY_BITS
-    STEP    [rdi + 96]
+    shr     rax, 24
+    and     eax, ENTRY_BITS
+    vmovdqa ymm2, [r10 + rax]
+    vpermps ymm2, ymm2, [rdi + 96]
+    vmovups [r9], ymm2
+    popcnt  eax, eax
+    lea     r9, [r9 + rax * 4]
     add     rsi, 32
     sub     rdi, -128
     dec     r11
