@@ -186,7 +186,7 @@ With the output buffer 16 bytes behind its input (`mostly_misses`; "apart" is th
 What holds it:
 
 - **Narrow path, up to 65,536:** about thirty vector instructions per sixteen elements on three ports: four loads, three ORs and a `vptest` for the window, three packs, eight compares and seven ORs, four to turn masks into bytes.
-- **Narrow path, from 1,048,576:** memory. 9 bytes per element move, and the kernel is 1.3x to 1.4x over the naive C.
+- **Narrow path, from 1,048,576:** memory. 9 bytes per element move, and the kernel is 1.2x to 1.4x over the naive C.
 - **Wide path:** eight 64-bit compares per four elements, on the two ports that take them: four cycles per four elements before anything else. The compiler's loop is at the same limit.
 
 The candidates the design lists for this kernel (`docs/x86-64-design.md`):
