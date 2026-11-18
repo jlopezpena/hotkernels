@@ -60,3 +60,92 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** significantly faster, 1.009x [1.008 – 1.010]
 - **Kept:** yes
 - **Notes:** 1.02x to 1.03x from 256 to 4,096, 1.01x to 1.02x at 16,384 and 65,536, nothing at 16 and 64 or from 262,144 up. Tried in the micro-benchmark and not taken further: the second vector's first step from a load one element back, cleaned of NaN, in place of its shuffle: 0.138 ns per element at 1,024 and 16,384 against this attempt's 0.135 and 0.133 (attempt 5: 0.142), and both together 0.140. It trades a shuffle for a `vmaxpd`, and the ten of a block already fill their two ports for five cycles.
+
+## Where it stands
+
+Final `judge run` (unlocked): 8.73x [8.69 – 8.76] over naive C on `random`, 8.40x [8.37 – 8.42] on `rising`, 8.18x [8.16 – 8.21] on `some_nan`, 8.44x [8.42 – 8.45] over the three; 12.8x, 12.3x and 14.9x over NumPy.
+
+`random`:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 3.9 ns | 16.6 ns | 4.24x [4.24 – 4.25] | 294.3 ns | 75.2x [75.14 – 75.26] |
+| 64 | 10.8 ns | 111.0 ns | 10.3x [10.31 – 10.32] | 381.2 ns | 35.4x [35.38 – 35.44] |
+| 256 | 38.9 ns | 502.7 ns | 12.9x [12.89 – 13.00] | 745.7 ns | 19.2x [19.12 – 19.28] |
+| 1,024 | 147.6 ns | 2.1 us | 14.1x [14.05 – 14.08] | 2.1 us | 14.4x [14.39 – 14.43] |
+| 4,096 | 592.4 ns | 8.4 us | 14.1x [14.10 – 14.12] | 7.5 us | 12.7x [12.70 – 12.72] |
+| 16,384 | 2.3 us | 33.5 us | 14.3x [14.24 – 14.26] | 31.3 us | 13.3x [13.30 – 13.35] |
+| 65,536 | 9.3 us | 134.1 us | 14.3x [14.32 – 14.39] | 116.2 us | 12.4x [12.41 – 12.48] |
+| 262,144 | 61.4 us | 529.8 us | 8.63x [8.52 – 8.69] | 490.6 us | 8.00x [7.90 – 8.04] |
+| 1,048,576 | 358.5 us | 2.15 ms | 6.01x [5.75 – 6.24] | 1.99 ms | 5.54x [5.32 – 5.74] |
+| 4,194,304 | 1.97 ms | 8.62 ms | 4.36x [4.31 – 4.41] | 9.50 ms | 4.81x [4.74 – 4.87] |
+| 16,777,216 | 7.93 ms | 34.45 ms | 4.34x [4.25 – 4.37] | 37.71 ms | 4.75x [4.66 – 4.77] |
+| overall |  |  | 8.73x [8.69 – 8.76] |  | 12.8x [12.79 – 12.89] |
+
+`rising`:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 3.7 ns | 16.6 ns | 4.55x [4.55 – 4.55] | 295.2 ns | 80.8x [80.79 – 80.89] |
+| 64 | 10.8 ns | 110.8 ns | 10.3x [10.25 – 10.25] | 380.6 ns | 35.2x [35.20 – 35.25] |
+| 256 | 39.2 ns | 503.0 ns | 12.8x [12.77 – 12.96] | 745.7 ns | 19.0x [18.93 – 19.21] |
+| 1,024 | 147.2 ns | 2.1 us | 14.1x [14.09 – 14.11] | 2.1 us | 14.3x [14.31 – 14.34] |
+| 4,096 | 601.0 ns | 8.4 us | 13.9x [13.89 – 13.92] | 7.6 us | 12.6x [12.55 – 12.58] |
+| 16,384 | 2.4 us | 33.5 us | 14.2x [14.15 – 14.17] | 29.0 us | 12.3x [12.27 – 12.29] |
+| 65,536 | 9.8 us | 134.4 us | 13.7x [13.71 – 13.77] | 125.0 us | 12.8x [12.75 – 12.81] |
+| 262,144 | 79.4 us | 528.2 us | 6.65x [6.64 – 6.67] | 489.4 us | 6.16x [6.15 – 6.17] |
+| 1,048,576 | 425.0 us | 2.16 ms | 5.08x [4.92 – 5.24] | 1.99 ms | 4.69x [4.55 – 4.83] |
+| 4,194,304 | 1.96 ms | 8.57 ms | 4.38x [4.33 – 4.43] | 9.41 ms | 4.80x [4.74 – 4.86] |
+| 16,777,216 | 7.95 ms | 34.48 ms | 4.34x [4.27 – 4.36] | 37.58 ms | 4.73x [4.65 – 4.76] |
+| overall |  |  | 8.40x [8.37 – 8.42] |  | 12.3x [12.29 – 12.37] |
+
+`some_nan`:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 3.6 ns | 15.5 ns | 4.28x [4.28 – 4.28] | 303.7 ns | 83.6x [83.52 – 83.63] |
+| 64 | 10.8 ns | 105.0 ns | 9.70x [9.70 – 9.72] | 425.5 ns | 39.3x [39.28 – 39.40] |
+| 256 | 39.3 ns | 476.8 ns | 12.1x [12.09 – 12.19] | 838.2 ns | 21.3x [21.24 – 21.44] |
+| 1,024 | 147.5 ns | 2.0 us | 13.3x [13.32 – 13.35] | 2.4 us | 16.3x [16.31 – 16.36] |
+| 4,096 | 601.1 ns | 7.8 us | 13.0x [12.96 – 12.97] | 8.6 us | 14.3x [14.27 – 14.32] |
+| 16,384 | 2.4 us | 31.7 us | 13.4x [13.40 – 13.41] | 34.7 us | 14.7x [14.65 – 14.67] |
+| 65,536 | 9.6 us | 126.6 us | 13.1x [13.13 – 13.16] | 150.6 us | 15.6x [15.61 – 15.67] |
+| 262,144 | 62.2 us | 501.5 us | 8.06x [8.03 – 8.10] | 608.9 us | 9.79x [9.75 – 9.82] |
+| 1,048,576 | 380.1 us | 2.02 ms | 5.31x [5.18 – 5.45] | 2.47 ms | 6.49x [6.32 – 6.66] |
+| 4,194,304 | 2.12 ms | 8.67 ms | 4.09x [4.02 – 4.16] | 12.14 ms | 5.73x [5.61 – 5.82] |
+| 16,777,216 | 7.80 ms | 31.93 ms | 4.09x [4.04 – 4.13] | 45.41 ms | 5.82x [5.74 – 5.85] |
+| overall |  |  | 8.18x [8.16 – 8.21] |  | 14.9x [14.84 – 14.93] |
+
+With the output buffer 16 bytes behind its input ("apart" is the same kernel with the output clear of the input), `random`:
+
+| n | kernel | apart | speedup [95%] | naive C | speedup [95%] |
+|---|---|---|---|---|---|
+| 4,096 | 585.5 ns | 600.6 ns | 1.03x [1.02 – 1.03] | 8.4 us | 14.3x [14.22 – 14.30] |
+| 16,384 | 2.4 us | 2.3 us | 1.00x [0.99 – 1.00] | 33.5 us | 14.2x [14.17 – 14.22] |
+| 65,536 | 9.4 us | 9.8 us | 1.03x [1.03 – 1.03] | 134.4 us | 14.2x [14.21 – 14.24] |
+| 262,144 | 62.2 us | 78.7 us | 1.27x [1.26 – 1.27] | 534.3 us | 8.59x [8.55 – 8.63] |
+| 1,048,576 | 433.2 us | 584.5 us | 1.35x [1.33 – 1.37] | 2.66 ms | 6.13x [6.08 – 6.21] |
+| 4,194,304 | 1.86 ms | 1.96 ms | 1.06x [1.04 – 1.07] | 8.63 ms | 4.63x [4.58 – 4.68] |
+| 16,777,216 | 7.69 ms | 7.93 ms | 1.03x [1.01 – 1.05] | 34.35 ms | 4.47x [4.38 – 4.49] |
+| overall |  |  | 1.10x [1.10 – 1.11] |  | 8.48x [8.44 – 8.50] |
+
+No stall since attempt 2: a block's loads come before the stores of the block before it. Attempt 1 was at 0.88x to 0.90x there.
+
+**The same speed on every kind of data.** The kernel has no branch that depends on an element once the running value is a number: 0.14 to 0.15 ns per element from 1,024 to 65,536 on random, rising and NaN-laden data alike. Before the first number it takes the elements one at a time with a branch each, so an array that is all NaN is done at that loop's speed; the judge's `nan_all` cases check it and nothing times it.
+
+What the kernel requires of its caller: `out` does not overlap `x`, and no element of `x` is a signaling NaN. With one, the kernel ignores it as it ignores any NaN (and returns it unchanged if it is `x[0]`), where NumPy's result turns into a quiet NaN at that element and forgets the maximum so far. The judge cannot see the difference: its NaN is the quiet one. Matching NumPy there would take a test of every element on every path; `spec.py` says the caller checks, which is a person's decision to confirm.
+
+What holds it at each size:
+
+- **16:** the entry, the head and the tail: 4.2x to 4.6x.
+- **64 to 65,536:** the arithmetic of a block: ten `vmaxpd` on two ports and six shuffles, four of them on one port. 0.135 ns per element in the micro-benchmark inside the first-level cache and 0.133 to 0.140 at 16,384; 0.14 to 0.15 in the judge. A plain copy takes 0.115 beyond the first-level cache, so the cache is not the limit here as it is for `cummax_i64`.
+- **262,144 and 1,048,576:** the third-level cache: 5x to 8.6x.
+- **4,194,304 and 16,777,216:** memory, with a third less traffic than the naive C: 4.1x to 4.4x.
+
+Not tried:
+
+- **A flat loop and a rising loop, as in `cummax_i64`:** a block in which no element is above M is M eight times, at one compare per vector. For random data beyond the first-level cache that is the copy's 0.115 ns per element against 0.14 to 0.15, and inside it more. It needs a second test for a zero of the other sign (NumPy's running value changes sign there, and `x > M` does not see it), and it gives the kernel branches that depend on the data, which it does not have now.
+- **Blocks of 16** with the next M taken from the last output by a shuffle in place of a `vmaxpd`. By count it saves one `vmaxpd` in 20 and no shuffle.
+- **The first elements before a number in the vector registers.** An array that begins with many NaNs is done one element at a time until the first number.
+- **Stores past the caches below 24 MB,** for the reason `cumsum_i64` gives: the caller gets an output that is in no cache.
+- **`prefetchw` for the output.** It is not among the x86-64-v3 instructions.
