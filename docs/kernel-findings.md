@@ -118,7 +118,7 @@ Columns as in the ARM64 table: "vs naive C" and "vs NumPy" are geometric means o
 ### x86-64
 
 - **Machine.** Intel Core i5-14600KF (Raptor Lake Refresh), one performance core, Linux 7.0, NumPy 2.5.5, clang 21.1.8 for the naive C, GNU `as` 2.46 for the kernels. Native. A desktop session was running; the judge takes 300 samples of one millisecond per size and pins its thread, which is what makes that tolerable ([judge-design.md](judge-design.md#short-samples)).
-- **Command.** `uv run judge run <kernel>`, **locked**, one kernel at a time, after its last kept change. Each row is one such run; the per-size tables are in the kernel's `attempts.md` under "x86-64: where it stands".
+- **Command.** `uv run judge run <kernel>`, **locked**, one kernel at a time, after its last kept change. Each row is one such run; the per-size tables are in the kernel's `x86_64/attempts.md` under "Where it stands".
 - **One row is unlocked.** `interp_f64`: its reference on `main` does not match NumPy on x86-64, the correction is a pull request of its own, and the judge refuses a locked run of a kernel whose reference differs from `main`. The row has to be taken again, locked, once the correction is merged.
 - **How the kernels were written.** One agent, one family after another, in the order of the survey's x86-64 shortlist, under the rule in [AGENTS.md](../AGENTS.md). Kernels with several variants (`argmax` and `argmin`, the two `searchsorted`, the two `clip`, the two `count_nonzero`) are generated from one source per family and were judged separately. The ARM64 kernels and logs were read for the idea and the proofs and not used as a template.
 - **Outside the judge.** Where a path is not reached by the judge's correctness cases (stores past the caches from 24 MB of output, 512 searches in step from 262,144 elements, a `cumsum` chunk redone and followed by the fast path) or where the judge's data seldom lands (bin edges), a differential test against the reference C was written and run, and is described in the kernel's log. Micro-benchmarks outside the judge are labelled as such there and decided nothing: every kept change has a `compare` verdict or is a first version judged by `run`.
@@ -145,7 +145,7 @@ The two fixtures needed nothing beyond arrays and a size. The real kernels neede
 
 #### On x86-64
 
-Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tables and what was left untried.
+Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and what was left untried.
 
 - **The opponent is NumPy's own AVX2 loop,** 0.083 ns per `float32` and 0.163 ns per `float64` at 1,048,576 elements, not a scalar loop. The compiler leaves the reference scalar, 0.77 ns per element, so the column to read is NumPy's.
 - **Technique.** One pass that does not track positions. The extreme so far is kept in every lane of a register; a block of eight vectors is reduced with `vmaxps` into four accumulators that are never reset, so a lane of an accumulator is beyond that register exactly when the block holds a new extreme. One branch per block covers "a new extreme or a NaN" and is taken about as often as the logarithm of the number of blocks. When it is taken the block is looked at again: the first NaN ends the call, otherwise the block becomes the remembered one. The answer is the first element equal to the extreme in the remembered block: `vcmpeqps`, `vmovmskps`, `tzcnt`.
@@ -172,7 +172,7 @@ Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tabl
 
 #### On x86-64
 
-Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tables and what was left untried.
+Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and what was left untried.
 
 - **Technique.** One `vpcmpeqb` against zero and one `vpmovmskb` turn 32 mask bytes into 32 bits; a mask byte is true when it is not zero, whatever its value. `compress`: each byte (`float32`) or four bits (`float64`) of that word indexes a table of permutations, `vpermps` or `vpermd` moves the selected elements to the front, all lanes are stored and `popcnt` advances the write position. `nonzero`: each byte indexes a table of the positions of its set bits, widened with `vpmovzxbq`.
 - **A sparse block path, per block and with no state.** In `compress_f64` and `nonzero_bool` a block of 32 with at most four true elements skips the table: `tzcnt` and `blsr` take a fixed four positions out of the mask word. 1.24x and 1.40x overall, all of it at 5% selected. In `compress_f32` it was a wash and is not used.
@@ -199,7 +199,7 @@ Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tabl
 
 #### On x86-64
 
-Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tables and what was left untried.
+Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and what was left untried.
 
 - **Technique.** Dense blocks blend, as on ARM64: four elements are loaded, combined with the value by three logical instructions under a lane mask from a 16-entry table, and stored back. `vblendvpd` is not used: measured, it runs once per cycle here, and three logical instructions run three per cycle. A block of 32 with at most four selected elements is not blended: `tzcnt` and `blsr` find the positions and the value is stored to each, so no element is loaded and a cache line with no selected element is not touched (1.37x overall, 1.92x at 5% selected).
 - **Result.** 18.4x over NumPy at 1,048,576 with half selected and 7.3x with 5%; 3.96x over the naive C overall.
@@ -222,7 +222,7 @@ Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tabl
 
 #### On x86-64
 
-Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tables and what was left untried.
+Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and what was left untried.
 
 - **The general case is settled the other way round from ARM64.** A compare of four 64-bit elements exists here, and the compiler already emits it: the naive C is vectorised, 0.30 ns per element for any values, 22x to 30x ahead of NumPy on its own. Written by hand the same loop gains 8%.
 - **Narrow keys.** When every test value is from 0 to 32,767, sixteen elements are narrowed from 64 to 16 bits with three `vpackusdw` and compared with eight `vpcmpeqw`, where the wide compare needs eight for four elements: 0.64 cycles per element against the compiler's 1.6. A block that holds an element outside that range cannot be narrowed and is compared at 64 bits. The nibble tables of the ARM64 kernel were not needed: with sixteen keys per register, eight compares cost the same fifteen instructions.
@@ -264,7 +264,7 @@ Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tabl
 
 #### On x86-64
 
-Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tables and what was left untried.
+Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and what was left untried.
 
 - **Technique.** A search is a fixed number of steps with no branch on the data: `half = (len + 1) / 2; if a[lo + half - 1] < needle: lo += half; len -= half`. Every probe is inside the array whatever the data, so the kernels stay inside their buffers on unsorted input by construction. Four searches share one `vgatherqpd`. Up to 64 run in step, with their positions kept in the output buffer, which is one 64-bit slot per needle; 512 when the array does not fit the second-level cache.
 - **How many in step is the finding.** The chain from one step of a search to its next, through a gather, is about thirty cycles on this processor, and a gather can start every two to three. Sixteen searches in four registers left most of that idle: going to 64 was 1.92x. Beyond the second-level cache 512 against 64 is 1.4x to 1.8x, because the number in step is the number of cache misses in flight.
@@ -291,7 +291,7 @@ Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tabl
 
 #### On x86-64
 
-Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tables and what was left untried.
+Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and what was left untried.
 
 - **`histogram_f64`: no divide per element.** A divide of four doubles takes eight cycles on this processor, so a kernel that computes the reference's estimate as the reference does cannot go below two cycles per element. The proof never needed that estimate, only one within `4 u N` of the real position. The kernel computes `(v - lo) * S` with `S = nbins / width` taken once, which is within `3.01 u N`.
 - **Fixed point through `vcvttpd2dq`.** `S` is scaled by 4,096, so the conversion gives the bin in the upper bits and twelve bits of fraction below. An element is accepted when the fraction bits are neither all zero nor all one, which is the ARM64 kernel's 2^-12 on either side of an edge, and when the whole number is within the limit as an unsigned number: a NaN and anything too large convert to 0x80000000 and fail that test with no test of their own. Everything else, and every call whose bin count and range fail the once-per-call check, goes through a scalar copy of the reference.
@@ -324,7 +324,7 @@ Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tabl
 
 #### On x86-64
 
-Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tables and what was left untried.
+Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and what was left untried.
 
 - **The ceiling is lower here, and it was measured first.** With the data in the second-level cache a plain copy loop takes 0.115 ns per `int64` and the naive C 0.19, one cycle per element. So no integer running sum can beat the compiler's by more than 1.65x beyond the first-level cache. The float chains cost two cycles per element, which leaves room.
 - **Technique.** The ARM64 regrouping. What one output vector adds to the one before it is built from the input alone: the input plus an overlapping load one element back, then one `vperm2f128` for the shift across the halves of the register, so the chain from vector to vector is one add. `float32` builds its window of eight with two more overlapping loads. `cumsum_i64` also has a 16-byte version, used from 512 to 131,071 elements: its accesses rarely straddle a cache line, and a 32-byte access that does costs a cycle or two.
@@ -355,7 +355,7 @@ These were expected to ship as C. Five ship as assembly.
 
 #### On x86-64
 
-Each kernel's `attempts.md` has, under "x86-64", every attempt, the judge's tables and what was left untried.
+Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and what was left untried.
 
 - **`sum_u8`.** `vpsadbw` against zeros adds 32 bytes into four 64-bit sums, on one port; mixed with `vpmaddubsw` on the other two the loop reaches 45 bytes per cycle. Aligned loads were worth 1.5x beyond the first-level cache, and a prefetch and four streams, both rejected on the M1, pay here. 6.15x over the naive C, 51x over NumPy at 1,048,576.
 - **`count_nonzero`.** A compare with zero and a subtract into an accumulator, two instructions per four elements, loads aligned from 64 elements. The compiler vectorises this loop and both are at memory's speed from about a thousand elements: 1.21x over the naive C for `int64` and 1.06x for `float64`; 1.26x and 4.4x over NumPy at 1,048,576.
