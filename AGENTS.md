@@ -1,6 +1,6 @@
 # Working in this repository
 
-hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project, [docs/judge-design.md](docs/judge-design.md) for the judge [docs/delivery-design.md](docs/delivery-design.md) for how the kernels reach NumPy and [docs/release-design.md](docs/release-design.md) for how releases are made. The kernels exist for ARM64. The judge also runs on Linux x86-64, where kernels are being written to the plan in [docs/x86-64-design.md](docs/x86-64-design.md).
+hotkernels is a set of kernels for NumPy operations, hand-written assembly where it beats the compiler and plain C where it does not, checked and timed by an automated judge. Read [docs/core-design.md](docs/core-design.md) for the project, [docs/judge-design.md](docs/judge-design.md) for the judge [docs/delivery-design.md](docs/delivery-design.md) for how the kernels reach NumPy and [docs/release-design.md](docs/release-design.md) for how releases are made. The kernels exist for two architectures: ARM64 on macOS, and x86-64 on Linux, written to the plan in [docs/x86-64-design.md](docs/x86-64-design.md).
 
 This file is for coding agents. The first half applies to any work here; the second half applies when you are writing or tuning a kernel.
 
@@ -174,7 +174,7 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 
 ### More than one architecture
 
-`spec.py` and `naive.c` are shared. Each architecture has its own `kernel.s`, and the judge builds the one that matches the machine it runs on. Kernels exist for ARM64. The judge runs on Linux x86-64 too, with its conventions below; the plan for its kernels is [docs/x86-64-design.md](docs/x86-64-design.md).
+`spec.py` and `naive.c` are shared. Each architecture has its own `kernel.s`, and the judge builds the one that matches the machine it runs on. Kernels exist for both, ARM64 on macOS and x86-64 on Linux; what was tried on each is in the two parts of a kernel's `attempts.md`, and what was found in [docs/kernel-findings.md](docs/kernel-findings.md).
 
 - **The other architecture's kernel and log are reading material, not a template.** Take the idea and the proofs from them. Choose the instructions, block sizes and paths for the processor you are on.
 - **A dead end there is not a dead end here.** An attempt rejected on another architecture was rejected on that processor. Do not skip it because of that log; try it and record what the judge says.
@@ -214,6 +214,9 @@ A kernel is a pure leaf function over the buffers it is given. The judge enforce
 - **An output just behind the input stalls a loop.** If the output buffer starts 8 to 128 bytes after the input, counted within a 4 KB page, the processor takes each store for a store to the elements about to be loaded. The second table of `run` times exactly that. A kernel may test the two addresses on entry and take a path that does not stall.
 - The timing thread is pinned to one performance core. Several judges can run at once and each takes a different core, but they still share the last-level cache and memory, so sizes from about a million elements up are only trustworthy when nothing else is running.
 - Kernels are only ever called with `n >= min_n` from the spec.
+- **What this processor costs,** measured while the first kernels were written (the Intel Core i5-14600KF; [docs/kernel-findings.md](docs/kernel-findings.md#x86-64-1)): a `lea` with a scaled index takes two cycles, so keep a position that advances every step as a count and add to it. `vblendvpd` and `vpblendvb` run once per cycle; three logical instructions run three per cycle. Compares, maxima and float adds have two of the three vector ports. Two 32-byte loads per cycle, and one store per cycle unless two go to the same cache line. A 32-byte load that straddles two cache lines costs a cycle more, a store two. Beyond the first-level cache a loop that writes as much as it reads runs at the speed of a copy, about 0.115 ns per eight bytes, whatever its arithmetic.
+- **Load ahead of the stores** in a kernel that reads one buffer and writes another of the same size: load the next vectors before storing the current ones. That is what keeps the close-placement table of `run` level.
+- **In the attempts log, x86-64 entries go under a `# x86-64` heading after the ARM64 ones,** numbered `## x86-64 1.`, `## x86-64 2.` and so on.
 
 ### The attempts log
 

@@ -7,8 +7,8 @@ kernels/<name>/
   spec.py          signature, NumPy oracle, correctness mode
   naive.c          the simplest correct C loop
   arm64/kernel.s   hand-written NEON; absent for a kernel that is its naive C
-  x86_64/kernel.s  hand-written AVX2, where one has been written (none yet)
-  attempts.md      log of what was tried and what the judge said
+  x86_64/kernel.s  hand-written AVX2
+  attempts.md      log of what was tried and what the judge said: ARM64 first, then x86-64
 ```
 
 A kernel without a `kernel.s` for the architecture of the machine is a C kernel there: `uv run judge check <name>` verifies its `naive.c` against NumPy, and `uv run judge run <name>` reports the C against NumPy.

@@ -1,14 +1,14 @@
 # x86-64: design
 
-This began as a proposal for review. Steps 1 to 4 of its [order of work](#order-of-work) are done: the judge and the survey run on Linux x86-64, and the survey is recorded. No x86-64 kernel exists yet. It details the "x86-64 kernels" item under [Later](core-design.md#later) in the core design: which x86-64 to target, what has to change in the judge, the survey and the package, how the existing kernels are carried over, and how the existing documents are amended so that they explain two architectures and not one.
+This began as a proposal for review. Every step of its [order of work](#order-of-work) has been carried out: the judge and the survey run on Linux x86-64, all 23 kernels have an x86-64 verdict, the package builds, installs and passes `delivery check` there, and the findings are written up. What is left is a person's: the decisions listed in [kernel-findings.md](kernel-findings.md#decisions), one reference correction to review, and [open issue 6](#open-issues). It details the "x86-64 kernels" item under [Later](core-design.md#later) in the core design: which x86-64 to target, what has to change in the judge, the survey and the package, how the existing kernels are carried over, and how the existing documents are amended so that they explain two architectures and not one.
 
 ## Summary
 
 - **Target: x86-64-v3 on Linux.** AVX2, FMA, BMI1, BMI2, LZCNT and MOVBE, with 256-bit vectors. It is the most the development machine can run as a named level, and it is the level NumPy itself dispatches to on that machine.
 - **Assembly is GNU assembler in Intel syntax**, in `kernels/<name>/x86_64/kernel.s`, built through the C compiler as on ARM64.
 - **A kernel is carried over in spirit, not line by line.** `spec.py` and `naive.c` are shared. The assembly is written again for the same contract, starting from what makes the operation slow and not from the ARM64 instructions.
-- **x86-64 has techniques ARM64 does not, and lacks some ARM64 has.** Which of them pay is not known. That is [open issue 1](#open-issue-1-techniques-particular-to-x86-64), with a list of candidates per kernel family that every x86-64 kernel run must try and report on.
-- **The speedups will not be the ARM64 ones.** NumPy already uses AVX2 for `argmax`, `clip` and `astype` on x86-64. A first measurement suggests the mask, search, histogram and `sum` kernels can match or beat their ARM64 figures against NumPy, the `cumsum` kernels reach about half, and `argmax`, `clip`, `count_nonzero` on `int64` and the `uint8` cast gain little or nothing outside the caches.
+- **x86-64 has techniques ARM64 does not, and lacks some ARM64 has.** Which of them pay was [open issue 1](#open-issue-1-techniques-particular-to-x86-64), a list of candidates per kernel family that every x86-64 kernel run had to try and report on. It is closed: [what became of each](#what-became-of-the-candidates).
+- **The speedups are not the ARM64 ones.** NumPy already uses AVX2 for `argmax`, `clip` and `astype` on x86-64. The measured figures are in [kernel-findings.md](kernel-findings.md#x86-64); they came out close to what the first measurement suggested, which was that the mask, search, histogram and `sum` kernels can match or beat their ARM64 figures against NumPy, the `cumsum` kernels reach about half, and `argmax`, `clip`, `count_nonzero` on `int64` and the `uint8` cast gain little or nothing outside the caches.
 - **The existing documents are amended first.** They state ARM64 reasoning as if it were general. Each is restructured to separate what is true of an operation from what is true of one architecture, before any x86-64 result is written into it.
 
 ## What changed in the building
@@ -32,6 +32,21 @@ The judge and the survey now run on Linux x86-64 (steps 3 and 4 of the [order of
 | `compare` in one process | `compare` in five rounds, each in a process of its own, with the interval taken from the spread between rounds | Where a build is loaded changes its speed by up to 0.7% overall. Within one process that is the same in every sample, so identical code was called significantly different. See [judge-design.md](judge-design.md#comparing-two-versions-of-a-kernel) |
 | Not mentioned | The judge places the output buffers of every timed call clear of the inputs, and `run` adds a table that times the output 16 bytes behind its input | The same finding, in the judge: its naive C for `cumsum_i64` took four times as long at the one size where the allocator had put the buffers 16 bytes apart. See [judge-design.md](judge-design.md#where-the-output-buffer-sits) |
 
+The kernels, the package and the findings (steps 5 to 7). Where the building departed from the proposal:
+
+| Proposed | Built | Why |
+|---|---|---|
+| The attempts logs moved beside each kernel, one per architecture | Still one `attempts.md` per kernel, with an "x86-64" part after the ARM64 one and its own numbering | A kernel run may edit two files, and moving 23 logs is a change of its own. The x86-64 headings are ones the documentation site does not count, so its ARM64 figures are unchanged |
+| One family per run, each a `/goal` run of its own | One agent, family after family, in one session; one pull request per family, stacked | It was asked for that way. The rule per change was the same |
+| A kernel's findings written by the pull request that produces them | Written once, at the top of the stack | A kernel run edits two files |
+| `cast_u8_f32` last and probably dropped; `clip` shipping as C | Both have assembly, by small margins | The compiler does not emit the two-instruction `clip`, and stores past the caches help both at the largest size. The verdicts are a person's to confirm |
+| `interp_f64` like any other kernel | Its reference had to be corrected first, in a pull request of its own, and its kernel was judged unlocked on top of it | NumPy's x86-64 build does not fuse the multiply and the add, and the shared reference did ([issue 73](https://github.com/sofeikov/hotkernels/issues/73)) |
+| `tools/generate.py` already picks the kernel directory by architecture | It always took ARM64's. Now it writes a kernel set per architecture, and a source distribution carries both | One source distribution serves both platforms |
+| The run-time check asks the processor and the operating system | It reads `/proc/cpuinfo`, which lists `avx` and `avx2` only when Linux saves the 256-bit registers | No compiled code is needed before the check has passed |
+| The wheel's compiler has to be clang | The Linux wheels are built by the manylinux image's gcc | No kernel ships as C on x86-64, so the compiler builds only the binding. `release-design.md` says what changes the day one does |
+| The release job for other platforms on Linux | Moved to Linux on ARM64 | A build on Linux x86-64 now needs a compiler |
+| Not mentioned | `delivery time` names the machine and pins its thread as the judge does | It recorded "unknown machine" on Linux and was not pinned |
+
 **Checked with clang.** The selftest passes with clang 21.1.8 as the compiler, which is what the design asks for, and continuous integration runs it on Linux. It was developed with gcc standing in, before clang was installed on this machine, and passes with both. The choice of compiler matters as much as [open issue 2](#open-issues) expected: the naive C for `sum_u8` takes 49 ns for 1,024 bytes built by clang and 127 ns built by gcc.
 
 **Repeatability.** On this machine, with a desktop session running, five runs of the ten-run check gave worst spreads of 2.0%, 2.3%, 4.7%, 7.9% and 17.6% against a target of 3%. The last was taken while other tests ran on the machine. Sizes up to 1,048,576 elements stayed within 2.3% in four of the five. The misses were at 256 elements once, and otherwise at 4,194,304: sixteen megabytes of `float32`, which only just fits the 24 MB cache that every core shares, so anything else that uses the cache moves it. **Since the judge takes 300 samples of 1 ms** in place of 30 of 10 ms, the same check passes with the desktop session running: the worst spread over ten runs was 1.7%, at 16 and at 16,777,216 elements, and 0.4% or less from 256 to 1,048,576.
@@ -54,7 +69,7 @@ The survey was run once on this machine to see where NumPy stands, before it was
 
 - **How.** `uv run survey run`, pinned to one performance core, NumPy 2.5.5. The survey is not ported, so it ran through a temporary stand-in outside the repository that sent its `clang` calls to gcc 15.2 with `-march=native` and supplied the two macOS functions its C file calls. The reference loop drifted by 0.03% over the run.
 - **What it is good for.** NumPy's time per element, and how far a compiled C loop is from it. Sizes from 1,048,576 elements up showed scatter between variants of the same operation, so those are read as rough.
-- **What it is not.** A judge result. No x86-64 kernel exists, so every kernel figure below is an estimate from the instruction counts a kernel would need and from what the caches deliver.
+- **What it is not.** A judge result. No x86-64 kernel existed when this was written, so every kernel figure below is an estimate from the instruction counts a kernel would need and from what the caches deliver.
 
 | Family | NumPy here, ns per element at 1,048,576 | NumPy on the M1 Pro | Kernel against NumPy at 1,048,576, estimated | ARM64 kernel, measured |
 |---|---|---|---|---|
@@ -112,7 +127,7 @@ Three kinds of difference decide how a kernel changes:
 
 ## Open issue 1: techniques particular to x86-64
 
-**Open.** Nothing below has been measured. Each entry is a hypothesis for the kernel run of its family to try, keep or reject under the usual rule, and record.
+**Closed.** Each entry below was a hypothesis for the kernel run of its family to try, keep or reject under the usual rule, and record. The table is kept as it was proposed; [what became of the candidates](#what-became-of-the-candidates) follows it.
 
 ### Why it is an issue and not a list of instructions
 
@@ -145,6 +160,37 @@ Several candidates do more than make a loop faster. They would remove a caveat t
 - **Instructions slow on other x86-64 processors.** `pext` and `pdep`, gathers and masked stores are fast here and not everywhere. With one machine the judge cannot see that: [open issue 4](#open-issues).
 - **Instructions beyond the level that this processor has.** AVX-VNNI could sum bytes, GFNI could transform masks. Using them needs a second tier and a run-time choice between two kernels: [open issue 5](#open-issues).
 
+### What became of the candidates
+
+Per family, in a line each; the reasons and the judge's figures are in each kernel's `attempts.md` under "x86-64" and in [kernel-findings.md](kernel-findings.md#results-by-family).
+
+| Family | Kept | Rejected, with the judge's result | Not tried, and why |
+|---|---|---|---|
+| `argmax`, `argmin` | A NaN test of its own beside `vmaxps`, one `vcmpunordps` per two vectors; position by `vcmpeqps`, `vmovmskps`, `tzcnt`; the same for the first NaN. A block scheme beats NumPy's AVX2 loop at every size | | Aligned loads, a prefetch: left for a second run |
+| `compress`, `nonzero` | One `vpmovmskb` per 32 mask bytes; `vpermd` by a table; `popcnt` for the write position; `tzcnt` and `blsr` for sparse blocks in `compress_f64` and `nonzero_bool` | The sparse path in `compress_f32` (1.005x, a wash); aligned loads (0.960x); a prefetch (0.980x) | `pext` in place of the table: more instructions, and the loop is held by its instruction count. A branch for all-zero blocks: taken at random on the judge's masks. The switch by density has gone from `compress_f32`; in the other two it is per block and has no weak spot |
+| `maskfill_f64` | Load, blend and store, with a store-only path for sparse blocks | Alignment (no significant difference) | **`vmaskmovpd`: measured (1.062x overall, 1.6x up to 4,096 elements, 0.86x at 65,536) and left for a person,** [issue 70](https://github.com/sofeikov/hotkernels/issues/70) |
+| `isin_i64` | `vpcmpeqq` for the general case, which ties the compiler (1.08x); narrowing with the pack instructions for test values from 0 to 32,767 | A window that starts at the smallest test value (0.77x against the naive C) | `vpshufb` nibble tables: with sixteen keys per register eight compares cost the same |
+| `searchsorted`, `interp` | `vgatherqpd` for the probes, 64 or 512 searches in step; `vdivpd` for `interp`; an unfused multiply and add, as NumPy's build has | Sixteen searches in step in registers (the baseline; 64 in step is 1.92x over it) | Scalar loads with `cmov` for more than three needles: about six instructions per search step against four |
+| `histogram_f64` | Four per vector; `vcvttpd2dq` makes the NaN test free; scalar counter updates. The proof was rechecked and changed: a multiply by a precomputed scale in place of the divide, fixed point, the last bin on the fast path | Two count tables (0.939x) | |
+| `bincount_u8` | An increment that addresses memory; `rep stosb` to clear; four tables from 32,768 bytes | Four tables from 2,048 bytes | Two and eight tables |
+| `cumsum` | The prefix sum across the register with one permute and an overlapping load; non-temporal stores from 24 MB; the overflow test as a compare of magnitudes | 16-byte vectors at every size for `int64` (0.991x; kept from 512 to 131,071 elements); aligned stores as a general step; adds as fused multiply-adds by one (0.979x) | |
+| `sum_u8` | `vpsadbw`, mixed with `vpmaddubsw`, which brings a widening schedule back | | |
+| `count_nonzero` | A compare with zero and a subtract | | `vmovmskpd` and `popcnt`: three instructions per four elements against two |
+| `clip` | Two instructions with the bound first, bit for bit for every ordered pair of bounds. The compiler does not emit them, so the kernel is assembly | | **The three ARM64 caveats do not exist in the kernel; recording that is left for a person** |
+| `cast_u8_f32` | `vpmovzxbd` and `vcvtdq2ps`, by a small margin over the C | | |
+
+The candidates that applied to every kernel:
+
+| Candidate | Outcome |
+|---|---|
+| Masked loads and stores for leftover elements | Not used by any kernel. Every kernel finishes with an overlapping vector, a scalar loop, or both. [Open issue 3](#open-issues) therefore never needed a decision |
+| Non-temporal stores | Kept from 24 MB of output in `cumsum`, `clip` and `cast`: 1.2x to 2.1x at the sizes that reach them. Not usable in `compress`, whose stores overlap |
+| An output that sits just behind the input | Stalled the first `cumsum_f64` by 2.5x at two sizes. Loading ahead of the stores removes it there and in `cumsum_i64`, `cumsum_f32` and `clip`. `histogram_f64` loses up to a sixth at some sizes; the mask kernels and `cast` nothing |
+| Alignment of data | Kept in `sum_u8`, `count_nonzero`, and for the stores of `clip`, `cast` and the large-array path of `cumsum`. Rejected in `compress_f32`, `maskfill_f64` and `cumsum_i64`: the judge places the output 16 bytes after the input within a cache line, so one of the two is always off |
+| Alignment of code | Hot loops start on 64-byte boundaries throughout. Varied only in `sum_u8` |
+| Instructions slow on other x86-64 processors | `vgatherqpd` in the three search kernels. No `pext`, `pdep` or masked store in any kept kernel |
+| Instructions beyond the level | None used. The judge refuses them |
+
 ### How the issue is worked and closed
 
 1. **The goal spec for an x86-64 run names the family's candidates.** The run tries each one, or says why it could not, and records the attempt in the log like any other.
@@ -152,7 +198,7 @@ Several candidates do more than make a loop faster. They would remove a caveat t
 3. **A candidate that changes a caveat, a binding constraint or a judge rule is not kept on the run's own authority.** The run reports it with the judge's figures, and a person decides. The rows for `maskfill`, `clip` and the masked tail are of that kind.
 4. **What is found goes into [kernel-findings.md](kernel-findings.md)** under the family's x86-64 heading: what was tried, what held, and what the limit is on this processor.
 5. **Ideas flow back.** A technique found here that does not depend on x86-64 instructions is noted for a later ARM64 run of the same kernel.
-6. **Closed when** every family has its x86-64 entry in the findings and each row above is marked kept, rejected with the judge's result, or not tried with a reason.
+6. **Closed when** every family has its x86-64 entry in the findings and each row above is marked kept, rejected with the judge's result, or not tried with a reason. Both are done.
 
 ## The judge
 
@@ -227,9 +273,9 @@ The documents were written when there was one architecture, and they give ARM64 
 | 2 | The existing documents restructured by architecture | Merged; no x86-64 content yet |
 | 3 | The judge on Linux x86-64: build, lint, level check, wrapper, pinning, fixtures; AGENTS.md section; attempts logs moved | `uv run judge selftest` passes on this machine, including repeatability, and still passes on the M1 |
 | 4 | The survey ported and recorded | A result file for this machine and an x86-64 shortlist |
-| 5 | The kernels, one family per run, starting with `sum_u8` | Every kernel has an x86-64 verdict from the judge: assembly, C, or not installed, with the reason |
-| 6 | The package: environment check, build, wheels, CI | `uv run delivery check` passes on this machine; `uv run delivery time` recorded |
-| 7 | The findings written up and open issue 1 closed | Every family has its x86-64 section; one `compat` release note |
+| 5 | The kernels, one family per run, starting with `sum_u8` | Every kernel has an x86-64 verdict from the judge: assembly, C, or not installed, with the reason. **Done:** all 23 have assembly; four verdicts are marked for a person to confirm, and `interp_f64` was judged unlocked |
+| 6 | The package: environment check, build, wheels, CI | `uv run delivery check` passes on this machine; `uv run delivery time` recorded. **Done** |
+| 7 | The findings written up and open issue 1 closed | Every family has its x86-64 section; one `compat` release note. **Done** |
 
 Steps 3 to 6 each take their own pull request or several. Step 5 follows AGENTS.md: one rule, two files per run.
 
@@ -252,12 +298,12 @@ Steps 3 to 6 each take their own pull request or several. Step 5 follows AGENTS.
 
 1. **Techniques particular to x86-64.** [Above](#open-issue-1-techniques-particular-to-x86-64). Worked through the kernel runs and closed with the findings.
 2. **Which compiler builds the naive C on Linux.** *Decided in review: clang on both architectures.* The core design says clang. The machine has gcc 15.2, which left `argmax` and `clip` scalar in the survey's loops. With one compiler the baseline means the same thing on each architecture and "ships as C" is decided against the same compiler. It has to be installed here, and the wheel build has to use it too.
-3. **Do masked loads and stores satisfy the strict memory rule?** They do not fault on, read or write the elements they leave out, so the judge's guard pages would pass them. Recommended: allowed, and said so in the rule, because nothing outside the buffer is accessed. A masked access that reaches an inaccessible page is slow on this processor, so it is for leftover elements only.
+3. **Do masked loads and stores satisfy the strict memory rule?** *Not decided, and not needed: no kernel uses one.* They do not fault on, read or write the elements they leave out, so the judge's guard pages would pass them. Recommended: allowed, and said so in the rule, because nothing outside the buffer is accessed. A masked access that reaches an inaccessible page is slow on this processor, so it is for leftover elements only.
 4. **Instructions that are slow on other x86-64 processors.** `pext` and `pdep` on AMD before Zen 3, gathers on older AMD and on Intel processors with the gather mitigation, masked stores on some AMD processors. The judge sees one machine. *Decided in review: allowed*, with each use named in the findings as untested elsewhere, until a second machine exists. The alternative was to forbid them in loops and accept slower kernels here.
-5. **Instructions beyond the level that this machine has.** AVX-VNNI and GFNI. Recommended: not used. A second tier needs a run-time choice between two kernels, which is the AVX-512 design.
-6. **Releases with two platforms.** A release re-measures every speed it quotes. With two platforms that needs both machines, or notes that quote one platform and say so. Not decided here; it belongs in an amendment to [release-design.md](release-design.md) at step 6.
+5. **Instructions beyond the level that this machine has.** AVX-VNNI and GFNI. *Not used by any kernel; the judge refuses them.* Recommended: not used. A second tier needs a run-time choice between two kernels, which is the AVX-512 design.
+6. **Releases with two platforms.** A release re-measures every speed it quotes. With two platforms that needs both machines, or notes that quote one platform and say so. **Still open.** The release workflow builds and tests wheels for both platforms; how a release's figures for the platform the maintainer is not sitting at are re-measured is not decided, and [release-design.md](release-design.md#more-than-one-platform) says so.
 7. **One findings document or two.** *Decided in review: one*, split by family and then by architecture, so the two are read side by side and the caller constraints sit in one table. The alternative was a second document per architecture, which is shorter to write and loses the comparison.
-8. **Where the judge puts its timing buffers.** *Decided and built.* The time of a loop that reads one buffer and writes another depends on where the two sit relative to each other within a page, by up to 8x for NumPy and 5x to 7x for a compiled C running sum ([survey-design.md](survey-design.md#where-the-output-sits)). The judge took its timing buffers from NumPy's allocator, so the allocator decided which case a kernel was timed in. Now the judge places them: every timing is taken with the output clear of the inputs, and `run` adds a table with the output 16 bytes behind its input, because that is what a user's two power-of-two arrays get. The rule and its limits are in [judge-design.md](judge-design.md#where-the-output-buffer-sits). Still open: whether a kernel must do well in the close table to ship. Recommended: decide it on the first kernel that shows a cost there.
+8. **Where the judge puts its timing buffers.** *Decided and built.* The time of a loop that reads one buffer and writes another depends on where the two sit relative to each other within a page, by up to 8x for NumPy and 5x to 7x for a compiled C running sum ([survey-design.md](survey-design.md#where-the-output-sits)). The judge took its timing buffers from NumPy's allocator, so the allocator decided which case a kernel was timed in. Now the judge places them: every timing is taken with the output clear of the inputs, and `run` adds a table with the output 16 bytes behind its input, because that is what a user's two power-of-two arrays get. The rule and its limits are in [judge-design.md](judge-design.md#where-the-output-buffer-sits). Still open: whether a kernel must do well in the close table to ship. Recommended: decide it on the first kernel that shows a cost there. That kernel exists now: `histogram_f64` loses up to a sixth at some sizes with its counters just behind the start of the data, and `nonzero_bool` a fifth at 4,096 elements. Every kernel that copies or accumulates into an output of the input's size loads ahead of its stores and shows no cost.
 
 ## Decisions made in review
 
