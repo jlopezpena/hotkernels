@@ -5,62 +5,79 @@
 # Every mask byte is 0 or 1.
 #
 # The reference adds one byte to a running count and stores it: a chain of
-# one add per element. Here four elements are one step. Their four mask bits
-# index a table of 16 entries, and an entry holds the two vectors a step
-# needs: the running count of the four elements within the group (P), and
-# their total in every lane (C). With T the count before the group in every
-# lane, the output vector is T + P and the next T is T + C. The chain is one
-# add per four elements, and the output is one add and one store.
+# one add per element. Here eight elements are one step. Their eight mask
+# bits index two tables of 256 entries. One entry is the running count within
+# the group, a byte per element; `vpmovzxbq` widens its two halves to two
+# registers of four 64-bit lanes. The other is the group's total, which
+# `vpbroadcastq` puts in every lane. With T the count before the group in
+# every lane, the two output vectors are the widened halves plus T, and the
+# next T is T plus the total: a chain of one add per eight elements.
 #
-# The mask bits of 32 elements come from one `vpmovmskb`. `pdep` spreads the
-# 32 bits over eight bytes, four bits to the upper half of each, so that each
-# byte is the group's table index times 16 and a scale of 4 in the address
-# makes the 64 bytes of an entry.
+# The mask bits of 32 elements come from one `vpmovmskb`, and those of a
+# group of eight outside a block from an 8-byte load and `pext`.
+#
+# From ALIGN_MIN elements the output is first brought to a multiple of 32
+# bytes, up to three elements one at a time, so that no store of a block
+# straddles two cache lines. The mask is a byte per element, so any number of
+# elements can go first. An out that is not a multiple of 8 cannot be brought
+# there and is left as it is.
 #
 # Paths, by what is left:
-#   32 or more  blocks of 32: one mask word, eight steps
-#   4..31       one step per four, the bits from a 4-byte load and `pext`
-#   1..3        one element at a time, as the reference does it
+#   32 or more  blocks of 32: one mask word, four groups
+#   8..31       one group per 8
+#   1..7        one element at a time, as the reference does it
 
-# One table entry for the four mask bits \m: the count within the group, then
-# the group's total four times.
-.macro ENTRY m
-    .set .Lb0, (\m) & 1
-    .set .Lb1, ((\m) >> 1) & 1
-    .set .Lb2, ((\m) >> 2) & 1
-    .set .Lb3, ((\m) >> 3) & 1
-    .quad .Lb0
-    .quad .Lb0 + .Lb1
-    .quad .Lb0 + .Lb1 + .Lb2
-    .quad .Lb0 + .Lb1 + .Lb2 + .Lb3
-    .fill 4, 8, .Lb0 + .Lb1 + .Lb2 + .Lb3
+# One entry of the prefix table for the eight mask bits \m: the count of set
+# bits up to and including each position.
+.macro PREFIX_ENTRY m
+    .set .Lcount, 0
+    .irp bit, 0, 1, 2, 3, 4, 5, 6, 7
+    .set .Lcount, .Lcount + (((\m) >> \bit) & 1)
+    .byte .Lcount
+    .endr
+.endm
+
+# One entry of the total table: the number of set bits of \m, as 64 bits.
+.macro TOTAL_ENTRY m
+    .set .Lcount, 0
+    .irp bit, 0, 1, 2, 3, 4, 5, 6, 7
+    .set .Lcount, .Lcount + (((\m) >> \bit) & 1)
+    .endr
+    .quad .Lcount
 .endm
 
 .section .rodata
 .p2align 6
-.Ltable:
-    .set .Lbits, 0
-    .rept 16
-    ENTRY .Lbits
-    .set .Lbits, .Lbits + 1
+.Lprefix:
+    .set .Lbyte, 0
+    .rept 256
+    PREFIX_ENTRY .Lbyte
+    .set .Lbyte, .Lbyte + 1
+    .endr
+.Ltotal:
+    .set .Lbyte, 0
+    .rept 256
+    TOTAL_ENTRY .Lbyte
+    .set .Lbyte, .Lbyte + 1
     .endr
 
-# Where `pdep` puts the mask bits of a block: the upper half of each byte.
-.set SPREAD, 0xF0F0F0F0F0F0F0F0
 # From this many elements the output is first brought to a multiple of 32
 # bytes: enough for the three elements that may take and one block after them.
 .set ALIGN_MIN, 35
-# The bits `pext` takes from four mask bytes: the lowest of each.
-.set LOW_BITS, 0x01010101
+# The bits `pext` takes from eight mask bytes: the lowest of each.
+.set LOW_BITS, 0x0101010101010101
 
-# One step of a block. al = the group's table index times 16, ymm0 = T.
-# \offset is where the group's output goes, in bytes from rsi.
-.macro STEP offset
-    movzx   ecx, al
-    shr     rax, 8
-    vpaddq  ymm1, ymm0, [r10 + rcx * 4]
-    vpaddq  ymm0, ymm0, [r10 + rcx * 4 + 32]
+# One group. rcx = its eight mask bits, ymm0 = T. \offset is where the
+# group's output goes, in bytes from rsi.
+.macro GROUP offset
+    vpmovzxbq ymm1, dword ptr [r10 + rcx * 8]
+    vpmovzxbq ymm2, dword ptr [r10 + rcx * 8 + 4]
+    vpaddq  ymm1, ymm1, ymm0
+    vpaddq  ymm2, ymm2, ymm0
+    vpbroadcastq ymm3, [r11 + rcx * 8]
+    vpaddq  ymm0, ymm0, ymm3
     vmovdqu [rsi + \offset], ymm1
+    vmovdqu [rsi + \offset + 32], ymm2
 .endm
 
 .text
@@ -69,12 +86,10 @@
 .p2align 4
 cumsum_bool:
     vpxor   xmm0, xmm0, xmm0            # T: the count so far, in every lane
-    lea     r10, [rip + .Ltable]
+    lea     r10, [rip + .Lprefix]
+    lea     r11, [rip + .Ltotal]
     cmp     rdx, ALIGN_MIN
     jb      .Lblocks
-    # Up to three elements one at a time, until out is a multiple of 32, so
-    # that no store of a block straddles two cache lines. An out that is not
-    # a multiple of 8 cannot be brought there and is left as it is.
     mov     ecx, esi
     neg     ecx
     and     ecx, 31                     # bytes until out is a multiple of 32
@@ -97,45 +112,43 @@ cumsum_bool:
 .Lblocks:
     mov     r8, rdx
     and     r8, -32                     # elements in whole blocks
-    jz      .Lfours
-    movabs  r11, SPREAD
+    jz      .Lgroups
     lea     r9, [rdi + r8]              # where the blocks end
 .p2align 6
 .Lblock:
     vmovdqu ymm1, [rdi]
     vpsllw  ymm1, ymm1, 7               # the low bit of each byte to its top
     vpmovmskb eax, ymm1
-    pdep    rax, rax, r11
-    STEP 0
-    STEP 32
-    STEP 64
-    STEP 96
-    STEP 128
-    STEP 160
-    STEP 192
-    STEP 224
+    movzx   ecx, al
+    shr     eax, 8
+    GROUP 0
+    movzx   ecx, al
+    shr     eax, 8
+    GROUP 64
+    movzx   ecx, al
+    shr     eax, 8
+    GROUP 128
+    mov     ecx, eax
+    GROUP 192
     add     rdi, 32
     add     rsi, 256
     cmp     rdi, r9
     jne     .Lblock
 
-.Lfours:
+.Lgroups:
     and     edx, 31                     # elements left
-    cmp     edx, 4
+    cmp     edx, 8
     jb      .Ltail
-    mov     r11d, LOW_BITS
-.Lfour:
-    mov     eax, [rdi]
-    pext    eax, eax, r11d
-    shl     eax, 6
-    vpaddq  ymm1, ymm0, [r10 + rax]
-    vpaddq  ymm0, ymm0, [r10 + rax + 32]
-    vmovdqu [rsi], ymm1
-    add     rdi, 4
-    add     rsi, 32
-    sub     edx, 4
-    cmp     edx, 4
-    jae     .Lfour
+    movabs  r8, LOW_BITS
+.Lgroup:
+    mov     rcx, [rdi]
+    pext    rcx, rcx, r8
+    GROUP 0
+    add     rdi, 8
+    add     rsi, 64
+    sub     edx, 8
+    cmp     edx, 8
+    jae     .Lgroup
 
 .Ltail:
     test    edx, edx

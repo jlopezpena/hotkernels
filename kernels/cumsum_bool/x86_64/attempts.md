@@ -21,3 +21,19 @@ The output is eight bytes for every byte read, so beyond the first-level cache t
 - **compare:** significantly faster, 1.046x [1.038 – 1.054]
 - **Kept:** yes
 - **Notes:** 1.10x at 1,024, 1.36x at 65,536, 1.12x at 1,048,576; 0.93x to 0.95x at 16 and 64, which pay one more compare. 4,096 is unchanged at 0.073 ns per element.
+
+## 3. The group's total from a broadcast load
+
+- **Idea:** load the total as one 64-bit element with `vpbroadcastq` in place of a 32-byte table load folded into the add, in case two 32-byte loads per step were the limit.
+- **check:** pass
+- **compare:** significantly slower, 0.991x [0.986 – 0.995]
+- **Kept:** no
+- **Notes:** nothing changed from 256 elements up (4,096: 298.5 ns against 299.0); 0.86x at 16. The 32-byte loads are not the limit.
+
+## 4. Eight elements per step: a table of byte counts, widened
+
+- **Idea:** found with knock-out variants of attempt 2 in a micro-benchmark outside the judge, at 4,096 elements: the full step takes 12.8 cycles per block of 32, without its store 11.0, without the chain 9.4, without the output add 9.1, and with nothing but the index and the store 5.3. So the stores are not the limit and each table lookup with its add costs about half a cycle more than its share of the pipeline's width. Fewer, larger steps: the eight mask bits of a group index a table of 256 entries of eight bytes, the running count within the group; `vpmovzxbq` from memory widens each half to four 64-bit lanes; a second table of 256 entries holds the group's total, loaded with `vpbroadcastq`. Two adds give the two output vectors and one the next T. The bits come straight from `vpmovmskb`, so the block needs no `pdep`. Outside a block a group's bits come from an 8-byte load and `pext` (fast on this processor, slow on AMD before Zen 3). The tables are 4 KB where attempt 1's was 1 KB.
+- **check:** pass
+- **compare:** significantly faster, 1.080x [1.069 – 1.090]
+- **Kept:** yes
+- **Notes:** 1.17x to 1.19x from 256 to 4,096 (0.062 ns per element, 10.5 cycles per block), 1.18x at 16, 1.01x to 1.04x from 16,384 up. Beyond the first-level cache both versions take 0.10 ns per element: the speed at which this processor writes eight bytes per element to the second-level cache.
