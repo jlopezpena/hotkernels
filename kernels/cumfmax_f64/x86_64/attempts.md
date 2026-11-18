@@ -36,3 +36,11 @@ What the compiler does with `naive.c` (`clang -O3 -march=native`, clang 21.1.8):
 - **compare:** significantly faster, 1.033x [1.031 – 1.036]
 - **Kept:** yes
 - **Notes:** 1.04x to 1.08x from 64 to 65,536 on all three distributions, 1.02x at 262,144, 1.00x to 1.03x above; 16 unchanged. Less than the micro-benchmark's 1.2x: the judge's attempt 2 was at 0.153 ns per element at 16,384, not 0.167, and is now at 0.146. Tried in the same micro-benchmark and not kept, each a way to take shuffles off the one port that has them by sending the value through memory instead (a store below the stack pointer and a broadcast load of it): the two broadcasts of a block, 0.132 ns per element at 1,024 but 0.277 at 16,384; the shift by two lanes, 0.172 and 0.389. Beyond the first-level cache the stores of the output wait for their cache lines and the small stores queue behind them.
+
+## 4. Bring the output to a multiple of 32 bytes first
+
+- **Idea:** once M is a number, up to three elements one at a time until `out` is a multiple of 32, when at least 11 elements are left, so that no store of a block straddles two cache lines. An `out` that is not a multiple of 8 is left as it is.
+- **check:** pass
+- **compare:** significantly faster, 1.014x [1.008 – 1.019]
+- **Kept:** yes
+- **Notes:** 1.09x to 1.13x at 64 on all three distributions, 1.00x to 1.03x from 256 to 1,048,576, 0.97x to 1.00x at the two largest sizes, none of those significant on `rising` and `some_nan`. The block is held by its arithmetic, so a store that straddles costs little; the verdict is the 64-element row. The stores past the caches need the alignment in any case.

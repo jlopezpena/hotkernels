@@ -32,6 +32,9 @@
 # cache lines. A block is some 30 operations, so the processor's window holds
 # few blocks and does not reach the cache misses ahead by itself.
 .set PREFETCH_BYTES, 384
+# From this many bytes left the output is first brought to a multiple of 32:
+# enough for the three elements that may take and one block after them.
+.set ALIGN_MIN_BYTES, 64 + 24
 
 .section .rodata
 .p2align 3
@@ -98,6 +101,27 @@ cumfmax_f64:
     # ---- M is a number.
 .Lnumber:
     vbroadcastsd ymm4, qword ptr [rip + .Lneginf]
+    cmp     rcx, -ALIGN_MIN_BYTES
+    jg      .Laligned
+    # Up to three elements one at a time until out is a multiple of 32, so
+    # that no store of a block straddles two cache lines. An out that is not
+    # a multiple of 8 cannot be brought there and is left as it is.
+    lea     r8d, [rsi + rcx]
+    neg     r8d
+    and     r8d, 31                     # bytes until out is a multiple of 32
+    jz      .Laligned
+    test    r8d, 7
+    jnz     .Laligned
+    add     r8, rcx                     # where the head ends
+.Lhead:
+    vmovsd  xmm1, qword ptr [rdi + rcx]
+    vmaxsd  xmm1, xmm1, xmm4            # NaN to minus infinity
+    vmaxsd  xmm0, xmm0, xmm1
+    vmovsd  qword ptr [rsi + rcx], xmm0
+    add     rcx, 8
+    cmp     rcx, r8
+    jne     .Lhead
+.Laligned:
     cmp     rcx, -32
     jg      .Ltail
     vbroadcastsd ymm0, xmm0             # M in every lane
