@@ -23,3 +23,11 @@ The kernel does the same work whatever the elements are, so the two timing distr
 - **compare:** significantly faster, 1.122x [1.115 – 1.129]
 - **Kept:** yes
 - **Notes:** rows of 22: 1.20x (1.43x at 256, 1.27x at 4,096, 1.14x from 65,536 up); rows of 4, which take the same path: 1.16x; rows of 64 unchanged. 4,096 elements in rows of 22 take 50.3 ns: 0.27 ns per row, 1.4 cycles. The four `vptest` need port 0, and the four `setnz` and the branch need port 0 or 6: nine instructions on two ports is 1.1 cycles per row at best, and that is the limit of one flag per row.
+
+## 3. Rows of four: a row is a 32-bit lane
+
+- **Idea:** a path of its own for `cols` = 4, chosen at entry. `vpcmpeqd` against zero marks the rows without a true element, eight per vector; two `vpackssdw` and one `vpacksswb` narrow four such vectors to 32 bytes, `vpermd` puts the lanes of the packs back in row order, and subtracting -1 turns -1 and 0 into 0 and 1. One 32-byte store per 32 rows. The rows left after the blocks are done by one more block that ends at the last row and stores some rows a second time; under 32 rows the same with steps of eight rows, and under eight rows one `cmp dword ptr` and `setne` per row.
+- **check:** pass
+- **compare:** significantly faster, 1.812x [1.789 – 1.835]
+- **Kept:** yes
+- **Notes:** rows of 4: 5.96x (sparse) and 5.95x (dense): 2.5x at 16 elements, 3.2x at 64, 9.0x at 1,024, 10.5x at 16,384, 7.8x at 65,536, 4.0x at 4,194,304 and above. 16,384 elements take 100.5 ns: 0.79 ns per block of 128 elements, about four cycles, which is the three packs and the `vpermd`, all four on port 5. The other tables are unchanged. Rows of 2 and of 8 could be done the same way with `vpcmpeqw` and `vpcmpeqq`, and rows of 1 are a copy; the judge times none of them, so `compare` could not have kept them and they still take the path of attempt 2.

@@ -28,8 +28,45 @@
 .Lrow_end:
     .fill 32, 1, 0
 
+# The order that puts the eight 32-bit groups left by the packs of a block of
+# rows of four back in row order.
+.p2align 5
+.Lunpack:
+    .long 0, 4, 1, 5, 2, 6, 3, 7
+
 # Bytes in one vector.
 .set VEC, 32
+# Rows of four in one block, which is four vectors of m and one of out, and
+# in one step of the rows left under a block.
+.set FOUR_BLOCK, 32
+.set FOUR_STEP, 8
+
+# 32 rows of four at \src to the 32 bytes at \dst. ymm0 = 0, ymm5 = .Lunpack,
+# ymm6 = -1 in every byte. A lane that is zero compares to -1; the packs keep
+# -1 and 0 as they narrow, and subtracting -1 leaves 0 for a row without a
+# true element and 1 for one with.
+.macro FOUR_ROWS_32 src, dst
+    vpcmpeqd ymm1, ymm0, [\src]
+    vpcmpeqd ymm2, ymm0, [\src + 32]
+    vpcmpeqd ymm3, ymm0, [\src + 64]
+    vpcmpeqd ymm4, ymm0, [\src + 96]
+    vpackssdw ymm1, ymm1, ymm2
+    vpackssdw ymm3, ymm3, ymm4
+    vpacksswb ymm1, ymm1, ymm3
+    vpermd  ymm1, ymm5, ymm1
+    vpsubb  ymm1, ymm1, ymm6
+    vmovdqu [\dst], ymm1
+.endm
+
+# Eight rows of four at \src to the eight bytes at \dst, the same way.
+.macro FOUR_ROWS_8 src, dst
+    vpcmpeqd ymm1, ymm0, [\src]
+    vextracti128 xmm2, ymm1, 1
+    vpackssdw xmm1, xmm1, xmm2
+    vpacksswb xmm1, xmm1, xmm1
+    vpsubb  xmm1, xmm1, xmm6
+    vmovq   [\dst], xmm1
+.endm
 
 .text
 .globl any_rows_bool
@@ -39,6 +76,8 @@ any_rows_bool:
     mov     r8, rsi                     # out, to count the rows at the end
     cmp     rdx, rcx
     jb      .Lno_rows
+    cmp     rcx, 4
+    je      .Lfour
     lea     r9, [rdi + rdx]             # end of m
     cmp     rcx, VEC
     ja      .Lwide
@@ -126,6 +165,62 @@ any_rows_bool:
 
 .Lno_rows:
     xor     eax, eax
+    ret
+
+.Lfour:
+    # Rows of four: a row is a 32-bit lane, and it has no true element when
+    # the lane is zero.
+    shr     rdx, 2                      # rows
+    mov     rax, rdx
+    vpxor   xmm0, xmm0, xmm0
+    vpcmpeqd ymm6, ymm6, ymm6           # -1 in every byte
+    cmp     rdx, FOUR_BLOCK
+    jb      .Lfour_small
+    vmovdqa ymm5, [rip + .Lunpack]
+    lea     r9, [rdi + rdx * 4 - 4 * FOUR_BLOCK]    # the last block of m
+    lea     r10, [rsi + rdx - FOUR_BLOCK]           # and where its rows go
+.p2align 4
+.Lfour_block:
+    FOUR_ROWS_32 rdi, rsi
+    add     rdi, 4 * FOUR_BLOCK
+    add     rsi, FOUR_BLOCK
+    sub     rdx, FOUR_BLOCK
+    cmp     rdx, FOUR_BLOCK
+    jae     .Lfour_block
+    test    rdx, rdx
+    jz      .Lfour_done
+    # 1 to 31 rows left: the block that ends at the last row, which stores
+    # some rows a second time.
+    FOUR_ROWS_32 r9, r10
+.Lfour_done:
+    vzeroupper
+    ret
+.Lfour_small:
+    cmp     rdx, FOUR_STEP
+    jb      .Lfour_single
+    lea     r9, [rdi + rdx * 4 - 4 * FOUR_STEP]
+    lea     r10, [rsi + rdx - FOUR_STEP]
+.Lfour_step:
+    FOUR_ROWS_8 rdi, rsi
+    add     rdi, 4 * FOUR_STEP
+    add     rsi, FOUR_STEP
+    sub     rdx, FOUR_STEP
+    cmp     rdx, FOUR_STEP
+    jae     .Lfour_step
+    test    rdx, rdx
+    jz      .Lfour_done
+    FOUR_ROWS_8 r9, r10
+    vzeroupper
+    ret
+.Lfour_single:
+    # 1 to 7 rows.
+    cmp     dword ptr [rdi], 0
+    setne   byte ptr [rsi]
+    add     rdi, 4
+    inc     rsi
+    dec     rdx
+    jnz     .Lfour_single
+    vzeroupper
     ret
 
 .Lwide:
