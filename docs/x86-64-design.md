@@ -41,7 +41,7 @@ The kernels, the package and the findings (steps 5 to 7). Where the building dep
 | A kernel's findings written by the pull request that produces them | Written once, at the top of the stack | A kernel run edits two files |
 | Not mentioned | The documentation site has a chapter on the second architecture, with its figures read from the findings table, the recorded Python timings and the x86-64 logs | The site described ARM64 only |
 | `cast_u8_f32` last and probably dropped; `clip` shipping as C | Both have assembly, by small margins | The compiler does not emit the two-instruction `clip`, and stores past the caches help both at the largest size. The verdicts are a person's to confirm |
-| `interp_f64` like any other kernel | Its reference had to be corrected first, in a pull request of its own, and its kernel was judged unlocked on top of it | NumPy's x86-64 build does not fuse the multiply and the add, and the shared reference did ([issue 73](https://github.com/sofeikov/hotkernels/issues/73)) |
+| `interp_f64` like any other kernel | Its reference had to be corrected first, in a pull request of its own, and its kernel was written and judged unlocked on top of it. Its recorded figures are from a locked run on `main` after both were merged | NumPy's x86-64 build does not fuse the multiply and the add, and the shared reference did ([issue 73](https://github.com/sofeikov/hotkernels/issues/73)) |
 | `tools/generate.py` already picks the kernel directory by architecture | It always took ARM64's. Now it writes a kernel set per architecture, and a source distribution carries both | One source distribution serves both platforms |
 | The run-time check asks the processor and the operating system | It reads `/proc/cpuinfo`, which lists `avx` and `avx2` only when Linux saves the 256-bit registers | No compiled code is needed before the check has passed |
 | The wheel's compiler has to be clang | The Linux wheels are built by the manylinux image's gcc | No kernel ships as C on x86-64, so the compiler builds only the binding. `release-design.md` says what changes the day one does |
@@ -274,7 +274,7 @@ The documents were written when there was one architecture, and they give ARM64 
 | 2 | The existing documents restructured by architecture | Merged; no x86-64 content yet |
 | 3 | The judge on Linux x86-64: build, lint, level check, wrapper, pinning, fixtures; AGENTS.md section; attempts logs moved | `uv run judge selftest` passes on this machine, including repeatability, and still passes on the M1 |
 | 4 | The survey ported and recorded | A result file for this machine and an x86-64 shortlist |
-| 5 | The kernels, one family per run, starting with `sum_u8` | Every kernel has an x86-64 verdict from the judge: assembly, C, or not installed, with the reason. **Done:** all 23 have assembly; four verdicts are marked for a person to confirm, and `interp_f64` was judged unlocked |
+| 5 | The kernels, one family per run, starting with `sum_u8` | Every kernel has an x86-64 verdict from the judge: assembly, C, or not installed, with the reason. **Done:** all 23 have assembly; four verdicts are marked for a person to confirm. `interp_f64` was written unlocked and timed again locked once its reference was corrected on `main` |
 | 6 | The package: environment check, build, wheels, CI | `uv run delivery check` passes on this machine; `uv run delivery time` recorded. **Done** |
 | 7 | The findings written up and open issue 1 closed | Every family has its x86-64 section; one `compat` release note. **Done** |
 

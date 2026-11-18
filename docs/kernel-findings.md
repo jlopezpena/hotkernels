@@ -69,40 +69,40 @@ Every figure is how many times faster the kernel is. "vs naive C" and "vs NumPy"
 
 ### x86-64
 
-- **All 23 kernels have assembly, and every one is faster than its naive C over the eleven sizes.** For four the margin is small enough that shipping the C would be defensible: `count_nonzero_f64` (1.06x), `bincount_u8` (1.07x), `clip_f64` (1.08x) and `cast_u8_f32` (1.23x, level with NumPy in the middle sizes). Those verdicts are a person's to confirm. Twenty-one are bit-identical to NumPy; the two float `cumsum` kernels are within the declared tolerance, as on ARM64.
-- **NumPy is a different opponent.** It has AVX2 loops for `argmax`, `clip` and `astype` here. `argmax` and `argmin` still gain 1.9x at a million elements; `clip` and `astype` are level with NumPy there and gain at the two ends.
-- **Memory is the ceiling sooner.** A scalar chain costs one cycle per element on this core against three on the M1, and a plain copy in the second-level cache is only 1.65x faster than that. `cumsum_i64` is the kernel that shows it: 1.17x over the naive C.
+- **All 23 kernels have assembly, and every one is faster than its naive C over the eleven sizes.** For four the margin is small enough that shipping the C would be defensible: `bincount_u8` (1.04x), `count_nonzero_f64` (1.06x), `clip_f64` (1.09x) and `cast_u8_f32` (1.21x, level with NumPy in the middle sizes). Those verdicts are a person's to confirm. Twenty-one are bit-identical to NumPy; the two float `cumsum` kernels are within the declared tolerance, as on ARM64.
+- **NumPy is a different opponent.** It has AVX2 loops for `argmax`, `clip` and `astype` here. `argmax` and `argmin` still gain 1.7x to 1.9x at a million elements; `clip` and `astype` are level with NumPy there and gain at the two ends.
+- **Memory is the ceiling sooner.** A scalar chain costs one cycle per element on this core against three on the M1, and a plain copy in the second-level cache is only 1.65x faster than that. `cumsum_i64` is the kernel that shows it: 1.18x over the naive C.
 - **Several ARM64 caveats do not exist in the x86-64 kernels:** the three of `clip`, the density at which the mask kernels are weak, mask bytes other than 0 and 1, the unbounded second scan of `argmax`, the slow last bin of `histogram`, the 1e154 limit of float `cumsum`. They are listed under [What a caller must know](#what-a-caller-must-know). None was removed from the binding or the rules on the kernels' authority.
-- **One reference was wrong for this architecture.** `interp_f64`'s fused the multiply and the add, which NumPy's x86-64 build does not. Its row below was taken unlocked, on top of the correction.
+- **One reference was wrong for this architecture.** `interp_f64`'s fused the multiply and the add, which NumPy's x86-64 build does not. It was corrected in a pull request of its own, and the kernel's row below is a locked run against the corrected reference.
 - **From Python,** with the binding and NumPy's call overhead on both sides: [delivery/results/intel-r-core-tm-i5-14600kf.md](../delivery/results/intel-r-core-tm-i5-14600kf.md). No hooked call is slower than NumPy at any size timed.
 
 | Kernel | Input | vs naive C | vs NumPy | vs NumPy at 1,048,576 |
 |---|---|---|---|---|
-| `argmax_f32` | random | 13.1x [13.1 – 13.2] | 7.50x | 1.92x |
-| `argmax_f64` | random | 6.75x [6.74 – 6.77] | 6.03x | 1.87x |
-| `argmin_f32` | random | 13.2x [13.2 – 13.2] | 7.50x | 1.91x |
-| `argmin_f64` | random | 6.79x [6.79 – 6.79] | 6.07x | 1.90x |
-| `compress_f32` | half / 5% selected | 2.33x / 2.73x | 36.8x / 14.2x | 32.6x / 12.6x |
-| `compress_f64` | half / 5% selected | 1.34x / 2.59x | 17.7x / 12.3x | 16.7x / 9.36x |
-| `nonzero_bool` | half / 5% true | 1.79x / 4.41x | 8.26x / 20.9x | 3.16x / 19.6x |
-| `maskfill_f64` | half / 5% selected | 5.87x / 2.67x | 20.9x / 12.9x | 18.4x / 7.31x |
-| `isin_i64` | values 0 to 999 / whole int64 range | 1.94x / 1.08x | 82.1x / 20.2x | 38.2x / 3.79x |
-| `searchsorted_f64` | 64 / 1,000 needles | 3.52x / 9.48x | 6.36x / 9.87x | 3.01x / 6.25x |
-| `searchsorted_right_f64` | 64 / 1,000 needles | 3.46x / 8.74x | 6.68x / 10.8x | 2.98x / 6.56x |
-| `interp_f64` ‡ | 64 / 1,000 queries | 2.56x / 8.16x | 4.90x / 9.89x | 3.19x / 10.5x |
-| `histogram_f64` | random | 6.98x [6.98 – 6.99] | 29.3x | 7.53x |
-| `bincount_u8` | random | 1.07x [1.07 – 1.07] | 7.37x | 4.19x |
-| `cumsum_i64` | random | 1.17x [1.16 – 1.17] | 13.8x | 5.19x |
-| `cumsum_f64` | random | 1.83x [1.82 – 1.83] | 16.2x | 6.10x |
-| `cumsum_f32` | random | 2.89x [2.89 – 2.89] | 26.1x | 11.2x |
-| `sum_u8` | random | 6.15x [6.09 – 6.23] | 119x | 51.3x |
-| `count_nonzero_f64` | random | 1.06x [1.06 – 1.06] | 10.4x | 4.38x |
-| `count_nonzero_i64` | random | 1.21x [1.21 – 1.21] | 4.28x | 1.26x |
-| `clip_f32` | all six tables | 1.25x [1.24 – 1.25] | 12.7x | 1.05x (bounds -0.5, 0.5, random) |
-| `clip_f64` | all six tables | 1.08x [1.08 – 1.08] | 6.81x | |
-| `cast_u8_f32` | random | 1.23x [1.23 – 1.23] | 6.10x | 1.05x |
+| `argmax_f32` | random | 12.9x [12.8 – 12.9] | 7.46x | 1.90x |
+| `argmax_f64` | random | 6.61x [6.55 – 6.65] | 5.93x | 1.72x |
+| `argmin_f32` | random | 13.1x [13.1 – 13.2] | 7.51x | 1.90x |
+| `argmin_f64` | random | 6.82x [6.81 – 6.82] | 6.08x | 1.87x |
+| `compress_f32` | half / 5% selected | 2.38x / 2.89x | 37.5x / 14.8x | 32.7x / 12.6x |
+| `compress_f64` | half / 5% selected | 1.37x / 2.74x | 17.6x / 12.4x | 16.6x / 9.38x |
+| `nonzero_bool` | half / 5% true | 1.78x / 4.57x | 8.65x / 21.6x | 3.16x / 19.8x |
+| `maskfill_f64` | half / 5% selected | 5.85x / 2.58x | 20.8x / 12.4x | 18.4x / 7.30x |
+| `isin_i64` | values 0 to 999 / whole int64 range | 1.95x / 1.08x | 83.2x / 20.2x | 39.8x / 3.78x |
+| `searchsorted_f64` | 64 / 1,000 needles | 3.42x / 9.56x | 6.13x / 9.76x | 2.90x / 6.19x |
+| `searchsorted_right_f64` | 64 / 1,000 needles | 3.45x / 8.78x | 6.66x / 10.8x | 2.78x / 6.58x |
+| `interp_f64` | 64 / 1,000 queries | 2.48x / 8.02x | 4.72x / 9.63x | 3.14x / 10.6x |
+| `histogram_f64` | random | 6.94x [6.93 – 6.94] | 29.2x | 7.49x |
+| `bincount_u8` | random | 1.04x [1.04 – 1.05] | 7.54x | 4.18x |
+| `cumsum_i64` | random | 1.18x [1.17 – 1.18] | 13.9x | 5.34x |
+| `cumsum_f64` | random | 1.81x [1.81 – 1.81] | 16.1x | 6.09x |
+| `cumsum_f32` | random | 2.96x [2.96 – 2.96] | 26.7x | 13.3x |
+| `sum_u8` | random | 6.23x [6.22 – 6.24] | 112x | 42.1x |
+| `count_nonzero_f64` | random | 1.06x [1.06 – 1.06] | 10.3x | 4.36x |
+| `count_nonzero_i64` | random | 1.21x [1.20 – 1.21] | 4.31x | 1.26x |
+| `clip_f32` | all six tables | 1.30x [1.30 – 1.30] | 13.1x | 1.05x (bounds -0.5, 0.5, random) |
+| `clip_f64` | all six tables | 1.09x [1.09 – 1.09] | 6.78x | |
+| `cast_u8_f32` | random | 1.21x [1.20 – 1.21] | 6.10x | 1.05x |
 
-Columns as in the ARM64 table: "vs naive C" and "vs NumPy" are geometric means over the eleven sizes from 16 to 16,777,216 elements. NumPy is timed from Python, where a call costs half a microsecond or more, so its overall column is dominated by the small sizes; the column at 1,048,576 elements is the one that compares loops. ‡ Taken with `--unlocked`: see [How the numbers were taken](#how-the-numbers-were-taken).
+Columns as in the ARM64 table: "vs naive C" and "vs NumPy" are geometric means over the eleven sizes from 16 to 16,777,216 elements. NumPy is timed from Python, where a call costs half a microsecond or more, so its overall column is dominated by the small sizes; the column at 1,048,576 elements is the one that compares loops. The reports the rows are read from are in [`results/`](../results), one per kernel.
 
 ## How the numbers were taken
 
@@ -119,8 +119,9 @@ Columns as in the ARM64 table: "vs naive C" and "vs NumPy" are geometric means o
 ### x86-64
 
 - **Machine.** Intel Core i5-14600KF (Raptor Lake Refresh), one performance core, Linux 7.0, NumPy 2.5.5, clang 21.1.8 for the naive C, GNU `as` 2.46 for the kernels. Native. A desktop session was running; the judge takes 300 samples of one millisecond per size and pins its thread, which is what makes that tolerable ([judge-design.md](judge-design.md#short-samples)).
-- **Command.** `uv run judge run <kernel>`, **locked**, one kernel at a time, after its last kept change. Each row is one such run; the per-size tables are in the kernel's `x86_64/attempts.md` under "Where it stands".
-- **One row is unlocked.** `interp_f64`: its reference on `main` does not match NumPy on x86-64, the correction is a pull request of its own, and the judge refuses a locked run of a kernel whose reference differs from `main`. The row has to be taken again, locked, once the correction is merged.
+- **Command.** `uv run judge run <kernel> --record`, **locked**, on `main` after every kernel was merged: one pass over the 23 kernels, one at a time, at a load average of 0.5 to 1.2, with every run passing its correctness check first. Each row is one such run, and its report is `results/<kernel>/x86_64-intel-r-core-tm-i5-14600kf.json`. The per-size tables in each kernel's `x86_64/attempts.md` under "Where it stands" are from the run after that kernel's last kept change, a few hours earlier on the same machine.
+- **The pass agrees with the runs it replaces.** Against each kernel's earlier run, the figure over all of a kernel's inputs is within 5% for every kernel, over the naive C and over NumPy; the largest moves over the naive C are `clip_f32` (1.30x, from 1.25x) and `compress_f32` (2.62x, from 2.52x). For one kind of input the figure against NumPy moves by up to 12% for `clip_f32` (13.2x from 14.9x with a lower bound of zero, 11.0x from 10.0x on rounded data) and by less than 7% for every other kernel. At single sizes from 1,048,576 elements up, where the data no longer fits the second-level cache, single runs differ by up to 20% either way: over NumPy at 1,048,576, `cumsum_f32` read 11.2x before and 13.3x in this pass, `argmax_f64` 1.87x and 1.72x, and `sum_u8` 51.3x in the run in its log and 42.1x here. `searchsorted_f64` was recorded three times. The first pass had one size out of line (19.4 µs for 1,000 needles at 1,048,576 elements where five further runs gave 12.7 to 13.0), and the second was flagged by the judge as taken on a busy machine; the third is the one kept.
+- **`interp_f64` was written unlocked.** Its reference on `main` did not match NumPy on x86-64, the correction was a pull request of its own, and the judge refuses a locked run of a kernel whose reference differs from `main`. Its row is from the locked pass on `main`; the unlocked run it replaces read 4.57x over the naive C and 6.96x over NumPy overall, against 4.46x and 6.75x locked.
 - **How the kernels were written.** One agent, one family after another, in the order of the survey's x86-64 shortlist, under the rule in [AGENTS.md](../AGENTS.md). Kernels with several variants (`argmax` and `argmin`, the two `searchsorted`, the two `clip`, the two `count_nonzero`) are generated from one source per family and were judged separately. The ARM64 kernels and logs were read for the idea and the proofs and not used as a template.
 - **Outside the judge.** Where a path is not reached by the judge's correctness cases (stores past the caches from 24 MB of output, 512 searches in step from 262,144 elements, a `cumsum` chunk redone and followed by the fast path) or where the judge's data seldom lands (bin edges), a differential test against the reference C was written and run, and is described in the kernel's log. Micro-benchmarks outside the judge are labelled as such there and decided nothing: every kept change has a `compare` verdict or is a first version judged by `run`.
 - **A calibration of the core** was taken with a small harness and is used throughout the logs: a `lea` with a scaled index takes two cycles; `vblendvpd` and `vpblendvb` run once per cycle; 256-bit compares, maxima and float adds run twice per cycle on two of the three vector ports, integer adds and logic three times; two 32-byte loads per cycle; one store per cycle unless two go to the same cache line; a 32-byte load that straddles two lines costs a cycle more and a store two; `vgatherqpd` on four elements can start every 2.2 cycles; `vdivpd` on four doubles takes eight cycles.
@@ -227,7 +228,7 @@ Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and wha
 
 - **The general case is settled the other way round from ARM64.** A compare of four 64-bit elements exists here, and the compiler already emits it: the naive C is vectorised, 0.30 ns per element for any values, 22x to 30x ahead of NumPy on its own. Written by hand the same loop gains 8%.
 - **Narrow keys.** When every test value is from 0 to 32,767, sixteen elements are narrowed from 64 to 16 bits with three `vpackusdw` and compared with eight `vpcmpeqw`, where the wide compare needs eight for four elements: 0.64 cycles per element against the compiler's 1.6. A block that holds an element outside that range cannot be narrowed and is compared at 64 bits. The nibble tables of the ARM64 kernel were not needed: with sixteen keys per register, eight compares cost the same fifteen instructions.
-- **Result.** On values and test values from 0 to 999: 1.94x over the naive C and 38x over NumPy at 1,048,576. On values spread over the int64 range: 1.08x and 3.8x.
+- **Result.** On values and test values from 0 to 999: 1.95x over the naive C and 40x over NumPy at 1,048,576. On values spread over the int64 range: 1.08x and 3.8x.
 - **A first version was 0.77x against the naive C** and was not committed: its window began at the smallest test value, so data spread over the same range as the test values sent nearly every block the slow way.
 - **What differs for a caller.** The narrow path needs test values between 0 and 32,767. The ARM64 kernel also takes any eight values within 32,767 of the first one. Negative sets, and large values close together, get the wide path here.
 
@@ -272,7 +273,7 @@ Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and wha
 - **NaN.** A NaN in the array compares false and is never passed. A NaN needle is detected as the needles are read, and only then is its answer found (the first NaN of the array for the left side, n for the right) and written over.
 - **`interp`** runs the right-side search over `xp`, then the values as the reference's cases read backwards, each a blend that overrides the ones before, with a real `vdivpd` and four gathers per four queries.
 - **The multiply and the add of `interp` are not fused here.** NumPy's x86-64 build rounds the product and then the sum: of 20,000 random two-point interpolations the two forms differ in 6,131, and `np.interp` equals the unfused one in all of them. The kernel does the same. The shared reference fused on every architecture and failed its own check on x86-64 ([issue 73](https://github.com/sofeikov/hotkernels/issues/73)); it now rounds as NumPy's build for the architecture does. Results on the two architectures can differ in the last bit, as NumPy's own do.
-- **Result.** With 1,000 needles, over NumPy at 1,048,576 elements: `searchsorted_f64` 6.3x, `searchsorted_right_f64` 6.6x, `interp_f64` 10.5x. Over the naive C overall: 5.8x, 5.5x, 4.6x. With 64 needles the judge repeats the same needles, the naive C's and NumPy's branches are learnt, and the kernels are 3x over NumPy at that size and level with it at 16,777,216.
+- **Result.** With 1,000 needles, over NumPy at 1,048,576 elements: `searchsorted_f64` 6.2x, `searchsorted_right_f64` 6.6x, `interp_f64` 10.6x. Over the naive C overall: 5.7x, 5.5x, 4.5x. With 64 needles the judge repeats the same needles, the naive C's and NumPy's branches are learnt, and the kernels are 3x over NumPy at that size and level with it at 16,777,216.
 - **What differs for a caller.** No padded short group: one to three needles are searched one at a time, four and more as a thousand are, so [issue 39](https://github.com/sofeikov/hotkernels/issues/39) and [issue 67](https://github.com/sofeikov/hotkernels/issues/67) do not arise in that form. No limit of 2^32 sample points in `interp`. The output buffer is working storage during the call. `vgatherqpd` is fast on this processor and slow on older AMD processors and on Intel processors with the gather mitigation; untested elsewhere.
 
 ### `histogram` and `bincount`
@@ -300,7 +301,7 @@ Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and wha
 - **Evidence.** The proof is in the `kernel.s` header. A differential test outside the judge against the reference, with elements on bin edges, within three units in the last place of them, on the 2^-12 threshold, at `lo` and `hi`, and ranges up to the top of float64: 60,000 rounds, 213 million elements, no mismatch. A copy of the kernel without the edge test fails 2,264 of 3,000 rounds of it.
 - **Result.** 7.5x over NumPy at 1,048,576, 6.98x over the naive C overall: 0.42 to 0.60 ns per element against 3.9.
 - **Limit.** The three vector ports: eleven vector instructions per four elements before the bins are taken out, four more to take them out, then four counter updates.
-- **`bincount_u8`.** One counter update per byte at one store per cycle is the limit, and the compiler's loop is at it: 1.07x to 1.2x over the naive C on the judge's uniformly random bytes, depending on the run, because the naive C's own time moved by up to 2x at single sizes. Byte i is counted in table i mod 4 from 32,768 bytes, which is what pays on bytes that repeat: all bytes equal, 0.35 ns per byte against 1.39.
+- **`bincount_u8`.** One counter update per byte at one store per cycle is the limit, and the compiler's loop is at it: 1.04x to 1.2x over the naive C on the judge's uniformly random bytes, depending on the run, because the naive C's own time moved by up to 2x at single sizes. Byte i is counted in table i mod 4 from 32,768 bytes, which is what pays on bytes that repeat: all bytes equal, 0.35 ns per byte against 1.39.
 - **What did not help:** two or four count tables for `histogram_f64`.
 - **What differs for a caller.** From 2^19 bins `histogram_f64` runs at the speed of the naive C (ARM64: 2^31).
 
@@ -332,7 +333,7 @@ Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and wha
 - **The proof, with the design's candidate.** Non-finite values land where NumPy has them by the ARM64 kernels' argument, chunk by chunk. The test is a compare of magnitudes in place of a sum of squares: `vpand` and `vpmaxud` on the bit patterns per vector, one compare per chunk. For `float64` that lifts the fast path's limit from running sums of about 1e154 to 2^1023; for `float32` the limit stays 2^64, because the proof for `float32` needs it. The test raises no floating-point flag of its own.
 - **Loads ahead of the stores.** The first `cumsum_f64` lost 2.5x at 262,144 and 1,048,576 elements with the output 16 bytes behind the input. Loading the next vector's input before storing the current output removed it, and keeps `cumsum_i64` right when the output is the input.
 - **Stores past the caches from 24 MB of output:** 1.2x to 1.26x at 4,194,304 and 16,777,216 elements.
-- **Result.** Over NumPy at 1,048,576: `int64` 5.2x, `float64` 6.1x, `float32` 11.2x, about half the ARM64 figures, as the design expected. Over the naive C overall: 1.17x, 1.83x, 2.89x.
+- **Result.** Over NumPy at 1,048,576: `int64` 5.3x, `float64` 6.1x, `float32` 13.3x, a third to a half of the ARM64 figures, as the design expected. Over the naive C overall: 1.18x, 1.81x, 2.96x.
 - **Evidence beyond the judge.** 20,990 runs per float kernel against the left-to-right sum with infinities, NaN, values near the largest finite one and near the fast path's limit, at sizes that reach the cache-bypassing stores: positions of non-finite values exact, finite values within the tolerance. `cumsum_i64`: every path, and in place.
 - **What did not help:** aligning the stores as a general step (the judge puts the output 16 bytes after the input within a cache line, so one of the two is always off); adds done as fused multiply-adds by one to use a third port.
 
@@ -361,7 +362,7 @@ Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and wha
 - **`sum_u8`.** `vpsadbw` against zeros adds 32 bytes into four 64-bit sums, on one port; mixed with `vpmaddubsw` on the other two the loop reaches 45 bytes per cycle. Aligned loads were worth 1.5x beyond the first-level cache, and a prefetch and four streams, both rejected on the M1, pay here. 6.15x over the naive C, 51x over NumPy at 1,048,576.
 - **`count_nonzero`.** A compare with zero and a subtract into an accumulator, two instructions per four elements, loads aligned from 64 elements. The compiler vectorises this loop and both are at memory's speed from about a thousand elements: 1.21x over the naive C for `int64` and 1.06x for `float64`; 1.26x and 4.4x over NumPy at 1,048,576.
 - **`clip`: two instructions, one path, none of the ARM64 caveats.** `vmaxps a, b` computes `a > b ? a : b`: it returns its second operand when the two are unordered or equal, zeros of either sign included. With the bound first, `vmaxps lo, v` then `vminps hi, t` is the reference bit for bit for every pair of bounds with `lo <= hi`. No path depends on the bounds or the data, no status register is read, and the output may be the input. The compiler does not emit this: it emits a minimum, a compare and a blend that runs once per cycle, which is why the assembly is 1.25x over it for `float32` and 1.08x for `float64`. With the loads a block ahead of the stores there is no stall with the output just behind the input, where the survey found NumPy 8x slower. Level with NumPy at 1,048,576, 1.7x at 65,536, 2.0x at 16,777,216.
-- **`cast_u8_f32`.** `vpmovzxbd` from memory and `vcvtdq2ps`, with aligned stores and stores past the caches from 24 MB. The naive C ties NumPy, as the design expected. The assembly is 1.23x over the C: level with NumPy from 1,024 to 1,048,576 elements and 3.35x at 16,777,216.
+- **`cast_u8_f32`.** `vpmovzxbd` from memory and `vcvtdq2ps`, with aligned stores and stores past the caches from 24 MB. The naive C ties NumPy, as the design expected. The assembly is 1.21x over the C: level with NumPy from 16,384 to 1,048,576 elements and 3.39x at 16,777,216.
 - **The invalid flag.** `vmaxps` and `vminps` set it for any NaN operand, quiet or signalling. The binding's clearing of flags after `clip` is needed on x86-64 as on ARM64.
 
 ## Where the result is narrower than the number
@@ -377,7 +378,7 @@ The second item is about the reference and holds on every architecture. The othe
 
 - **`isin_i64`: fast only for test values from 0 to 32,767.** Any other set takes the 64-bit compare, which is level with the naive C (1.08x). The ARM64 kernel's second window, around the first test value, is not there.
 - **`searchsorted` and `interp` with 64 needles against a large array.** The judge repeats the same needles, so a branching search learns them: at 16,777,216 elements the kernels are level with NumPy with 64 needles, and 2.6x (searches) and 6.9x (`interp`) ahead with 1,000.
-- **`bincount_u8`: the gain on the judge's data is small** (1.07x to 1.2x over the naive C) and is 4x on bytes that are all equal, which the judge does not time.
+- **`bincount_u8`: the gain on the judge's data is small** (1.04x to 1.2x over the naive C) and is 4x on bytes that are all equal, which the judge does not time.
 - **`clip`: none of the three ARM64 items.** One path for every pair of ordered bounds and every kind of data.
 - **`histogram_f64`: from 2^19 bins** the kernel is the naive C in assembly.
 
@@ -454,9 +455,9 @@ Open, from the x86-64 kernels. Each is a person's to decide; the kernels as comm
 
 4. **`maskfill_f64` on x86-64: adopt the masked store?** 1.6x faster up to 4,096 elements with half selected, 0.86x at 65,536 and 1,048,576, and unselected elements are never written. [Issue 70](https://github.com/sofeikov/hotkernels/issues/70).
 5. **`clip` on x86-64: record that the three ARM64 constraints do not hold, and let the binding pass in-place calls?** The kernel has one path, reads no status register and is right when `out` is `x`. The binding sends in-place `clip` to NumPy on both platforms today.
-6. **Four borderline verdicts:** `count_nonzero_f64` (1.06x over the naive C), `bincount_u8` (1.07x; 4x on repeated bytes), `clip_f64` (1.08x) and `cast_u8_f32` (1.23x; level with NumPy in the middle sizes). Assembly is committed for all four. If one is turned back into C, the Linux wheel has to be built with clang ([release-design.md](release-design.md#more-than-one-platform)).
+6. **Four borderline verdicts:** `bincount_u8` (1.04x over the naive C; 4x on repeated bytes), `count_nonzero_f64` (1.06x), `clip_f64` (1.09x) and `cast_u8_f32` (1.21x; level with NumPy in the middle sizes). Assembly is committed for all four. If one is turned back into C, the Linux wheel has to be built with clang ([release-design.md](release-design.md#more-than-one-platform)).
 7. **Stores past the caches below 24 MB of output?** They are 1.3x faster from 2 MB in a micro-benchmark, and leave an output that would otherwise sit in the third-level cache out of every cache. The kernels use them from 24 MB, the size of that cache.
-8. **`interp_f64`'s reference.** Corrected in a pull request of its own ([issue 73](https://github.com/sofeikov/hotkernels/issues/73)); the correction has not been run on ARM64, and the x86-64 kernel's figures are unlocked until it is merged.
+8. **`interp_f64`'s reference.** Corrected in a pull request of its own ([issue 73](https://github.com/sofeikov/hotkernels/issues/73)) and merged. CI checks it on both architectures (157,062 cases pass on each), and the x86-64 kernel's figures are from a locked run. Nothing is left to decide.
 
 ## What is next
 
