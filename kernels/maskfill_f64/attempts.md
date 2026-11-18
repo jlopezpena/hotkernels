@@ -227,7 +227,7 @@ The kernel writes no buffer other than x, so the judge has no close-placement ta
 
 What holds it:
 
-- **half_selected: 0.09 to 0.10 ns per element up to 65,536,** about two cycles per four elements, and 0.13 to 0.17 at 262,144 and 1,048,576. Knock-out variants in a micro-benchmark at 1,024 elements (no store, no load of x, no widening of the mask) each ran at 1.6 to 2.0 cycles, so no single part is the limit. The naive C is so far behind here (a mispredicted branch every second element) that the speedup over it is 15x to 25x from 16,384 to 1,048,576.
+- **half_selected: 0.09 to 0.12 ns per element up to 65,536,** about two cycles per four elements, and 0.13 to 0.17 at 262,144 and 1,048,576. Knock-out variants in a micro-benchmark at 1,024 elements (no store, no load of x, no widening of the mask) each ran at 1.6 to 2.0 cycles, so no single part is the limit. The naive C is so far behind here (a mispredicted branch every second element) that the speedup over it is 15x to 25x from 65,536 to 1,048,576. Below that the naive C's branch is predicted from the repeated timing inputs, and the speedup is 2x to 4x.
 - **few_selected:** the sparse block, 0.035 to 0.05 ns per element up to 262,144, 2x to 8x over the naive C from 64 elements up.
 - **16,777,216:** memory. Every line of x is read and written back with half selected.
 
