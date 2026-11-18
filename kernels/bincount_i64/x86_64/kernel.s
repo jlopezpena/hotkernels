@@ -13,10 +13,42 @@
 # The counters are cleared with 32-byte stores, the last ones ending exactly
 # at the end of counts and overlapping the ones before; from CLEAR_REP_MIN
 # counters with `rep stosq`.
+#
+# One counter is loaded, incremented and stored per element, about a cycle,
+# and an element that repeats the one before it has to wait for that store.
+# With at most PAIR_CODES counters and from PAIRS_MIN_N elements, two
+# elements are counted with one increment: of the counter of the pair, in a
+# table of PAIR_CODES * PAIR_CODES 32-bit counters below the stack pointer.
+# At the end counts[v] gets the total of row v and of column v, the pairs
+# with v second and with v first. Four elements are tested together for
+# being pair codes, 0..PAIR_CODES-1: the four or'ed together are below
+# PAIR_CODES, as an unsigned number, only if each of them is. Four that are
+# not all pair codes are counted one at a time into counts, each with its
+# own test against bins. A pair code at or above bins is counted in the
+# table and left out when the totals are added, so bins is tested there.
+# The table's counters cannot overflow: the path is for n below 2^32, so
+# there are fewer than 2^31 pairs, and no counter and no total reaches 2^31.
+#
+# Paths:
+#   bins <= PAIR_CODES and PAIRS_MIN_N <= n < 2^32   the pair table
+#   otherwise                                        one counter per element
 
 # From this many counters `rep stosq` clears them; below it, a loop of
 # 32-byte stores, which has no start-up cost.
 .set CLEAR_REP_MIN, 512
+
+# The pair path is for at most this many counters: codes of six bits.
+.set PAIR_CODES, 64
+# Below this many elements clearing and adding up the pair table costs more
+# than it saves.
+.set PAIRS_MIN_N, 8192
+# The pair table: PAIR_CODES rows of PAIR_CODES 32-bit counters. Row a1,
+# column a0 counts the pairs (a0, a1).
+.set ROW_BYTES, PAIR_CODES * 4
+.set TABLE_BYTES, PAIR_CODES * ROW_BYTES
+# Bytes of stack: the pair table, the PAIR_CODES 32-bit column totals above
+# it, and eight so that the stack pointer stays a multiple of 16.
+.set FRAME, TABLE_BYTES + ROW_BYTES + 8
 
 # Count the element at [rdi + \offset]: test against bins, increment its
 # counter.
@@ -72,6 +104,14 @@ bincount_i64:
     mov     rdi, r8
 
 .Lcount:
+    cmp     r9, PAIR_CODES
+    ja      .Lsingle
+    cmp     rdx, PAIRS_MIN_N
+    jb      .Lsingle
+    mov     rax, rdx
+    shr     rax, 32
+    jz      .Lpairs
+.Lsingle:
     mov     r8, rdx
     shr     r8, 2                       # steps of four elements
     jz      .Llast
@@ -94,6 +134,102 @@ bincount_i64:
     jnz     .Lone
 .Ldone:
     ret
+
+.Lpairs:
+    sub     rsp, FRAME
+    # Clear the pair table from the top down, so that the stack is touched a
+    # page at a time in the order it grows.
+    vpxor   xmm0, xmm0, xmm0
+    mov     eax, TABLE_BYTES
+.Lcleartable:
+    vmovdqu [rsp + rax - 32], ymm0
+    vmovdqu [rsp + rax - 64], ymm0
+    sub     eax, 64
+    jnz     .Lcleartable
+    mov     r8, rdx
+    shr     r8, 2                       # steps of four elements, at least one
+.p2align 4
+.Lpairstep:
+    mov     r10, [rdi]
+    or      r10, [rdi + 8]
+    or      r10, [rdi + 16]
+    or      r10, [rdi + 24]
+    cmp     r10, PAIR_CODES
+    jae     .Loutside
+    mov     rcx, [rdi + 8]
+    shl     rcx, 6
+    or      rcx, [rdi]                  # a0 | a1 << 6
+    mov     rax, [rdi + 24]
+    shl     rax, 6
+    or      rax, [rdi + 16]             # a2 | a3 << 6
+    inc     dword ptr [rsp + rcx * 4]
+    inc     dword ptr [rsp + rax * 4]
+.Lpairnext:
+    add     rdi, 32
+    dec     r8
+    jnz     .Lpairstep
+
+    # Column totals: for each eight columns, the sum down the 64 rows.
+    xor     eax, eax
+.Lcolumns:
+    lea     r10, [rsp + rax]
+    vpxor   xmm0, xmm0, xmm0
+    vpxor   xmm1, xmm1, xmm1
+    vpxor   xmm2, xmm2, xmm2
+    vpxor   xmm3, xmm3, xmm3
+    mov     ecx, PAIR_CODES / 4
+.Lcolumnrows:
+    vpaddd  ymm0, ymm0, [r10]
+    vpaddd  ymm1, ymm1, [r10 + ROW_BYTES]
+    vpaddd  ymm2, ymm2, [r10 + 2 * ROW_BYTES]
+    vpaddd  ymm3, ymm3, [r10 + 3 * ROW_BYTES]
+    add     r10, 4 * ROW_BYTES
+    dec     ecx
+    jnz     .Lcolumnrows
+    vpaddd  ymm0, ymm0, ymm1
+    vpaddd  ymm2, ymm2, ymm3
+    vpaddd  ymm0, ymm0, ymm2
+    vmovdqu [rsp + TABLE_BYTES + rax], ymm0
+    add     eax, 32
+    cmp     eax, ROW_BYTES
+    jb      .Lcolumns
+    # counts[v] += the total of column v and the total of row v, for v < bins.
+    xor     ecx, ecx
+    mov     r10, rsp
+.Lrows:
+    vmovdqu ymm0, [r10]
+    vmovdqu ymm1, [r10 + 32]
+    vpaddd  ymm0, ymm0, [r10 + 64]
+    vpaddd  ymm1, ymm1, [r10 + 96]
+    vpaddd  ymm0, ymm0, [r10 + 128]
+    vpaddd  ymm1, ymm1, [r10 + 160]
+    vpaddd  ymm0, ymm0, [r10 + 192]
+    vpaddd  ymm1, ymm1, [r10 + 224]
+    vpaddd  ymm0, ymm0, ymm1
+    vextracti128 xmm1, ymm0, 1
+    vpaddd  xmm0, xmm0, xmm1
+    vpshufd xmm1, xmm0, 0x4E            # the upper two of four, down
+    vpaddd  xmm0, xmm0, xmm1
+    vpshufd xmm1, xmm0, 0x55            # the second of four, down
+    vpaddd  xmm0, xmm0, xmm1
+    vmovd   eax, xmm0
+    mov     r11d, [rsp + TABLE_BYTES + rcx * 4]
+    add     rax, r11
+    add     [rsi + rcx * 8], rax
+    add     r10, ROW_BYTES
+    inc     ecx
+    cmp     rcx, r9
+    jb      .Lrows
+    vzeroupper
+    add     rsp, FRAME
+    jmp     .Llast                      # 0 to 3 elements left, straight into counts
+
+.Loutside:                              # one of the four is not a pair code
+    COUNT_ELEMENT 0
+    COUNT_ELEMENT 8
+    COUNT_ELEMENT 16
+    COUNT_ELEMENT 24
+    jmp     .Lpairnext
 .size bincount_i64, .-bincount_i64
 
 .section .note.GNU-stack,"",@progbits
