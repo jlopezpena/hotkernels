@@ -117,3 +117,26 @@ two cycles, at every size from 1,024 up, on both distributions. NumPy takes
   1.06x at 64 `rising`. 0.97x to 0.98x on `rising` from 1,024 to 16,384,
   which runs the same rising loop as before: probably where the loop now
   sits in memory.
+
+## 8. Align the flat and rising loops to 64 bytes
+
+- **Idea:** see whether attempt 7's 0.97x on `rising` from 1,024 to 16,384
+  was where the loops sit.
+- **check:** pass
+- **compare:** significantly slower, 0.997x [0.996 – 0.998]
+- **Kept:** no
+- **Notes:** no size faster; 0.97x at 64 `rising` (the padding is executed
+  on the way in).
+
+## 9. First block: Sklansky steps instead of Kogge-Stone
+
+- **Idea:** after the first step each lane holds the maximum of a run of
+  elements ending at its own, so a maximum of two vectors whose runs meet is
+  again a run. The odd vectors against the one before, then 2 and 3 against
+  1 and 6 and 7 against 5, then 4 to 7 against 3: 12 maxima after the first
+  step instead of 17, no `dup` needed, the same depth.
+- **check:** pass
+- **compare:** significantly faster, 1.019x [1.018 – 1.020]
+- **Kept:** yes
+- **Notes:** 1.13x at 16 on both (5.3 ns to 4.7), 1.07x at 64 and 1.04x at
+  256 `rising`, 1.01x at 64 `random`.

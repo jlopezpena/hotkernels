@@ -102,10 +102,13 @@
     bit     \a\().16b, \b\().16b, \t\().16b
 .endm
 
-// The first block of x in the vector registers: a prefix maximum in four
-// steps, each vector against the one 1, 2 and 4 vectors back, after the
-// first step against the input one element back (x[0] for x[0], since there
-// is nothing before it). Sets x3 = M after the block.
+// The first block of x in the vector registers: a prefix maximum. Each vector
+// first against the input one element back (x[0] for x[0], since there is
+// nothing before it), so lane j holds the maximum of a run of elements that
+// ends at its own. Then, as in a Sklansky adder, the odd vectors against the
+// one before, vectors 2, 3 and 6, 7 against 1 and 5, and 4 to 7 against 3:
+// in each step the runs of the two vectors meet, so the result is a run too,
+// and after the last every run starts at x[0]. Sets x3 = M after the block.
 .macro FIRST_BLOCK
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
@@ -127,23 +130,18 @@
     VMAX    v5, v21, v29
     VMAX    v6, v22, v30
     VMAX    v7, v23, v24
-    VMAX    v7, v6, v24
-    VMAX    v6, v5, v30
-    VMAX    v5, v4, v29
-    VMAX    v4, v3, v28
-    VMAX    v3, v2, v27
-    VMAX    v2, v1, v26
     VMAX    v1, v0, v25
-    VMAX    v7, v5, v24
-    VMAX    v6, v4, v30
-    VMAX    v5, v3, v29
-    VMAX    v4, v2, v28
+    VMAX    v3, v2, v27
+    VMAX    v5, v4, v29
+    VMAX    v7, v6, v24
+    VMAX    v2, v1, v26
     VMAX    v3, v1, v27
-    VMAX    v2, v0, v26
+    VMAX    v6, v5, v30
+    VMAX    v7, v5, v24
+    VMAX    v4, v3, v28
+    VMAX    v5, v3, v29
+    VMAX    v6, v3, v30
     VMAX    v7, v3, v24
-    VMAX    v6, v2, v30
-    VMAX    v5, v1, v29
-    VMAX    v4, v0, v28
     stp     q0, q1, [x1]
     stp     q2, q3, [x1, #32]
     stp     q4, q5, [x1, #64]
