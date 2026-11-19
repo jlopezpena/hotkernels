@@ -82,7 +82,7 @@ No release note: nothing in `hotkernels/` changes.
 ## Out of scope
 
 - Changing the binding or a kernel so that an application gains. Those are the issues.
-- x86-64 hardware. The times and counts work there, and the profile does through `perf`, but neither has been run on an x86-64 machine yet ([#193](https://github.com/sofeikov/hotkernels/issues/193)).
+- x86-64 hardware. The times and counts work there, and the profile does through `perf`, but neither has been run on an x86-64 machine yet ([#205](https://github.com/sofeikov/hotkernels/issues/205)).
 - Running the applications in CI.
 
 ## Decisions still open
@@ -151,4 +151,4 @@ The record itself is taken once every change that moves an application's time ha
 - **The small `min_char_rnn` has 58 distinct characters,** counted from the licence when the module loads; the description of the size says so, so its line differs from the first record's.
 - **Short rounds.** The small `trimesh_mesh` runs in about 13 ms and the small `mlp_train` in about 36 ms, so they are repeated in each round as designed.
 - **Tests.** The repository had no tests of the delivery tool's own code. `tests/test_apps.py` tests the sizes, the record and its old layout, the refusal while CI runs, and the parsing and classing of perf's output on a capture and on hand-written x86-64 samples. CI runs it on the hosted Linux runner (`uv run --group dev pytest tests`).
-- **What ran where.** The perf path ran end to end in a Docker container on this Apple M1 Pro, ARM64 Linux (Debian bookworm, `linux-perf` 6.1, kernel 6.12): as root with `--privileged`, which samples `cpu-clock`; as an unprivileged user at level 2, which samples `cpu-clock:u`; and in a container without `--privileged`, where perf is refused and the command says so. hotkernels installs nothing on ARM64 Linux, so there both sides were plain NumPy. No figure from the container is used anywhere. Nothing has run on x86-64 Linux; that is left to [#193](https://github.com/sofeikov/hotkernels/issues/193)'s follow-up on the x86-64 machine. Level 3 was not reached in the container (its `/proc/sys` is read-only) and is covered by a unit test only.
+- **What ran where.** The perf path ran end to end in a Docker container on this Apple M1 Pro, ARM64 Linux (Debian bookworm, `linux-perf` 6.1, kernel 6.12): as root with `--privileged`, which samples `cpu-clock`; as an unprivileged user at level 2, which samples `cpu-clock:u`; and in a container without `--privileged`, where perf is refused and the command says so. hotkernels installs nothing on ARM64 Linux, so there both sides were plain NumPy. No figure from the container is used anywhere. Nothing has run on x86-64 Linux; that is [#205](https://github.com/sofeikov/hotkernels/issues/205). Level 3 was not reached in the container (its `/proc/sys` is read-only) and is covered by a unit test only.

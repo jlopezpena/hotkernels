@@ -184,7 +184,7 @@ empyrical-reloaded 0.7.3: twelve statistics, alpha and beta, cumulative returns,
 ## Limits
 
 - **A busy machine.** The run started at a load average of 18.5. The speedups come from alternating runs and their medians agree with their minima, so the ratios hold. The profile's shares do not all hold: functions bound by memory are inflated when other processes compete for the cache. `DOUBLE_subtract` in `mlp_train` is the clear case.
-- **One machine, one architecture.** On x86-64 NumPy has vector loops it lacks on ARM64. The profile now runs on Linux through `perf`, but it has not been run on an x86-64 machine.
+- **One machine, one architecture.** On x86-64 NumPy has vector loops it lacks on ARM64. The profile now runs on Linux through `perf`, but it has not been run on an x86-64 machine ([#205](https://github.com/sofeikov/hotkernels/issues/205)).
 - **One size each.** A larger mesh or a longer return series would move the shares. Every application now has a second size, `small` and `large` (see [applications-design.md](applications-design.md#two-sizes)); the figures here are from the first record, which ran each at one: `min_char_rnn` and `empyrical_stats` at the small size, the other three at the large.
 - **Five programs.** They were chosen by field before any was timed, and the list was not changed by the results. They are still five. Dense linear algebra, image processing and pandas-heavy code are represented by one program or by none.
 - **Estimates of what a missing kernel is worth** assume the rest of the program is unchanged and take the kernel's speed from a stand-in measured in Python, not from a kernel.
