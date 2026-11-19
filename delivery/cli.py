@@ -19,6 +19,7 @@ from . import app_timing as A
 from . import apps as applications
 from . import check as C
 from . import demo as D
+from .gradient_step import study as G
 from . import numpy_suite
 from . import timing as T
 from .cases import INEXACT_OPERATIONS, OPERATIONS, Case
@@ -219,3 +220,32 @@ def numpy_tests(
 
 if __name__ == "__main__":
     app()
+
+
+@app.command("gradient-step")
+def gradient_step(
+    rounds: int = typer.Option(G.ROUNDS, help="Trainings and runs per way of writing the update."),
+) -> None:
+    """Measure where the time of the gradient step `w -= lr * g` goes, and what fusing it would save.
+
+    The study of docs/gradient-step-findings.md: mlp_train and min_char_rnn,
+    with loops and a caching allocator of its own. macOS on ARM64 only, and
+    only meaningful on an idle machine.
+
+    Args:
+        rounds: Trainings and application runs per way, alternating.
+    """
+    meta = T.describe_machine()
+    log.info("timing the update inside mlp_train")
+    ways, split = G.in_loop(rounds)
+    log.info("timing w -= b after each reader")
+    readers = G.after_reader()
+    log.info("running both applications on two allocators")
+    allocators, cache_counts = G.allocator(rounds)
+    log.info("timing min_char_rnn's accumulations")
+    accumulations = G.accumulations()
+    log.info("%s", render("gradient_step.txt.j2", meta=meta, threads_variable=G.THREADS_VARIABLE,
+                            threads=G.threads_setting(), measured=G.MEASURED, rounds=rounds, ways=ways,
+                            split=split, repeats=G.REPEATS, readers=readers, prefetch_ahead=G.PREFETCH_AHEAD,
+                            allocators=allocators, cache_counts=cache_counts,
+                            accumulations=accumulations).rstrip("\n"))
