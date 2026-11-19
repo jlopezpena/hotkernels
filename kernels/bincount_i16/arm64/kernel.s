@@ -4,18 +4,46 @@
 // elements at x equal v, for v = 0..bins-1. An element outside that range,
 // negative or at or above bins, is ignored.
 //
-// The element is sign-extended to 64 bits and compared with bins as an
-// unsigned number, so a negative element is a huge one and fails the same
-// test as one that is too large.
+// An element is in range when, read as an unsigned 16-bit number, it is
+// below min(bins, 32768): a negative element reads as 32768 or more, every
+// other one as less. Sixteen elements are tested at once with vector
+// compares; sixteen that are all in range are counted with no further
+// test, sixteen that are not go one at a time, each sign-extended and
+// compared with bins as an unsigned 64-bit number. No counter outside the
+// tables and counts is ever touched, whatever the data.
+//
+// One counter is loaded, incremented and stored per element, and an
+// element that repeats one shortly before it waits for that store. Paths,
+// chosen once per call (all but the first need n < 2^32, so that no 32-bit
+// counter can overflow):
+//
+//   one table      counts itself, cleared 64 bytes per step.
+//   pair table     bins <= 64 and n >= PAIRS_MIN_N. Two elements per
+//                  increment, in a 64 x 64 table of 32-bit counters on the
+//                  stack; on data that repeats and from TWO_PAIRS_MIN_N, a
+//                  second pair table takes the second pair of each word.
+//   four tables    4 <= bins <= 1024, and n >= 8 * bins, or n >= 2 * bins
+//                  on data that repeats. Element k of each group of four
+//                  goes to table k of bins 32-bit counters on the stack.
+//   eight tables   as four, from EIGHT_MIN_N elements on data that repeats.
+//
+// "Repeats" is a sample: SAMPLE_REPEATS or more of the first SAMPLE
+// elements equal the element four places on. Every path is right on any
+// data; the sample only picks the faster one.
+//
+// Stack: the pair path takes 32,768 + 256 bytes below the stack pointer,
+// the eight tables up to 32 KB (bins 1,024), the four up to 16 KB.
 
-// The table path is for at least this many counters (its sum works four at
-// a time) and at most this many: four tables of 32-bit counters, 16 KB of
-// stack.
+// The table paths are for at least this many counters (their sums work four
+// at a time) and at most this many: eight tables of 32-bit counters, 32 KB
+// of stack.
 .set TABLES_MIN_BINS, 4
 .set TABLES_MAX_BINS, 1024
-// It is taken from this many elements per counter, where clearing and
-// summing the tables is repaid.
-.set TABLES_MIN_PER_BIN, 8
+// It is taken from 2^TABLES_SHIFT elements per counter, where clearing and
+// summing the tables is repaid, and from 2^REPEAT_SHIFT on data that
+// repeats.
+.set TABLES_SHIFT, 3
+.set REPEAT_SHIFT, 1
 // A sample of the data is taken from SAMPLE + 8 elements: whether at least
 // SAMPLE_REPEATS of the first SAMPLE equal the element four places on, which
 // goes to the same table of four: one in eight. Uniform codes over 64 values
@@ -55,7 +83,7 @@
 .endm
 
 // Count the four elements of the word in \w, each known to be below bins,
-// in the four tables sp, x4, x5 and x16.
+// in the four tables sp, x4, x5 and x16, in that order.
 .macro TABLE4 w
     and     x10, \w, #0xffff
     ubfx    x11, \w, #16, #16
@@ -228,11 +256,11 @@ Lnotpairs:
     b.lo    Lsingle
     cmp     x3, #TABLES_MAX_BINS
     b.hi    Lsingle
-    cmp     x2, x3, lsl #1
+    cmp     x2, x3, lsl #REPEAT_SHIFT
     b.lo    Lsingle
     // From 8 elements per counter: four tables, or eight from EIGHT_MIN_N
     // elements if the data repeats. From 2: four tables if the data repeats.
-    cmp     x2, x3, lsl #3
+    cmp     x2, x3, lsl #TABLES_SHIFT
     b.lo    Lfew
     cmp     x2, #EIGHT_MIN_N
     b.lo    Ltables
@@ -244,11 +272,11 @@ Lfew:
     REPEATS
     cmp     w11, #SAMPLE_REPEATS
     b.lo    Lsampled                // no
-    cmp     x2, x3, lsl #3
+    cmp     x2, x3, lsl #TABLES_SHIFT
     b.lo    Ltables
     b       Leight
 Lsampled:                           // data that does not repeat, or too few to tell
-    cmp     x2, x3, lsl #3
+    cmp     x2, x3, lsl #TABLES_SHIFT
     b.hs    Ltables
 Lsingle:
     // Clear the bins counters: 64 bytes per step, the last 64 bytes ending
