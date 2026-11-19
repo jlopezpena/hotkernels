@@ -2,6 +2,8 @@
 
 This is a proposal for review. It adds a third level of timing, above the judge and above `delivery time`: whole programs and library functions that a user runs, written by other people, timed with and without `hotkernels.install()`.
 
+A study of five whole applications, with a native profile of each, is in [applications-findings.md](applications-findings.md). It is separate from the runner proposed here.
+
 ## Summary
 
 - **Every figure today comes from code written for hotkernels.** The judge times a kernel. `delivery time` times one statement that meets the kernel's conditions. `delivery demo` times [examples/workload.py](../examples/workload.py), which was written to use eleven hooked calls. None of them says what a user of scikit-image, pandas or scikit-learn gets.
