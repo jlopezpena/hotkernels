@@ -20,11 +20,13 @@
 //             is below the one before it: the block is a copy.
 //   general   a prefix maximum (GENERAL).
 //
-// The blocks start general and stay general while each changes M. After a
-// general block that does not change M, they are tried flat; after one that
-// ends on M, rising. A block that fails the flat test is done the general
-// way with the next tried flat again; one that fails the rising test is
-// done the general way.
+// The first block is general. After a general block the next is tried
+// rising if the block ends on M, flat otherwise. A block that fails the
+// flat test is done the general way with the next tried flat again; one
+// that fails the rising test is done the general way, and the rule above
+// picks the next. While M is NaN (every element so far NaN) the flat test
+// fails, its compare being unordered, and the blocks go the general way.
+// The flat and rising loops store with stnp.
 //
 // Fewer than 16 left: pairs, one vector at a time against the element
 // before, then a single element. Fewer than 16 in all: x[0], then the same
@@ -114,7 +116,6 @@ _cumfmax_f64:
     subs    x2, x2, #16
     b.lo    Lshort
     LOAD
-    mov     v29.16b, v31.16b
     GENERAL 1
     b       Lgeneral_next
 Lshort:
@@ -124,19 +125,14 @@ Lshort:
     sub     x2, x2, #1
     b       Ltail
 
-    // ---- General, while each block changes M. v29 = M before the block.
-Lgeneral:
-    LOAD
+    // ---- General: one block, then rising if it ends on M, else flat.
 Lgeneral_loaded:
-    mov     v29.16b, v31.16b
     GENERAL
 Lgeneral_next:
     b.lo    Ltail
-    fcmp    d29, d31                // unordered, and so general, while M is NaN
-    b.eq    Lflat
     ldur    d28, [x0, #-8]
     fcmp    d28, d31                // the block ends on M
-    b.ne    Lgeneral
+    b.ne    Lflat
 
     // ---- Rising: the element before the block is M, and no element of the
     //      block is below the one before it (a NaN fails the test): the

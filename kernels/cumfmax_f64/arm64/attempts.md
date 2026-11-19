@@ -57,3 +57,10 @@ Apple M1 Pro, macOS, native.
 - **compare:** significantly faster, 1.020x [1.017 – 1.024]; a second run, since nearly every size read 1.00x: 1.021x [1.017 – 1.025]. The gain is all at 16,384 elements, 1.36x on `random` and `some_nan` and 1.07x on `rising` in both runs; 0.98x to 0.99x at 1,024 and 4,096 on `random` and `some_nan`; 1.00x elsewhere.
 - **Kept:** yes
 - **Notes:** at 16,384 elements `x` is 128 KB, the size of this core's first-level data cache, and `x` and `out` together do not fit. With `stnp` the output seemingly does not displace the input, and a repeated call finds `x` where the last one left it: 0.11 ns per element there, against 0.15 before.
+
+## 8. After a general block: rising if it ends on M, flat otherwise
+
+- **Idea:** as attempt 13 of `cummax_i64`. The general loop went on while each block changed M; random data changes M often in its first blocks, and the branch that kept it general went either way. Now a general block is followed by the rising test if it ends on M, by the flat test otherwise, and there is no general loop: a general block is only ever the first one or one that failed a test. While M is NaN the flat test fails (its compare is unordered), so an all-NaN prefix still goes the general way, at the cost of a failed test per block. The copy of M before each general block is gone with the loop.
+- **check:** pass
+- **compare:** significantly faster, 1.015x [1.014 – 1.016]: 1.12x to 1.14x at 64 on `random` and `some_nan`, 1.05x at 64 on `rising`, 1.04x to 1.05x at 256, 1.00x from 4,096 up.
+- **Kept:** yes
