@@ -21,3 +21,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.343x [1.342 – 1.345]
 - **Kept:** yes
 - **Notes:** four values 2.24x–2.36x with 64 counters from 1,024 up (0.42 ns per element against 0.95), 2.33x–2.53x with 1,000 counters from 16,384 up. Uniform codes 1.07x–1.10x from 65,536 up (0.28 ns per element), but 0.98x at 1,024 with 64 counters and 0.95x at 16,384 with 1,000, where the set-up is not repaid.
+
+## 3. A table of pairs for at most 64 counters, from 8,192 elements
+
+- **Idea:** attempt 4 of `bincount_i16`, for 8-byte elements: four elements from two `ldp`, or'ed together and compared with 64 once (the or is below 64 as an unsigned number only if each is, so a negative element and one with any high bit set both fail), and each pair index one `orr x, a0, a1, lsl #6`. Four that are not all pair codes go one at a time into `counts`; the totals are taken as in `bincount_i16`. First from 4,096 elements, as `bincount_i16` has it: 0.89x at 4,096 uniform codes, so from 8,192.
+- **check:** pass
+- **compare:** significantly faster, 1.072x [1.071 – 1.072]
+- **Kept:** yes
+- **Notes:** uniform codes with 64 counters 1.09x at 16,384, 1.25x–1.26x from 1,048,576 up (0.228 ns per element against 0.288); four values 1.23x at 16,384, 1.39x–1.40x from 65,536 up (0.304 ns against 0.423). Less than `bincount_i16` gets (0.139 ns per element there): twice the loads of input and three `orr` for the test.
