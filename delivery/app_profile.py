@@ -33,7 +33,7 @@ CHILD_SECONDS = SAMPLE_SECONDS + 4
 # What the child writes on standard output when its data is built and one run is done.
 READY = "ready"
 # Functions shown per profile.
-TOP_FUNCTIONS = 12
+TOP_FUNCTIONS = 15
 # Python functions shown from cProfile.
 TOP_PYTHON = 10
 # Longest function name shown; C++ names from NumPy's sort run to hundreds of characters.
