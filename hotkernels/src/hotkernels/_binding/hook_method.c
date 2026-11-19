@@ -500,7 +500,8 @@ static hk_kernel accumulate_kernel(PyObject *ufunc, PyObject *array) {
 // array is read for signalling NaNs first, and one that holds any is NumPy's.
 // The kernel's vmaxpd sets the invalid-operation flag for every NaN operand,
 // quiet ones included, and NumPy's own loop leaves no flag behind, so the
-// flags are cleared after it, as after the clip kernels.
+// flags are cleared after it (hk_clear_float_flags), as after the clip
+// kernels.
 static HK_NOINLINE PyObject *try_accumulate(PyObject *ufunc, PyObject *const *args, Py_ssize_t nargs,
                                             PyObject *kwnames) {
     enum { ARRAY, AXIS, DTYPE, OUT, PARAMETERS };
@@ -535,7 +536,7 @@ static HK_NOINLINE PyObject *try_accumulate(PyObject *ufunc, PyObject *const *ar
             signalling = hk_has_signalling_nan(PyArray_DATA(x), (size_t)n);
             if (!signalling) {
                 cumfmax_f64(PyArray_DATA(x), out, (size_t)n);
-                feclearexcept(FE_ALL_EXCEPT);
+                hk_clear_float_flags();
             }
         }
         HK_END_NOGIL
@@ -697,7 +698,7 @@ static bool fmax_runs_ambiguous(const double *x, size_t n, const double *out, si
 // its NaNs are of more than one pattern (fmax_runs_ambiguous). The kernel's vmaxpd sets the
 // invalid-operation flag for every NaN operand, quiet ones included, and
 // NumPy's own loop leaves no flag behind, so the flags are cleared after the
-// kernel, as after the clip kernels.
+// kernel (hk_clear_float_flags), as after the clip kernels.
 static HK_NOINLINE PyObject *try_reduceat(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     enum { ARRAY, INDICES, AXIS, DTYPE, OUT, PARAMETERS };
     static const char *const names[PARAMETERS] = {"array", "indices", "axis", "dtype", "out"};
@@ -727,7 +728,7 @@ static HK_NOINLINE PyObject *try_reduceat(PyObject *const *args, Py_ssize_t narg
     {
         HK_BEGIN_NOGIL(n)
         taken = fmax_runs(data, (uint64_t)n, PyArray_DATA(indices), (size_t)m, out);
-        feclearexcept(FE_ALL_EXCEPT);
+        hk_clear_float_flags();
         taken = taken && !fmax_runs_ambiguous(data, (size_t)n, out, (size_t)m);
         HK_END_NOGIL
     }

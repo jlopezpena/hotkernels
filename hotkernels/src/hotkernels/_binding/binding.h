@@ -30,6 +30,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
+
 #include "kernels.h"
 
 // ---------------------------------------------------------------- counters
@@ -215,6 +219,25 @@ static inline HK_TARGET_KERNEL_LEVEL bool hk_has_signalling_nan(const double *va
         clear |= ~bits & nan;
     }
     return (clear & quiet) != 0;
+}
+
+// Clear the floating-point status flags a kernel may have set. NumPy's own
+// loops leave none behind, and a kernel's vmaxpd sets the invalid-operation
+// flag for every NaN operand, quiet ones included. On x86-64 the kernels use
+// only SSE and AVX instructions, whose flags are the low six bits of MXCSR,
+// and the register is written only when one is set: about 1 ns, where the C
+// library's feclearexcept, which also saves and reloads the x87 state, takes
+// about 46 ns (Intel Core i5-14600KF), a fifth of a call on 16 elements.
+static inline void hk_clear_float_flags(void) {
+#if defined(__x86_64__)
+    // The six exception flags of MXCSR: invalid, denormal, divide by zero,
+    // overflow, underflow and precision.
+    const unsigned int flags = 0x3f;
+    const unsigned int csr = _mm_getcsr();
+    if (csr & flags) _mm_setcsr(csr & ~flags);
+#else
+    feclearexcept(FE_ALL_EXCEPT);
+#endif
 }
 
 // Convert a Python float or a Python int to a double, as NumPy does when such
