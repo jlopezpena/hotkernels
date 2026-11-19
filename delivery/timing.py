@@ -553,6 +553,11 @@ def _output_of(command: list[str]) -> str:
         return ""
 
 
+def load_average() -> float:
+    """Return the one-minute load average, to two decimals. Above 1.0 the machine is in use."""
+    return round(os.getloadavg()[0], 2)
+
+
 def describe_machine() -> dict:
     """Record what a run was measured on.
 
@@ -575,7 +580,7 @@ def describe_machine() -> dict:
         "numpy": np.__version__,
         "python": platform.python_version(),
         "git": _output_of(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"]),
-        "load_average": round(os.getloadavg()[0], 2),
+        "load_average": load_average(),
     }
 
 
