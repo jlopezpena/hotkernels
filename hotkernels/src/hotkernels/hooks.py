@@ -27,6 +27,17 @@ INNER_LOOP = "inner loop"
 FUNCTION = "function"
 METHOD = "method"
 INDEXING = "indexing"
+BOTTLENECK = "bottleneck"
+
+# The module that defines bottleneck's functions. A bottleneck hook is applied
+# only when it is in sys.modules; hotkernels never imports it.
+BOTTLENECK_MODULE = "bottleneck.reduce"
+# Shape of the matrix the bottleneck probes reduce along axis 0, and the seed
+# of its values. With these, the square and the add of nanstd rounded once
+# give another result than rounded twice in several columns, so a bottleneck
+# build that rounds the other way fails the nanstd probe.
+BOTTLENECK_PROBE_SHAPE = (40, 37)
+BOTTLENECK_PROBE_SEED = 192
 
 # Names platform.machine() gives an ARM64 processor: arm64 on macOS, aarch64 on Linux.
 ARM64_MACHINES = ("arm64", "aarch64")
@@ -128,6 +139,10 @@ class Hook:
     kind: str
     # One probe per kernel the hook serves.
     probes: tuple[Probe, ...]
+    # Module of another library that holds the hooked object, or None for a
+    # hook in NumPy. Such a hook is applied only while the module is in
+    # sys.modules.
+    module: str | None = None
 
 
 @dataclass(frozen=True)
@@ -724,6 +739,59 @@ def _interp() -> bool:
     return bool(np.array_equal(np.interp(queries, points, 2.0 * points), 2.0 * queries))
 
 
+def _bottleneck_probe_matrix() -> np.ndarray:
+    """Return the matrix the bottleneck probes reduce: random values with every special value bottleneck treats apart.
+
+    Column 0 is all NaN, column 1 all -0.0, column 2 zeros of both signs ending
+    in +0.0 and column 3 ending in -0.0, column 4 +inf and NaN, column 5 -inf
+    and NaN; the rest are normal values with a NaN in every seventh row.
+    """
+    rows, cols = BOTTLENECK_PROBE_SHAPE
+    x = np.random.default_rng(BOTTLENECK_PROBE_SEED).standard_normal((rows, cols))
+    x[::7, 6:] = np.nan
+    x[:, 0] = np.nan
+    x[:, 1] = -0.0
+    x[:, 2] = np.where(np.arange(rows) % 2, 0.0, -0.0)
+    x[:, 3] = np.where(np.arange(rows) % 2, -0.0, 0.0)
+    x[:, 4] = np.where(np.arange(rows) % 2, np.inf, np.nan)
+    x[:, 5] = np.where(np.arange(rows) % 2, -np.inf, np.nan)
+    return x
+
+
+def _bottleneck(function: str, hook: str) -> bool:
+    """Probe a bottleneck hook: the function along axis 0, against bottleneck's own answer.
+
+    The probe matrix is reduced twice in each of two layouts, C order and a
+    view of rolling windows: with the hook removed, which is bottleneck's own
+    loop, and with it applied. bottleneck is in sys.modules when this runs.
+
+    Args:
+        function: "nanmean", "nanstd", "nanmin" or "nanmax"; nanstd is called
+            with ddof=1, as empyrical calls it.
+        hook: Name of the hook, which is applied when the probe starts and is
+            applied again when it ends.
+
+    Returns:
+        Whether every result with the hook has the same bits as without it.
+    """
+    import importlib
+    import sys
+
+    from .environment import BINDING_MODULE
+
+    binding = importlib.import_module(BINDING_MODULE)
+    call = getattr(sys.modules[BOTTLENECK_MODULE], function)
+    keywords = {"ddof": 1} if function == "nanstd" else {}
+    x = _bottleneck_probe_matrix()
+    windows = np.lib.stride_tricks.as_strided(x.ravel(), (x.shape[0], x.size - x.shape[0] + 1), (8, 8))
+    binding.remove(hook)
+    expected = [call(a, axis=0, **keywords) for a in (x, windows)]
+    binding.apply(hook)
+    got = [call(a, axis=0, **keywords) for a in (x, windows)]
+    return all(type(g) is np.ndarray and g.dtype == e.dtype and g.shape == e.shape and g.tobytes() == e.tobytes()
+               for e, g in zip(expected, got))
+
+
 # Every hook, in the order install() applies them: the deepest first.
 HOOKS: tuple[Hook, ...] = (
     Hook("slot.argmax.f32", TYPE_SLOT, (Probe("argmax_f32", partial(_argext_method, np.float32, "argmax", 1.0)),)),
@@ -834,7 +902,15 @@ HOOKS: tuple[Hook, ...] = (
         Probe("compress_f64", partial(_compress, np.float64)),
     )),
     Hook("index.set", INDEXING, (Probe("maskfill_f64", partial(_maskfill, _assign)),)),
+    # bottleneck's functions, applied only when bottleneck is imported.
+    *(Hook(f"bottleneck.{function}", BOTTLENECK,
+           (Probe(f"{function}_cols_f64", partial(_bottleneck, function, f"bottleneck.{function}")),),
+           module=BOTTLENECK_MODULE)
+      for function in ("nanmean", "nanstd", "nanmin", "nanmax")),
 )
+
+# The hooks in bottleneck, which install(bottleneck=False) leaves out.
+BOTTLENECK_HOOKS = tuple(hook.name for hook in HOOKS if hook.module == BOTTLENECK_MODULE)
 
 # The hooks that deliver the compress kernels: `x[mask]`, `np.compress` and `np.extract`.
 COMPRESS_HOOKS = ("index.get", "function.compress", "function.extract")
@@ -905,4 +981,8 @@ KERNELS: tuple[KernelInfo, ...] = (
                unbound_reason=None if ON_ARM64 else INPLACE_ARM64_ONLY, builtin=True),
     KernelInfo("subtract_inplace_f64", "x -= y", "float64", INPLACE, ("loop.subtract.f64",),
                unbound_reason=None if ON_ARM64 else INPLACE_ARM64_ONLY, builtin=True),
+    # Calls a library sends to bottleneck rather than NumPy: `bn.nanmean(a,
+    # axis=0)` on a matrix whose rows' elements are adjacent.
+    *(KernelInfo(f"{function}_cols_f64", f"bn.{function}", "float64", f"bn.{function}", (f"bottleneck.{function}",))
+      for function in ("nanmean", "nanstd", "nanmin", "nanmax")),
 )
