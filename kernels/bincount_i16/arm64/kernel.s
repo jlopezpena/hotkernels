@@ -16,14 +16,15 @@
 // It is taken from this many elements per counter, where clearing and
 // summing the tables is repaid.
 .set TABLES_MIN_PER_BIN, 8
-// Eight tables instead of four when at least SAMPLE_REPEATS of the first
-// SAMPLE elements equal the element four places on, which goes to the same
-// table of four: one in eight. Uniform codes over 64 values have about 4 in
-// 256, four distinct values about 64. The sample is taken from SAMPLE_MIN_N
-// elements.
-.set SAMPLE, 256
-.set SAMPLE_REPEATS, 32
-.set SAMPLE_MIN_N, 8192
+// A sample of the data is taken from SAMPLE + 8 elements: whether at least
+// SAMPLE_REPEATS of the first SAMPLE equal the element four places on, which
+// goes to the same table of four: one in eight. Uniform codes over 64 values
+// have about 1 in 64, four distinct values about 16. On data that repeats
+// the tables are taken from 2 elements per counter, and eight tables instead
+// of four from EIGHT_MIN_N elements.
+.set SAMPLE, 64
+.set SAMPLE_REPEATS, 8
+.set EIGHT_MIN_N, 8192
 
 // The pair path is for at most this many counters: codes of six bits.
 .set PAIR_CODES, 64
@@ -142,11 +143,61 @@ _bincount_i16:
     mov     x15, #1
     b       Lsingle
 Lnotpairs:
-    // The four tables: 4 <= bins <= 1024 and n >= 8 * bins.
+    // The tables: 4 <= bins <= 1024, and either n >= 8 * bins, or n >= 2 *
+    // bins and a sample of the data repeats.
     cmp     x3, #TABLES_MIN_BINS
     b.lo    Lsingle
     cmp     x3, #TABLES_MAX_BINS
     b.hi    Lsingle
+    cmp     x2, x3, lsl #1
+    b.lo    Lsingle
+    // From 8 elements per counter: four tables, or eight from EIGHT_MIN_N
+    // elements if the data repeats. From 2: four tables if the data repeats.
+    cmp     x2, x3, lsl #3
+    b.lo    Lfew
+    cmp     x2, #EIGHT_MIN_N
+    b.lo    Ltables
+Lfew:
+    cmp     x2, #SAMPLE + 8
+    b.lo    Lsampled
+    // Does the data repeat: at least SAMPLE_REPEATS of the first SAMPLE
+    // elements equal the one four places on.
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ldp     q4, q5, [x0, #64]
+    ldp     q6, q7, [x0, #96]
+    ldur    q16, [x0, #8]
+    ldur    q17, [x0, #24]
+    ldur    q18, [x0, #40]
+    ldur    q19, [x0, #56]
+    ldur    q20, [x0, #72]
+    ldur    q21, [x0, #88]
+    ldur    q22, [x0, #104]
+    ldur    q23, [x0, #120]
+    cmeq    v0.8h, v0.8h, v16.8h    // a match is -1
+    cmeq    v1.8h, v1.8h, v17.8h
+    cmeq    v2.8h, v2.8h, v18.8h
+    cmeq    v3.8h, v3.8h, v19.8h
+    cmeq    v4.8h, v4.8h, v20.8h
+    cmeq    v5.8h, v5.8h, v21.8h
+    cmeq    v6.8h, v6.8h, v22.8h
+    cmeq    v7.8h, v7.8h, v23.8h
+    add     v0.8h, v0.8h, v1.8h
+    add     v2.8h, v2.8h, v3.8h
+    add     v4.8h, v4.8h, v5.8h
+    add     v6.8h, v6.8h, v7.8h
+    add     v0.8h, v0.8h, v2.8h
+    add     v4.8h, v4.8h, v6.8h
+    add     v0.8h, v0.8h, v4.8h
+    neg     v0.8h, v0.8h
+    addv    h0, v0.8h
+    fmov    w11, s0
+    cmp     w11, #SAMPLE_REPEATS
+    b.lo    Lsampled                // no
+    cmp     x2, x3, lsl #3
+    b.lo    Ltables
+    b       Leight
+Lsampled:                           // data that does not repeat, or too few to tell
     cmp     x2, x3, lsl #3
     b.hs    Ltables
 Lsingle:
@@ -218,25 +269,6 @@ Ldone:
     // cleared and never counted. counts is not cleared: the sum of the four
     // tables is stored over it. The counters cannot overflow: n < 2^32.
 Ltables:
-    cmp     x2, #SAMPLE_MIN_N
-    b.lo    Lfour
-    // How many of the first SAMPLE elements equal the one four places on.
-    movi    v2.2d, #0
-    mov     x11, x0
-    add     x12, x0, #SAMPLE * 2
-Lsample:
-    ldr     q0, [x11]
-    ldr     q1, [x11, #8]
-    cmeq    v0.8h, v0.8h, v1.8h
-    sub     v2.8h, v2.8h, v0.8h     // a match is -1
-    add     x11, x11, #16
-    cmp     x11, x12
-    b.lo    Lsample
-    addv    h2, v2.8h
-    fmov    w11, s2
-    cmp     w11, #SAMPLE_REPEATS
-    b.hs    Leight
-Lfour:
     add     x17, x3, #3
     and     x17, x17, #0xfffffffffffffffc
     lsl     x17, x17, #2            // bytes of one table, a multiple of 16

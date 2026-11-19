@@ -67,3 +67,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.019x [1.016 – 1.022]
 - **Kept:** yes
 - **Notes:** four values with 1,000 counters 1.11x–1.17x from 16,384 up (0.27 ns per element at 1,048,576 against 0.31); every other table 1.00x.
+
+## 9. The tables from 2 elements per counter where the data repeats
+
+- **Idea:** below 8 elements per counter the single table runs four values at 0.93 ns per element, where the tables take 0.35 even with their set-up. Take the sample of attempt 8 whenever there are 2 to 8 elements per counter (and when the eight tables are possible), and use the four tables there if it shows repeats. First with a sample of 256 elements in a loop (needs 264), taken also where it was not needed: 0.94x at 1,024 uniform codes with 64 counters (about 19 ns for the sample), and 256 elements too few to sample. Then the sample cut to 64 elements against the one four places on (threshold 8: uniform over 64 values has about 1, four values about 16), unrolled into eight `cmeq` with no loop, and taken only where its answer is used.
+- **check:** pass
+- **compare:** significantly faster, 1.036x [1.034 – 1.037]
+- **Kept:** yes
+- **Notes:** four values with 64 counters 1.96x at 256 (121 ns against 238); with 1,000 counters 2.28x at 4,096 (1.7 us against 4.0). Every other point 0.99x–1.04x.
