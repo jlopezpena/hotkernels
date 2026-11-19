@@ -27,6 +27,15 @@
 .set ROW_TOTALS, PAIR_CODES * 4
 .set PAIR_TABLES, PAIR_TABLE
 
+// A sample of the data: whether at least SAMPLE_REPEATS of the first SAMPLE
+// elements equal the element four places on, which goes to the same table
+// of four: one in eight. Uniform codes over 64 values have about 0.5 in 32,
+// four distinct values about 8. On data that repeats, eight tables instead
+// of four from EIGHT_MIN_N elements.
+.set SAMPLE, 32
+.set SAMPLE_REPEATS, 4
+.set EIGHT_MIN_N, 8192
+
 // Count the element in \reg into the 32-bit table at \base, if it is below
 // bins.
 .macro COUNTT reg, base, tmp
@@ -71,6 +80,87 @@
     COUNTT  x9, x16, w15
 .endm
 
+// Flags: lo if each of \a to \d is below bins, hs if any is not.
+.macro INSIDE a, b, c, d
+    cmp     \a, x3
+    ccmp    \b, x3, #2, lo
+    ccmp    \c, x3, #2, lo
+    ccmp    \d, x3, #2, lo
+.endm
+
+// Count \a to \d, each known to be below bins, in the tables at \b0 to
+// \b3 (eight-table path).
+.macro TABLE8 a, b, c, d, b0, b1, b2, b3
+    ldr     w13, [\b0, \a, lsl #2]
+    ldr     w14, [\b1, \b, lsl #2]
+    add     w13, w13, #1
+    add     w14, w14, #1
+    str     w13, [\b0, \a, lsl #2]
+    str     w14, [\b1, \b, lsl #2]
+    ldr     w13, [\b2, \c, lsl #2]
+    ldr     w15, [\b3, \d, lsl #2]
+    add     w13, w13, #1
+    add     w15, w15, #1
+    str     w13, [\b2, \c, lsl #2]
+    str     w15, [\b3, \d, lsl #2]
+.endm
+
+// The same for four that are not all below bins: each is tested.
+.macro TABLE8S a, b, c, d, b0, b1, b2, b3
+    COUNTT  \a, \b0, w13
+    COUNTT  \b, \b1, w14
+    COUNTT  \c, \b2, w13
+    COUNTT  \d, \b3, w15
+.endm
+
+// w11 = how many of the first SAMPLE elements equal the one four places
+// on. Needs SAMPLE + 4 elements.
+.macro REPEATS
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ldp     q4, q5, [x0, #64]
+    ldp     q6, q7, [x0, #96]
+    ldp     q16, q17, [x0, #128]
+    ldp     q18, q19, [x0, #160]
+    ldp     q20, q21, [x0, #192]
+    ldp     q22, q23, [x0, #224]
+    ldp     q24, q25, [x0, #256]
+    cmeq    v0.2d, v0.2d, v2.2d     // a match is -1
+    cmeq    v1.2d, v1.2d, v3.2d
+    cmeq    v2.2d, v2.2d, v4.2d
+    cmeq    v3.2d, v3.2d, v5.2d
+    cmeq    v4.2d, v4.2d, v6.2d
+    cmeq    v5.2d, v5.2d, v7.2d
+    cmeq    v6.2d, v6.2d, v16.2d
+    cmeq    v7.2d, v7.2d, v17.2d
+    cmeq    v16.2d, v16.2d, v18.2d
+    cmeq    v17.2d, v17.2d, v19.2d
+    cmeq    v18.2d, v18.2d, v20.2d
+    cmeq    v19.2d, v19.2d, v21.2d
+    cmeq    v20.2d, v20.2d, v22.2d
+    cmeq    v21.2d, v21.2d, v23.2d
+    cmeq    v22.2d, v22.2d, v24.2d
+    cmeq    v23.2d, v23.2d, v25.2d
+    add     v0.2d, v0.2d, v1.2d
+    add     v2.2d, v2.2d, v3.2d
+    add     v4.2d, v4.2d, v5.2d
+    add     v6.2d, v6.2d, v7.2d
+    add     v16.2d, v16.2d, v17.2d
+    add     v18.2d, v18.2d, v19.2d
+    add     v20.2d, v20.2d, v21.2d
+    add     v22.2d, v22.2d, v23.2d
+    add     v0.2d, v0.2d, v2.2d
+    add     v4.2d, v4.2d, v6.2d
+    add     v16.2d, v16.2d, v18.2d
+    add     v20.2d, v20.2d, v22.2d
+    add     v0.2d, v0.2d, v4.2d
+    add     v16.2d, v16.2d, v20.2d
+    add     v0.2d, v0.2d, v16.2d
+    addp    d0, v0.2d
+    fmov    x11, d0
+    neg     x11, x11
+.endm
+
 // Count the element in \reg into counts, if it is below bins.
 .macro COUNT reg, tmp
     cmp     \reg, x3
@@ -104,7 +194,13 @@ Lnotpairs:
     cmp     x3, #TABLES_MAX_BINS
     b.hi    Lsingle
     cmp     x2, x3, lsl #TABLES_SHIFT
-    b.hs    Ltables
+    b.lo    Lsingle
+    cmp     x2, #EIGHT_MIN_N
+    b.lo    Ltables
+    REPEATS
+    cmp     x11, #SAMPLE_REPEATS
+    b.lo    Ltables
+    b       Leight
 Lsingle:
     // Clear the bins counters: 64 bytes per step, the last 64 bytes ending
     // exactly at the end of counts and overlapping the step before.
@@ -377,3 +473,91 @@ Lslow4:                             // one of the four is not a pair code
     COUNT   x8, x14
     COUNT   x9, x12
     b       Lback4
+
+    // ---- Eight tables ----------------------------------------------------
+    // As the four tables, for data that repeats: element k of each group of
+    // eight is counted in table k. Eight table bases need every free integer
+    // register, so the frame size is kept in d30.
+Leight:
+    add     x9, x3, #3
+    and     x9, x9, #0xfffffffffffffffc
+    lsl     x9, x9, #2              // bytes of one table, a multiple of 16
+    lsl     x11, x9, #3
+    sub     sp, sp, x11
+    add     x4, sp, x9              // tables 1 to 7
+    add     x5, x4, x9
+    add     x6, x5, x9
+    add     x7, x6, x9
+    add     x8, x7, x9
+    add     x16, x8, x9
+    add     x17, x16, x9
+    fmov    d30, x11
+    // Clear the tables, 64 bytes per step: eight times a multiple of 16.
+    movi    v0.2d, #0
+    mov     x10, sp
+    add     x9, sp, x11
+L8_clear:
+    stp     q0, q0, [x10]
+    stp     q0, q0, [x10, #32]
+    add     x10, x10, #64
+    cmp     x10, x9
+    b.lo    L8_clear
+
+    subs    x2, x2, #8              // at least eight elements
+L8_loop:
+    ldp     x9, x10, [x0]
+    ldp     x11, x12, [x0, #16]
+    INSIDE  x9, x10, x11, x12
+    b.hs    L8_slow0
+    TABLE8  x9, x10, x11, x12, sp, x4, x5, x6
+L8_back0:
+    ldp     x9, x10, [x0, #32]
+    ldp     x11, x12, [x0, #48]
+    INSIDE  x9, x10, x11, x12
+    b.hs    L8_slow1
+    TABLE8  x9, x10, x11, x12, x7, x8, x16, x17
+L8_back1:
+    add     x0, x0, #64
+    subs    x2, x2, #8
+    b.hs    L8_loop
+
+    // counts[v] = the eight tables' counters v, four counters per step; the
+    // last step ends exactly at bins and may overlap the one before.
+    mov     x9, #0                  // counter index
+    sub     x10, x3, #4             // the last step's index
+L8_sum:
+    cmp     x9, x10
+    csel    x9, x9, x10, lo
+    lsl     x11, x9, #2
+    ldr     q0, [sp, x11]
+    ldr     q1, [x4, x11]
+    ldr     q2, [x5, x11]
+    ldr     q3, [x6, x11]
+    ldr     q4, [x7, x11]
+    ldr     q5, [x8, x11]
+    ldr     q6, [x16, x11]
+    ldr     q7, [x17, x11]
+    add     v0.4s, v0.4s, v1.4s
+    add     v2.4s, v2.4s, v3.4s
+    add     v4.4s, v4.4s, v5.4s
+    add     v6.4s, v6.4s, v7.4s
+    add     v0.4s, v0.4s, v2.4s
+    add     v4.4s, v4.4s, v6.4s
+    add     v0.4s, v0.4s, v4.4s
+    uxtl    v16.2d, v0.2s
+    uxtl2   v17.2d, v0.4s
+    add     x12, x1, x9, lsl #3
+    stp     q16, q17, [x12]
+    add     x9, x9, #4
+    cmp     x9, x3
+    b.lo    L8_sum
+    fmov    x9, d30
+    add     sp, sp, x9
+    b       Ltail                   // 0 to 7 elements left, into counts
+
+L8_slow0:                           // one of the four is not below bins
+    TABLE8S x9, x10, x11, x12, sp, x4, x5, x6
+    b       L8_back0
+L8_slow1:
+    TABLE8S x9, x10, x11, x12, x7, x8, x16, x17
+    b       L8_back1

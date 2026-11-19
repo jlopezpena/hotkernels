@@ -37,3 +37,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.003x [1.003 – 1.004]
 - **Kept:** yes
 - **Notes:** uniform codes with 64 counters 1.05x at 1,024 and 4,096; with 1,000 counters 1.01x from 16,384 up (0.287 ns per element at 1,048,576); four values unchanged. The `bincount_i16` loop gained 12% with 1,000 counters from its vector test, which also replaced a sign extension per element; here the compare per element was already the only test.
+
+## 5. Eight tables where a sample of the data repeats, from 8,192 elements
+
+- **Idea:** attempt 8 of `bincount_i16`: a separate loop with eight tables (up to 32 KB), taken from 8,192 elements when at least 4 of the first 32 elements equal the element four places on (uniform codes over 64 values have about 0.5 such, four values about 8). The sample is 18 vector loads and 16 `cmeq` on 64-bit lanes, no loop. Every free integer register holds a table base; the frame size is kept in `d30`.
+- **check:** pass
+- **compare:** significantly faster, 1.027x [1.026 – 1.028]
+- **Kept:** yes
+- **Notes:** four values with 1,000 counters 1.13x at 16,384, 1.22x–1.24x from 65,536 up (0.29 ns per element at 1,048,576 against 0.36). Every other point 1.00x.
