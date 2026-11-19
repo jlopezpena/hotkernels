@@ -18,7 +18,7 @@ size it was measured at. "small" and "large" are relative to each program:
 "small" has arrays of hundreds to tens of thousands of elements, "large" of
 hundreds of thousands to millions.
 
-See docs/applications-design.md.
+See docs/applications-design.md and docs/applications-second-design.md.
 """
 from __future__ import annotations
 
@@ -26,8 +26,17 @@ import importlib
 import importlib.util
 from types import ModuleType
 
-# Every application, in the order the report lists them.
-NAMES = ("mlp_train", "min_char_rnn", "trimesh_mesh", "sklearn_metrics", "empyrical_stats")
+# The applications of each set, in the order the report lists them. The first
+# set is docs/applications-design.md's, the second docs/applications-second-design.md's;
+# each is recorded apart.
+SETS = {
+    "first": ("mlp_train", "min_char_rnn", "trimesh_mesh", "sklearn_metrics", "empyrical_stats"),
+    "second": ("particle_filter", "veros_ocean", "skimage_pipeline", "pandas_sales", "astropy_timeseries"),
+}
+# The set `delivery apps` runs when none is named.
+DEFAULT_SET = "first"
+# Every application of every set.
+NAMES = tuple(name for names in SETS.values() for name in names)
 # The sizes every application has, in the order the report lists them.
 SIZE_NAMES = ("small", "large")
 

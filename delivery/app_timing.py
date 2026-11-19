@@ -43,7 +43,7 @@ FINISHED = "completed"
 # Seconds to wait for `gh` to answer.
 GH_TIMEOUT_SECONDS = 30
 # Distributions whose versions a recorded run states, where installed.
-LIBRARIES = ("trimesh", "scikit-learn", "empyrical-reloaded", "pandas", "scipy")
+LIBRARIES = ("trimesh", "scikit-learn", "empyrical-reloaded", "pandas", "scipy", "scikit-image", "astropy")
 
 
 @dataclass(frozen=True)

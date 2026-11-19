@@ -1,7 +1,7 @@
 {# The recorded result of `delivery apps --record`. #}
-# Applications with and without hotkernels: {{ meta.cpu }}
+# Applications{{ ", " ~ set_name ~ " set," if set_name != default_set else "" }} with and without hotkernels: {{ meta.cpu }}
 
-Written by `uv run --group apps delivery apps --profile --record`. Do not edit. What the figures mean is in [docs/applications-findings.md](../../docs/applications-findings.md).
+Written by `uv run --group apps delivery apps{{ " --set " ~ set_name if set_name != default_set else "" }} --profile --record`. Do not edit. What the figures mean is in [docs/{{ findings }}](../../docs/{{ findings }}).
 
 - **Machine:** {{ meta.cpu }}, {{ meta.os }}
 - **Software:** Python {{ meta.python }}, NumPy {{ meta.numpy }}{% for library, version in meta.libraries.items() %}, {{ library }} {{ version }}{% endfor %}, hotkernels at {{ meta.git }}
