@@ -71,3 +71,49 @@ two cycles, at every size from 1,024 up, on both distributions. NumPy takes
 - **Notes:** `rising` 1.14x to 1.16x from 256 to 16,384 (0.118 ns per
   element at 4,096, 6.0 cycles per block against 6.9), 1.08x at 64, nothing
   from 65,536 up; `random` unchanged.
+
+## 5. Rising test: seven of the eight shifted vectors from `ext`
+
+- **Idea:** attempt 4 with `ext` for every shifted vector but the first, so
+  one `ldur` per block and seven `ext`.
+- **check:** pass
+- **compare:** significantly slower, 0.98x [0.98 – 0.98]
+- **Kept:** no
+- **Notes:** `rising` 0.86x to 0.93x from 64 to 16,384: 23 vector operations
+  per block on four vector pipes is more than the loads it saves. Four loaded
+  and four built (attempt 4) is the better balance.
+
+## 6. Every general block in the vector registers
+
+- **Idea:** a general block as a vector prefix maximum: each of the eight
+  vectors against the input one element back (overlapping `ldur`; for lane 0
+  that reaches into the previous block, which M already covers), then against
+  the vector 1, 2 and 4 back, in place from the last vector down, then each
+  against M in both lanes; `cmgt` and `bit` per maximum, 67 vector
+  operations per block against 56 `cmp`/`csel` in the integer registers. M
+  goes in with a `dup` and comes out with a `mov` from lane 1.
+- **check:** pass
+- **compare:** significantly faster, 1.014x [1.011 – 1.016], but not kept
+  (see attempt 7)
+- **Kept:** no
+- **Notes:** 1.36x at 16 on both distributions, 1.11x at 64 `random`; but
+  0.88x at 256, 0.93x at 1,024 and 0.97x at 4,096 `random`, 0.96x to 0.97x
+  from 64 to 16,384 `rising`. A block takes some 30 cycles from M in to M out
+  against about 10 in the integer registers, and that is what a mispredicted
+  exit from the flat loop waits on. The gain at 16 is the first block, which
+  attempt 7 takes alone.
+
+## 7. The first block alone in the vector registers
+
+- **Idea:** keep attempt 3's integer general path everywhere but at the start
+  of `x`. There M is `x[0]`, so the first block's prefix maximum needs no
+  step against M: lane 0 of the first shifted vector is `x[0]` itself
+  (`ld1r`), then the steps 1, 2 and 4 vectors back; 50 vector operations, M
+  out with a `mov` from lane 1.
+- **check:** pass
+- **compare:** significantly faster, 1.053x [1.052 – 1.053]
+- **Kept:** yes
+- **Notes:** 1.69x at 16 on both (8.9 ns to 5.3), 1.12x at 64 `random`,
+  1.06x at 64 `rising`. 0.97x to 0.98x on `rising` from 1,024 to 16,384,
+  which runs the same rising loop as before: probably where the loop now
+  sits in memory.

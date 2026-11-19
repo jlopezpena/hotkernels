@@ -96,6 +96,64 @@
     subs    x2, x2, #16
 .endm
 
+// max(a, b) into a, in place: t is a temporary.
+.macro VMAX a, b, t
+    cmgt    \t\().2d, \b\().2d, \a\().2d
+    bit     \a\().16b, \b\().16b, \t\().16b
+.endm
+
+// The first block of x in the vector registers: a prefix maximum in four
+// steps, each vector against the one 1, 2 and 4 vectors back, after the
+// first step against the input one element back (x[0] for x[0], since there
+// is nothing before it). Sets x3 = M after the block.
+.macro FIRST_BLOCK
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ldp     q4, q5, [x0, #64]
+    ldp     q6, q7, [x0, #96]
+    ld1r    {v16.2d}, [x0]
+    ldur    q17, [x0, #8]
+    ldur    q18, [x0, #24]
+    ldur    q19, [x0, #40]
+    ldur    q20, [x0, #56]
+    ldur    q21, [x0, #72]
+    ldur    q22, [x0, #88]
+    ldur    q23, [x0, #104]
+    VMAX    v0, v16, v24
+    VMAX    v1, v17, v25
+    VMAX    v2, v18, v26
+    VMAX    v3, v19, v27
+    VMAX    v4, v20, v28
+    VMAX    v5, v21, v29
+    VMAX    v6, v22, v30
+    VMAX    v7, v23, v24
+    VMAX    v7, v6, v24
+    VMAX    v6, v5, v30
+    VMAX    v5, v4, v29
+    VMAX    v4, v3, v28
+    VMAX    v3, v2, v27
+    VMAX    v2, v1, v26
+    VMAX    v1, v0, v25
+    VMAX    v7, v5, v24
+    VMAX    v6, v4, v30
+    VMAX    v5, v3, v29
+    VMAX    v4, v2, v28
+    VMAX    v3, v1, v27
+    VMAX    v2, v0, v26
+    VMAX    v7, v3, v24
+    VMAX    v6, v2, v30
+    VMAX    v5, v1, v29
+    VMAX    v4, v0, v28
+    stp     q0, q1, [x1]
+    stp     q2, q3, [x1, #32]
+    stp     q4, q5, [x1, #64]
+    stp     q6, q7, [x1, #96]
+    mov     x3, v7.d[1]
+    add     x0, x0, #128
+    add     x1, x1, #128
+    subs    x2, x2, #16
+.endm
+
 .text
 .globl _cummax_i64
 .p2align 2
@@ -104,11 +162,15 @@ _cummax_i64:
     ldr     x3, [x0]                // M
     subs    x2, x2, #16
     b.lo    Ltail
+    mov     x8, x3
+    FIRST_BLOCK
+    b       Lgeneral_next
 
     // ---- General: one block, then choose how to try the next.
 Lgeneral:
     mov     x8, x3                  // M before the block
     GENERAL_BLOCK
+Lgeneral_next:
     b.lo    Ltail
     cmp     x3, x8
     b.eq    Lflat_enter
