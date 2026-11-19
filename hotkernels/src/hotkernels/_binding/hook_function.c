@@ -48,6 +48,10 @@ static hk_function functions[F_COUNT];
 #define HISTOGRAM_DEFAULT_BINS 10
 // Number of counters `bincount_u8` writes: one per byte value.
 #define BYTE_VALUES 256
+// Bytes of a boolean array that `np.sum` checks and then sums at a time. Each
+// block is read twice, so it is a third of the smallest first-level data
+// cache the kernels run on (48 KiB on the x86-64 performance cores).
+#define SUM_BOOL_BLOCK 16384
 // Number of test values `isin_i64` reads. Fewer are padded by repeating one.
 #define ISIN_TEST_VALUES 8
 // Most sample points per query for which `np.interp` takes the kernel. The
@@ -175,8 +179,36 @@ static PyObject *call_count_nonzero(HK_VECTORCALL_PARAMETERS) {
 
 // --------------------------------------------------------------------- sum
 
-// The sum of a contiguous uint8 array, as the np.uint64 NumPy returns.
+// The number of True elements of a contiguous boolean array, as the np.intp
+// NumPy's sum returns for one: the sum_u8 kernel on the mask's bytes. A byte
+// other than 0 or 1 counts once in NumPy and by its value in the kernel, so
+// the bytes are checked first and such a mask is NumPy's. Checking and
+// summing go block by block, so that the kernel reads each block from the
+// first-level cache and not from wherever the whole array lies.
+static HK_NOINLINE PyObject *try_sum_bool(PyArrayObject *mask) {
+    const uint8_t *bytes = PyArray_DATA(mask);
+    const npy_intp n = PyArray_SIZE(mask);
+    npy_intp total = 0;
+    bool clean = true;
+    {
+        HK_BEGIN_NOGIL(n)
+        for (npy_intp done = 0; done < n && clean; done += SUM_BOOL_BLOCK) {
+            const size_t count = (size_t)(n - done < SUM_BOOL_BLOCK ? n - done : SUM_BOOL_BLOCK);
+            clean = hk_mask_is_clean(bytes + done, count);
+            if (clean) total += (npy_intp)sum_u8(bytes + done, count);
+        }
+        HK_END_NOGIL
+    }
+    if (!clean) return NULL;
+    PyObject *result = hk_scalar(NPY_INTP, &total);
+    if (result != NULL) hk_take(HK_SUM_U8);
+    return result;
+}
+
+// The sum of a contiguous uint8 array, as the np.uint64 NumPy returns, or of
+// a contiguous boolean array, as the np.intp it returns for that.
 PyObject *hk_try_sum(PyObject *array) {
+    if (hk_is_flat(array, NPY_BOOL)) return try_sum_bool((PyArrayObject *)array);
     if (!hk_is_flat(array, NPY_UINT8)) return NULL;
     PyArrayObject *a = (PyArrayObject *)array;
     const npy_intp n = PyArray_SIZE(a);

@@ -55,6 +55,9 @@ COLUMNS = 2
 BAD_MASK_BYTES = (2, 255)
 # Element count of the one-off cases that need a single ordinary size.
 ORDINARY_N = 1000
+# Element count of a mask whose only bad byte is its last: more than two of
+# the blocks in which the binding checks a mask before summing it.
+SUM_BOOL_LATE_N = 40000
 # Every how many bytes the self-overlapping mask case sets one to True.
 OVERLAP_EVERY = 3
 
@@ -1059,8 +1062,18 @@ def astype_cases() -> Iterator[Case]:
     yield from unary_cases("astype", {"u8": "cast_u8_f32"}, ("i8", "bool", "u16", "f64"), spellings)
 
 
+def _late_bad_mask(n: int, byte: int) -> np.ndarray:
+    """Return a boolean array of zeros whose last element is stored as `byte`.
+
+    The binding checks a mask block by block; this one is clean until its end.
+    """
+    raw = np.zeros(n, np.uint8)
+    raw[-1] = byte
+    return raw.view(np.bool_)
+
+
 def sum_cases() -> Iterator[Case]:
-    """Yield the cases of `sum` on uint8."""
+    """Yield the cases of `sum` on uint8 and on booleans, which the same kernel serves."""
     spellings = (
         Spelling("np.sum(x)", np.sum),
         Spelling("x.sum()", lambda x: x.sum()),
@@ -1072,7 +1085,13 @@ def sum_cases() -> Iterator[Case]:
         Spelling("np.add.reduce(x)", np.add.reduce, NEVER),
         Spelling("np.sum(a=x)", lambda x: np.sum(a=x), NEVER),
     )
-    yield from unary_cases("sum", {"u8": "sum_u8"}, ("i8", "u16", "bool", "f64"), spellings)
+    yield from unary_cases("sum", {"u8": "sum_u8", "bool": "sum_u8"}, ("i8", "u16", "f64"), spellings)
+    # A mask holding a byte other than 0 or 1 counts once per element in NumPy.
+    for n, byte, spelling in itertools.product(LAYOUT_SIZES, BAD_MASK_BYTES, spellings[:2]):
+        yield Case("sum", f"{spelling.text} bool n={n} mask bytes are {byte}",
+                   partial(_made, partial(_bad_mask, n, byte)), spelling.call, None)
+        yield Case("sum", f"{spelling.text} bool n={SUM_BOOL_LATE_N} last mask byte is {byte}",
+                   partial(_made, partial(_late_bad_mask, SUM_BOOL_LATE_N, byte)), spelling.call, None)
 
 
 def count_nonzero_cases() -> Iterator[Case]:
