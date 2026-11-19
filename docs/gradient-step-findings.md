@@ -142,7 +142,7 @@ The first column of savings is an upper bound: two of the three outer products a
 
 Neither is slowed by the effect above: at 100 × 100 Accelerate does not thread, and with the prefetching loop installed `min_char_rnn` took the same time (294 ms against 293 ms in the prototype). The add is the second call of the statement and the product has already been made by then, so the fused accumulation is unreachable from the hooks for the same reason as the gradient step; a hook on `np.dot` would see the product and not the `+=`. The square is not worth fusing.
 
-One thing the measurement turned up is a single-call gap and not fusion: `np.dot(a, b.T)` of two columns of 100 takes 3.7 µs for 10,000 products. It is outside this issue and is recorded for its own.
+One thing the measurement turned up is a single-call gap and not fusion: `np.dot(a, b.T)` of two columns of 100 takes 3.7 µs for 10,000 products. It is outside this issue and is noted here, not filed.
 
 ## An explicit function
 
