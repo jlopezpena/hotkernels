@@ -319,6 +319,35 @@ def _clip_direct_path(binding) -> bool:
             binding.apply(hook)
 
 
+# Shapes for the checks that one Python call of argmax counts once in
+# report(), however many times NumPy calls the type slot for it: rows of
+# three, which the slot passes on one by one, and columns of 1,000, which the
+# slot takes one by one with `axis=0`.
+_COUNTED_ROWS_SHAPE = (300, 3, 2)
+_COUNTED_COLUMNS_SHAPE = (1000, 4)
+
+
+def _counted_once(binding, call: Callable[[], object], column: int) -> bool:
+    """Say whether one Python call moved the argmax counters of `report()` by exactly one.
+
+    Args:
+        binding: The extension module, with hotkernels installed.
+        call: Makes one call of np.argmax or x.argmax that NumPy splits into
+            many calls of the type slot.
+        column: 0 for the kernel counters ("Kernel calls"), 1 for the
+            operation counters ("Left to NumPy").
+
+    Returns:
+        True when the counters of that column together moved by one and
+        those of the other column did not move.
+    """
+    before = binding.counters()
+    call()
+    after = binding.counters()
+    moved = [sum(after[c].values()) - sum(before[c].values()) for c in (0, 1)]
+    return moved[column] == 1 and moved[1 - column] == 0
+
+
 def installation_checks() -> Summary:
     """Check install(), uninstall(), enabled() and report() themselves.
 
@@ -326,7 +355,9 @@ def installation_checks() -> Summary:
         A summary with one failure per statement that does not hold: NumPy's
         objects keep their identity, uninstall() leaves no hook behind, a
         second install() changes nothing, enabled() restores the state it
-        found, and float cumsum is only taken under install(inexact=True).
+        found, float cumsum is only taken under install(inexact=True), and
+        one Python call of argmax counts once in report() however many
+        times NumPy calls the type slot for it.
     """
     binding = importlib.import_module(BINDING_MODULE)
     checks: list[tuple[str, bool]] = []
@@ -343,6 +374,12 @@ def installation_checks() -> Summary:
     checks.append(("report() counts the calls", sum(k.calls for k in hotkernels.report().kernels) == calls))
     checks.append(("report() renders when installed", "installed" in str(hotkernels.report())))
     checks.append(("np.clip and x.clip reach the kernels without the clip loop", _clip_direct_path(binding)))
+    rows = np.ones(_COUNTED_ROWS_SHAPE)
+    checks.append(("one np.argmax over many short rows counts once as left to NumPy",
+                   _counted_once(binding, lambda: np.argmax(rows, axis=-1), 1)))
+    columns = np.ones(_COUNTED_COLUMNS_SHAPE)
+    checks.append(("one x.argmax(axis=0) over many long columns counts once as a kernel call",
+                   _counted_once(binding, lambda: columns.argmax(axis=0), 0)))
     np.cumsum(np.ones(1000))
     checks.append(("float cumsum is left to NumPy by install()", binding.counters()[0]["cumsum_f64"] == 0))
     with hotkernels.enabled():

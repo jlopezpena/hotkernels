@@ -459,6 +459,7 @@ def argext_cases(name: str) -> Iterator[Case]:
     yield from unary_cases(name, kernels, ("i64", "i32", "u8"), spellings, empty_takes=False)
     yield from unusual_nan_cases(name, kernels, f"np.{name}(x)", function)
     yield from unusual_nan_cases(name, kernels, f"x.{name}()", spellings[1].call)
+    yield from argext_rows_cases(name)
 
 
 # Shapes of the gradients the in-place clip was asked for by: issue 186, from
@@ -3933,6 +3934,245 @@ def any_cases() -> Iterator[Case]:
     yield from _any_value_cases()
     yield from _any_layout_cases()
     yield from _any_bad_byte_cases()
+
+
+# ------------------------------------------------- argmax and argmin along rows
+
+# Narrowest row the binding gives to the operation's kernel, by element type;
+# narrower rows go to its own loop (ARGEXT_ROWS_KERNEL_COLS_F64 and _F32 in
+# hook_function.c).
+ARGEXT_ROWS_KERNEL_COLS = {"f64": 6, "f32": 9}
+# Row widths of the argmax(axis=1) sweep: each width the binding's loop takes,
+# either side of the threshold for each type, either side of the kernels'
+# own vector widths, and two long rows.
+ARGEXT_ROWS_COLS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 33, 100)
+# Row counts of the sweep: either side of the loop's four float64 and eight
+# float32 lanes. A further count per width puts the matrix above the size from
+# which the binding releases the interpreter lock (_any_large_rows).
+ARGEXT_ROWS_ROWS = (1, 3, 4, 5, 9)
+# Shapes of the layouts and spellings sweep: each path, with rows and columns
+# under the type slot's 128 elements, so that a call that must stay with
+# NumPy is not taken by the slot behind it.
+ARGEXT_ROWS_LAYOUT_SHAPES = ((9, 3), (100, 7), (100, 22))
+# Every how many rows the matrix of ties holds a NaN, and the step by which
+# the NaN moves along the columns from one such row to the next.
+ARGEXT_ROWS_NAN_EVERY = 3
+ARGEXT_ROWS_NAN_STEP = 5
+# Smallest and one past the largest whole number in the matrix of ties.
+ARGEXT_ROWS_TIE_RANGE = (-2, 3)
+
+
+def _argext_rows_kernel(name: str, dtype: str, rows: int, cols: int) -> str:
+    """Return the kernel, or the binding's loop, that takes `name` along axis 1 of a matrix.
+
+    Args:
+        name: "argmax" or "argmin".
+        dtype: "f64" or "f32".
+        rows: Row count; a matrix of none goes to the binding's loop.
+        cols: Elements per row, at least 1.
+
+    Returns:
+        The name the binding counts the call under.
+    """
+    if rows > 0 and cols >= ARGEXT_ROWS_KERNEL_COLS[dtype]:
+        return f"{name}_{dtype}"
+    return f"{name}_rows_{dtype}"
+
+
+def _argext_matrix(dtype: str, rows: int, cols: int, cls: str = judge_cases.RANDOM) -> np.ndarray:
+    """Return elements of a value class as a C-ordered matrix of `rows` by `cols`."""
+    return values(dtype, rows * cols, cls, arg="m").reshape(rows, cols).copy()
+
+
+def _argext_ties(dtype: str, rows: int, cols: int) -> np.ndarray:
+    """Return a matrix of a few whole numbers, signed zeros and NaNs, in which every row decides by its rule.
+
+    Most rows hold ties for their maximum and their minimum, and zeros of
+    both signs; every ARGEXT_ROWS_NAN_EVERY-th row holds two NaNs, the first
+    at a column that moves from row to row. Random data rarely ties, and a
+    loop that kept the last of a tie, or the last NaN, could still match it.
+    """
+    rng = np.random.default_rng(SEED)
+    m = rng.integers(*ARGEXT_ROWS_TIE_RANGE, size=(rows, cols)).astype(np_dtype(dtype))
+    m[m == 0] = np.where(rng.random(int((m == 0).sum())) < 0.5, -0.0, 0.0)
+    marked = np.arange(0, rows, ARGEXT_ROWS_NAN_EVERY)
+    first = (marked * ARGEXT_ROWS_NAN_STEP) % cols
+    m[marked, first] = np.nan
+    m[marked, (first + 1 + marked) % cols] = np.nan
+    return m
+
+
+def _argext_cube(dtype: str, rows: int, cols: int) -> np.ndarray:
+    """Return a random matrix of `rows` by `cols` as a C-ordered array of shape (rows, 1, cols)."""
+    return _argext_matrix(dtype, rows, cols).reshape(rows, 1, cols)
+
+
+def _argext_laid_out(build: Callable[[np.ndarray], object], dtype: str, rows: int, cols: int) -> object:
+    """Return a random matrix of `rows` by `cols` as `build` lays it out."""
+    return build(_argext_matrix(dtype, rows, cols))
+
+
+def _argext_rows_out(name: str) -> Callable:
+    """Return a call of `m.<name>(axis=1, out=o)` into a new array of the right length."""
+    return lambda m: getattr(m, name)(axis=1, out=np.empty(np.shape(m)[0], np.intp))
+
+
+def _argext_rows_spellings(name: str) -> tuple[tuple[tuple[str, Callable], ...], tuple[tuple[str, Callable], ...]]:
+    """Return the spellings of `name` along axis 1 that take the rows path, and those that must not.
+
+    Args:
+        name: "argmax" or "argmin".
+
+    Returns:
+        (taking, never): each a tuple of (text, call). The first two of the
+        taking spellings are the ones the sweep over every value runs.
+    """
+    function = getattr(np, name)
+    taking = (
+        (f"np.{name}(m, axis=1)", lambda m: function(m, axis=1)),
+        (f"m.{name}(axis=1)", lambda m: getattr(m, name)(axis=1)),
+        (f"m.{name}(1)", lambda m: getattr(m, name)(1)),
+        (f"m.{name}(-1)", lambda m: getattr(m, name)(-1)),
+        (f"m.{name}(axis=-1)", lambda m: getattr(m, name)(axis=-1)),
+        (f"m.{name}(axis=1, out=None)", lambda m: getattr(m, name)(axis=1, out=None)),
+        (f"m.{name}(1, None)", lambda m: getattr(m, name)(1, None)),
+        (f"np.{name}(m, 1)", lambda m: function(m, 1)),
+        (f"np.{name}(m, -1)", lambda m: function(m, -1)),
+        (f"np.{name}(m, axis=-1)", lambda m: function(m, axis=-1)),
+        (f"np.{name}(m, axis=1, out=None)", lambda m: function(m, axis=1, out=None)),
+        (f"np.{name}(m, 1, None)", lambda m: function(m, 1, None)),
+        (f"np.{name}(a=m, axis=1)", lambda m: function(a=m, axis=1)),
+        (f"np.nan{name}(m, axis=1)", lambda m: getattr(np, f"nan{name}")(m, axis=1)),
+    )
+    never = (
+        (f"m.{name}(axis=0)", lambda m: getattr(m, name)(axis=0)),
+        (f"np.{name}(m, axis=0)", lambda m: function(m, axis=0)),
+        (f"m.{name}(axis=1, keepdims=True)", lambda m: getattr(m, name)(axis=1, keepdims=True)),
+        (f"np.{name}(m, axis=1, keepdims=True)", lambda m: function(m, axis=1, keepdims=True)),
+        (f"m.{name}(axis=1, keepdims=False)", lambda m: getattr(m, name)(axis=1, keepdims=False)),
+        (f"m.{name}(axis=1, out=o)", _argext_rows_out(name)),
+        (f"m.{name}(axis=np.int64(1))", lambda m: getattr(m, name)(axis=np.int64(1))),
+        (f"np.{name}(m, axis=np.int64(1))", lambda m: function(m, axis=np.int64(1))),
+        (f"m.{name}(axis=True)", lambda m: getattr(m, name)(axis=True)),
+        (f"m.{name}(axis=2)", lambda m: getattr(m, name)(axis=2)),
+        (f"m.{name}(axis=-3)", lambda m: getattr(m, name)(axis=-3)),
+        (f"m.{name}(axis=1, bogus=1)", lambda m: getattr(m, name)(axis=1, bogus=1)),
+    )
+    return taking, never
+
+
+# Ways a matrix can be laid out or wrapped, built from a C-ordered one, and
+# whether the rows path takes it: True, False, or ANY for a wrapper whose own
+# method decides.
+_ARGEXT_ROWS_LAYOUTS: tuple[tuple[str, Callable[[np.ndarray], object], bool | str], ...] = (
+    ("contiguous", np.copy, True),
+    ("readonly", _readonly, True),
+    ("fortran", np.asfortranarray, False),
+    ("strided rows", lambda m: np.repeat(m, 2, axis=0)[::2], False),
+    ("strided columns", lambda m: np.repeat(m, 2, axis=1)[:, ::2], False),
+    ("transposed", lambda m: np.ascontiguousarray(m.T).T, False),
+    ("byteswapped", _byteswapped, False),
+    ("subclass", lambda m: m.copy().view(_Subclass), False),
+    ("memmap", _memmap, False),
+    ("matrix", np.asmatrix, False),
+    ("masked_array", lambda m: np.ma.array(m.copy()), ANY),
+    # np.argmax makes an array of a list and calls its method, which takes
+    # it; a list has no method of its own and raises.
+    ("list", lambda m: m.tolist(), ANY),
+)
+
+
+def _argext_rows_case(name: str, label: str, maker: Callable[[], object], call: Callable,
+                      expect: str | None) -> Case:
+    """Return one case of argmax or argmin along rows, its one argument built by `maker`."""
+    return Case(name, label, partial(_made, maker), call, expect)
+
+
+def _argext_rows_value_cases(name: str) -> Iterator[Case]:
+    """Yield every value class of both float types at every width and row count, for the two main spellings.
+
+    Args:
+        name: "argmax" or "argmin".
+
+    Yields:
+        The cases. Positional classes put their element first, in the middle
+        and last of the matrix's elements, and so in its first, a middle and
+        its last row.
+    """
+    taking, _ = _argext_rows_spellings(name)
+    for dtype in ("f64", "f32"):
+        for cols in ARGEXT_ROWS_COLS:
+            for rows in (*ARGEXT_ROWS_ROWS, _any_large_rows(cols)):
+                expect = _argext_rows_kernel(name, dtype, rows, cols)
+                for _, _, label, maker in value_arrays(dtype, (rows * cols,), arg="m"):
+                    shape = f"{rows}x{cols} {label.split(' ', 1)[1]}"
+                    for text, call in taking[:2]:
+                        yield _argext_rows_case(name, f"{text} {dtype} {shape}", partial(_any_matrix, maker, cols),
+                                                call, expect)
+                for text, call in taking[:2]:
+                    yield _argext_rows_case(name, f"{text} {dtype} {rows}x{cols} ties, signed zeros, NaNs",
+                                            partial(_argext_ties, dtype, rows, cols), call, expect)
+            for text, call in taking[:2]:
+                yield _argext_rows_case(name, f"{text} {dtype} 0x{cols}", partial(_argext_matrix, dtype, 0, cols),
+                                        call, _argext_rows_kernel(name, dtype, 0, cols))
+
+
+def _argext_rows_layout_cases(name: str) -> Iterator[Case]:
+    """Yield every spelling, every layout and other element types, at a few shapes.
+
+    Args:
+        name: "argmax" or "argmin".
+
+    Yields:
+        The cases.
+    """
+    taking, never = _argext_rows_spellings(name)
+    for dtype in ("f64", "f32"):
+        for rows, cols in ARGEXT_ROWS_LAYOUT_SHAPES:
+            shape = f"{rows}x{cols}"
+            expect = _argext_rows_kernel(name, dtype, rows, cols)
+            matrix = partial(_argext_matrix, dtype, rows, cols)
+            for text, call in taking:
+                yield _argext_rows_case(name, f"{text} {dtype} {shape}", matrix, call, expect)
+            for text, call in never:
+                yield _argext_rows_case(name, f"{text} {dtype} {shape}", matrix, call, None)
+            for layout, build, takes in _ARGEXT_ROWS_LAYOUTS:
+                laid_out = partial(_argext_laid_out, build, dtype, rows, cols)
+                layout_expect = expect if takes is True else (ANY if takes == ANY else None)
+                for text, call in taking[:2]:
+                    yield _argext_rows_case(name, f"{text} {dtype} {shape} layout={layout}", laid_out, call,
+                                            layout_expect)
+            for text, call in taking[:2]:
+                cube = partial(_argext_cube, dtype, rows, cols)
+                yield _argext_rows_case(name, f"{text} {dtype} {shape} as 3-D", cube, call, None)
+    for other in ("i64", "i32", "u8"):
+        for text, call in _argext_rows_spellings(name)[0][:2]:
+            yield _argext_rows_case(name, f"{text} {other} 9x3", partial(_argext_matrix, other, 9, 3), call, None)
+    for dtype in ("f64", "f32"):
+        for text, call in taking[:2]:
+            for rows, cols in ((3, 0), (0, 0)):
+                yield _argext_rows_case(name, f"{text} {dtype} {rows}x{cols}",
+                                        partial(_argext_matrix, dtype, rows, cols), call, None)
+
+
+def argext_rows_cases(name: str) -> Iterator[Case]:
+    """Yield the cases of `argmax` or `argmin` along the last axis of a matrix.
+
+    The function and method hooks take a plain, C-ordered, two-dimensional
+    float32 or float64 array with at least one column, `axis` 1 or -1 as a
+    Python int, and `out` absent or None; see the binding's
+    hk_try_argext_rows. Rows of ARGEXT_ROWS_KERNEL_COLS elements and more go
+    to the operation's kernel once per row, narrower ones to the binding's
+    own loop.
+
+    Args:
+        name: "argmax" or "argmin".
+
+    Yields:
+        The cases.
+    """
+    yield from _argext_rows_value_cases(name)
+    yield from _argext_rows_layout_cases(name)
 
 
 # Every operation that has a hook, with its exact cases.
