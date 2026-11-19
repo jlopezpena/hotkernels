@@ -143,6 +143,7 @@ The Linux wheels are built by `cibuildwheel` in a manylinux image whose compiler
 |---|---|---|
 | The range is tested in unsigned arithmetic, so `lo + span` may pass the largest `int64` | The kernel is defined only for ranges whose last value, `lo + span - 1`, is at most the largest `int64` | A range that wraps past it gives its values in unsigned order, not NumPy's; the judge found it in the reference. The binding never passes one: its range runs from the smallest element to the largest |
 | The naive C, with assembly where it beats it | ARM64 assembly: a 64-bit set built with `ushl` for ranges of up to 64 values, without the subtraction for labels from zero, and a byte table in the top of `out` above that | 1.44x over the naive C overall; `kernels/unique_i64/arm64/attempts.md` |
+| An attempts log on each architecture | An ARM64 log only; it says why there is no x86-64 one | Nothing was tried on x86-64, and the documentation site refuses a log without a numbered attempt |
 | A survey entry | The group `applications` in `survey/candidates.py`, recorded in `survey/results/apple-m1-pro-unique.md` | NumPy is 11.1x behind the naive C from 65,536 elements up |
 
 Decision 2, the limit on the range, is left as recommended. Decision 1 is left for review: the kernel ships as C on x86-64 and the Linux wheels are built with clang. That change to the wheel build has not been run: the `build-linux` job of the release workflow runs it on the pull request, since it touches `kernels/` and `hotkernels/`.
