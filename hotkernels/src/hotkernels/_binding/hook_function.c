@@ -23,7 +23,7 @@
 // The functions that are hooked, as indices into `functions`.
 enum {
     F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN, F_INTERP,
-    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP,
+    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP, F_ANY, F_ROUND, F_AROUND, F_MEDIAN,
     F_COUNT
 };
 
@@ -48,6 +48,16 @@ static hk_function functions[F_COUNT];
 #define HISTOGRAM_DEFAULT_BINS 10
 // Number of counters `bincount_u8` writes: one per byte value.
 #define BYTE_VALUES 256
+// Counters `bincount_i16` and `bincount_i64` are always given, whatever the
+// element count: 512 KB. At that size a call on 1,000 elements takes about
+// as long with the kernel as NumPy's does (6.5 against 6.9 us on the Intel
+// Core i5-14600KF), both being mostly the counters. Above it a call is taken
+// only while it has no more counters than elements; see bincount_codes.
+#define BINCOUNT_FREE_BINS 65536
+// Bytes of a boolean array that `np.sum` checks and then sums at a time. Each
+// block is read twice, so it is a third of the smallest first-level data
+// cache the kernels run on (48 KiB on the x86-64 performance cores).
+#define SUM_BOOL_BLOCK 16384
 // Number of test values `isin_i64` reads. Fewer are padded by repeating one.
 #define ISIN_TEST_VALUES 8
 // Most sample points per query for which `np.interp` takes the kernel. The
@@ -56,6 +66,10 @@ static hk_function functions[F_COUNT];
 // points per query the pass costs under a third of what NumPy would have
 // spent; with fewer queries than that it would be most of the call.
 #define INTERP_MAX_POINTS_PER_QUERY 64
+// Elements of the buffer np.where spreads a scalar over, and so of each call
+// of the kernel when one side is a scalar: the largest buffer kept on the
+// stack.
+#define WHERE_BLOCK ((npy_intp)(HK_STACK_SCRATCH_BYTES / sizeof(double)))
 
 // numpy.linspace and the float64 type descriptor, fetched on first use.
 static PyObject *numpy_linspace;
@@ -175,8 +189,36 @@ static PyObject *call_count_nonzero(HK_VECTORCALL_PARAMETERS) {
 
 // --------------------------------------------------------------------- sum
 
-// The sum of a contiguous uint8 array, as the np.uint64 NumPy returns.
+// The number of True elements of a contiguous boolean array, as the np.intp
+// NumPy's sum returns for one: the sum_u8 kernel on the mask's bytes. A byte
+// other than 0 or 1 counts once in NumPy and by its value in the kernel, so
+// the bytes are checked first and such a mask is NumPy's. Checking and
+// summing go block by block, so that the kernel reads each block from the
+// first-level cache and not from wherever the whole array lies.
+static HK_NOINLINE PyObject *try_sum_bool(PyArrayObject *mask) {
+    const uint8_t *bytes = PyArray_DATA(mask);
+    const npy_intp n = PyArray_SIZE(mask);
+    npy_intp total = 0;
+    bool clean = true;
+    {
+        HK_BEGIN_NOGIL(n)
+        for (npy_intp done = 0; done < n && clean; done += SUM_BOOL_BLOCK) {
+            const size_t count = (size_t)(n - done < SUM_BOOL_BLOCK ? n - done : SUM_BOOL_BLOCK);
+            clean = hk_mask_is_clean(bytes + done, count);
+            if (clean) total += (npy_intp)sum_u8(bytes + done, count);
+        }
+        HK_END_NOGIL
+    }
+    if (!clean) return NULL;
+    PyObject *result = hk_scalar(NPY_INTP, &total);
+    if (result != NULL) hk_take(HK_SUM_U8);
+    return result;
+}
+
+// The sum of a contiguous uint8 array, as the np.uint64 NumPy returns, or of
+// a contiguous boolean array, as the np.intp it returns for that.
 PyObject *hk_try_sum(PyObject *array) {
+    if (hk_is_flat(array, NPY_BOOL)) return try_sum_bool((PyArrayObject *)array);
     if (!hk_is_flat(array, NPY_UINT8)) return NULL;
     PyArrayObject *a = (PyArrayObject *)array;
     const npy_intp n = PyArray_SIZE(a);
@@ -350,17 +392,224 @@ static PyObject *call_histogram(HK_VECTORCALL_PARAMETERS) {
 
 // ---------------------------------------------------------------- bincount
 
-// np.bincount(x, minlength=m) for a contiguous one-dimensional uint8 array
-// without weights. The kernel always fills 256 counters. NumPy's result has
-// one entry more than the largest value present, or `minlength` entries if
-// that is more, so the counters are cut or padded to that length.
+// The range scans of np.bincount keep BINCOUNT_SCAN_VECTORS running maxima
+// in 32-byte vectors, of these types. They are written with the compiler's
+// vector types because, written as loops over elements, the compiler kept one
+// running maximum for int64: a chain of a compare and a blend through every
+// four elements, about 0.3 ns per element on the Intel Core i5-14600KF, as
+// long as the kernel itself takes. Several independent maxima leave the loop
+// bound by its loads.
+typedef uint16_t bincount_u16x16 __attribute__((vector_size(32)));
+typedef uint64_t bincount_u64x4 __attribute__((vector_size(32)));
+#define BINCOUNT_SCAN_VECTORS 4
+// Bytes of one vector, and of the array one step of a scan reads.
+#define BINCOUNT_SCAN_VECTOR_BYTES 32
+#define BINCOUNT_SCAN_STEP_BYTES (BINCOUNT_SCAN_VECTORS * BINCOUNT_SCAN_VECTOR_BYTES)
+
+#if defined(__aarch64__)
+
+// ARM64 versions of the two scans below, with the same answers. Written for
+// the 32-byte vectors of x86-64, the int16 scan took about 0.023 ns per
+// element on the Apple M1 Pro and the int64 scan 0.090, both short of the
+// three 16-byte loads per cycle the core can make. These keep eight running
+// maxima of NEON's 16 bytes. The last step ends at n and overlaps the one
+// before it, which a maximum does not mind.
+
+// Running maxima of the ARM64 scans, and the bytes one step reads: 128.
+#define BINCOUNT_NEON_VECTORS 8
+#define BINCOUNT_NEON_STEP_BYTES (BINCOUNT_NEON_VECTORS * 16)
+
+// As the x86-64 bincount_top_i16 below: the largest of the `n` int16
+// elements at `x`, each read as unsigned. A step is 64 elements, an unsigned
+// maximum (umax) per eight; fewer than 64 are read one at a time. About
+// 0.014 ns per element in the first-level cache, where the x86-64 code took
+// 0.023 (Apple M1 Pro).
+static uint64_t bincount_top_i16(const int16_t *x, size_t n) {
+    const size_t step = BINCOUNT_NEON_STEP_BYTES / sizeof(int16_t);
+    uint16_t largest = 0;
+    if (n < step) {
+        for (size_t i = 0; i < n; i++) largest = (uint16_t)x[i] > largest ? (uint16_t)x[i] : largest;
+        return largest;
+    }
+    uint16x8_t top[BINCOUNT_NEON_VECTORS];
+    for (size_t k = 0; k < BINCOUNT_NEON_VECTORS; k++) top[k] = vdupq_n_u16(0);
+    for (size_t i = 0;; i += step) {
+        if (i > n - step) i = n - step;
+        for (size_t k = 0; k < BINCOUNT_NEON_VECTORS; k++) {
+            top[k] = vmaxq_u16(top[k], vreinterpretq_u16_s16(vld1q_s16(x + i + 8 * k)));
+        }
+        if (i == n - step) break;
+    }
+    for (size_t k = 1; k < BINCOUNT_NEON_VECTORS; k++) top[0] = vmaxq_u16(top[0], top[k]);
+    return vmaxvq_u16(top[0]);
+}
+
+// As the x86-64 bincount_top_i64 below: the largest of the `n` int64
+// elements at `x`, each read as unsigned. NEON has no 64-bit maximum, and a
+// compare and a select per two elements left the loop at 0.090 ns per
+// element. So the elements are taken as pairs of 32-bit words, an unsigned
+// maximum (umax) per four words: when the high words' maximum is 0, every
+// element is below 2^32 and the largest is the low words' maximum. Otherwise,
+// a negative element or one of 2^32 or more, which np.bincount rejects or
+// meets rarely, the elements are read again one at a time. A step is 16
+// elements; fewer are read one at a time. About 0.059 ns per element in the
+// first-level cache (Apple M1 Pro).
+static uint64_t bincount_top_i64(const int64_t *x, size_t n) {
+    const size_t step = BINCOUNT_NEON_STEP_BYTES / sizeof(int64_t);
+    if (n >= step) {
+        uint32x4_t top[BINCOUNT_NEON_VECTORS];
+        for (size_t k = 0; k < BINCOUNT_NEON_VECTORS; k++) top[k] = vdupq_n_u32(0);
+        for (size_t i = 0;; i += step) {
+            if (i > n - step) i = n - step;
+            for (size_t k = 0; k < BINCOUNT_NEON_VECTORS; k++) {
+                top[k] = vmaxq_u32(top[k], vreinterpretq_u32_s64(vld1q_s64(x + i + 2 * k)));
+            }
+            if (i == n - step) break;
+        }
+        for (size_t k = 1; k < BINCOUNT_NEON_VECTORS; k++) top[0] = vmaxq_u32(top[0], top[k]);
+        // Little-endian: lanes 0 and 2 are the low words, 1 and 3 the high.
+        if ((vgetq_lane_u32(top[0], 1) | vgetq_lane_u32(top[0], 3)) == 0) {
+            const uint32_t even = vgetq_lane_u32(top[0], 0), odd = vgetq_lane_u32(top[0], 2);
+            return even > odd ? even : odd;
+        }
+    }
+    uint64_t largest = 0;
+    for (size_t i = 0; i < n; i++) largest = (uint64_t)x[i] > largest ? (uint64_t)x[i] : largest;
+    return largest;
+}
+
+#else
+// The largest of the `n` int16 elements at `x`, each read as unsigned. A
+// negative element reads as 0x8000 or more, so the one maximum is both the
+// largest element, when none is negative, and the test for a negative one.
+// No branch on the data. The vectors are loaded with memcpy, which the
+// compiler turns into unaligned loads, and the maximum is a compare and a
+// select, which it turns into vpmaxuw.
+static HK_TARGET_KERNEL_LEVEL uint64_t bincount_top_i16(const int16_t *x, size_t n) {
+    const size_t step = BINCOUNT_SCAN_STEP_BYTES / sizeof(int16_t);
+    bincount_u16x16 top[BINCOUNT_SCAN_VECTORS] = {{0}};
+    size_t i = 0;
+    for (; i + step <= n; i += step) {
+        for (size_t k = 0; k < BINCOUNT_SCAN_VECTORS; k++) {
+            bincount_u16x16 v;
+            memcpy(&v, (const char *)(x + i) + k * BINCOUNT_SCAN_VECTOR_BYTES, sizeof v);
+            const bincount_u16x16 more = (bincount_u16x16)(v > top[k]);
+            top[k] = (v & more) | (top[k] & ~more);
+        }
+    }
+    uint16_t largest = 0;
+    for (; i < n; i++) largest = (uint16_t)x[i] > largest ? (uint16_t)x[i] : largest;
+    for (size_t k = 0; k < BINCOUNT_SCAN_VECTORS; k++) {
+        for (size_t j = 0; j < sizeof top[k] / sizeof top[k][0]; j++) {
+            largest = top[k][j] > largest ? top[k][j] : largest;
+        }
+    }
+    return largest;
+}
+
+// As bincount_top_i16 for int64 elements: a negative one reads as 2^63 or
+// more. AVX2 has no 64-bit maximum: the compiler makes a signed compare of
+// the elements with their top bit flipped, and a blend.
+static HK_TARGET_KERNEL_LEVEL uint64_t bincount_top_i64(const int64_t *x, size_t n) {
+    const size_t step = BINCOUNT_SCAN_STEP_BYTES / sizeof(int64_t);
+    bincount_u64x4 top[BINCOUNT_SCAN_VECTORS] = {{0}};
+    size_t i = 0;
+    for (; i + step <= n; i += step) {
+        for (size_t k = 0; k < BINCOUNT_SCAN_VECTORS; k++) {
+            bincount_u64x4 v;
+            memcpy(&v, (const char *)(x + i) + k * BINCOUNT_SCAN_VECTOR_BYTES, sizeof v);
+            const bincount_u64x4 more = (bincount_u64x4)(v > top[k]);
+            top[k] = (v & more) | (top[k] & ~more);
+        }
+    }
+    uint64_t largest = 0;
+    for (; i < n; i++) largest = (uint64_t)x[i] > largest ? (uint64_t)x[i] : largest;
+    for (size_t k = 0; k < BINCOUNT_SCAN_VECTORS; k++) {
+        for (size_t j = 0; j < sizeof top[k] / sizeof top[k][0]; j++) {
+            largest = top[k][j] > largest ? top[k][j] : largest;
+        }
+    }
+    return largest;
+}
+#endif
+
+// np.bincount(x, minlength=m) for a contiguous one-dimensional int16 or
+// int64 array of at least one element: the bincount_i16 and bincount_i64
+// kernels. `minimum` is m, at least 0.
+//
+// NumPy sizes its result by the largest element, plus one, or by m if that is
+// more, and raises ValueError for a negative element. So the array is read
+// once for its largest element first, as an unsigned number, which a negative
+// element makes too large for its type's positive range: that call is
+// NumPy's, and it raises. Otherwise every element lies in [0, bins), where
+// the kernel's counts and NumPy's agree, and the kernel zeroes the counters
+// itself. The read cannot be done a block at a time ahead of the kernel, as
+// the guards of np.fmax.reduceat and m.any(axis=1) are: the kernel needs the
+// number of counters before it reads its first element.
+//
+// NumPy takes its result from calloc, whose large blocks are pages the system
+// zeroes only when they are first touched; the kernel stores every counter.
+// A call with far more counters than elements, such as np.bincount([10**9]),
+// costs NumPy almost nothing and would have the kernel write 8 GB, so it is
+// left to NumPy. So is a largest element whose length overflows, and a
+// result that cannot be allocated: NumPy raises its own error.
+//
+// The array is read twice, by the scan and by the kernel, and the lock is
+// released for both all the same: the kernel ignores elements outside
+// [0, bins), so a thread that writes the array between the two reads can at
+// worst change the counts, never make the kernel write outside them.
+static HK_NOINLINE PyObject *bincount_codes(PyArrayObject *x, npy_intp minimum) {
+    const bool narrow = PyArray_TYPE(x) == NPY_INT16;
+    const npy_intp n = PyArray_SIZE(x);
+    // NumPy's answer for no elements is m zeros; the kernel has no largest
+    // element to size them by, and the call is NumPy's.
+    if (n == 0) return NULL;
+    uint64_t top;
+    {
+        HK_BEGIN_NOGIL(n)
+        top = narrow ? bincount_top_i16(PyArray_DATA(x), (size_t)n) : bincount_top_i64(PyArray_DATA(x), (size_t)n);
+        HK_END_NOGIL
+    }
+    // The sign bit of the element type: set in `top` when some element is
+    // negative. For int64 it also keeps `top + 1` below 2^63, but the
+    // largest int64, whose length NumPy cannot hold, is still excluded.
+    const uint64_t sign = narrow ? (uint64_t)1 << 15 : (uint64_t)1 << 63;
+    if (top >= sign || top >= (uint64_t)NPY_MAX_INTP) return NULL;
+    npy_intp bins = (npy_intp)top + 1;
+    if (bins < minimum) bins = minimum;
+    if (bins > BINCOUNT_FREE_BINS && bins > n) return NULL;
+    PyObject *result = PyArray_SimpleNew(1, &bins, NPY_INTP);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    int64_t *counts = PyArray_DATA((PyArrayObject *)result);
+    {
+        HK_BEGIN_NOGIL(n)
+        if (narrow) bincount_i16(PyArray_DATA(x), counts, (size_t)n, (size_t)bins);
+        else bincount_i64(PyArray_DATA(x), counts, (size_t)n, (size_t)bins);
+        HK_END_NOGIL
+    }
+    hk_take(narrow ? HK_BINCOUNT_I16 : HK_BINCOUNT_I64);
+    return result;
+}
+
+// np.bincount(x, minlength=m) for a contiguous one-dimensional uint8, int16
+// or int64 array without weights. For uint8 the kernel always fills 256
+// counters. NumPy's result has one entry more than the largest value present,
+// or `minlength` entries if that is more, so the counters are cut or padded
+// to that length. int16 and int64 go to bincount_codes.
 static HK_NOINLINE PyObject *try_bincount(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     enum { X, WEIGHTS, MINLENGTH, PARAMETERS };
     // `x` can only be given by position.
     static const char *const names[PARAMETERS] = {NULL, "weights", "minlength"};
     PyObject *bound[PARAMETERS];
     if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
-    if (bound[X] == NULL || !hk_is_flat_1d(bound[X], NPY_UINT8) || !hk_is_absent(bound[WEIGHTS])) return NULL;
+    if (bound[X] == NULL || !hk_is_absent(bound[WEIGHTS])) return NULL;
+    // The element types with a kernel. Every other one, bool and int32
+    // included, which NumPy converts to intp, stays with NumPy.
+    const bool bytes = hk_is_flat_1d(bound[X], NPY_UINT8);
+    if (!bytes && !hk_is_flat_1d(bound[X], NPY_INT16) && !hk_is_flat_1d(bound[X], NPY_INT64)) return NULL;
 
     Py_ssize_t minimum = 0;
     if (bound[MINLENGTH] != NULL) {
@@ -374,6 +623,7 @@ static HK_NOINLINE PyObject *try_bincount(PyObject *const *args, Py_ssize_t narg
     }
 
     PyArrayObject *x = (PyArrayObject *)bound[X];
+    if (!bytes) return bincount_codes(x, minimum);
     const npy_intp n = PyArray_SIZE(x);
     int64_t counters[BYTE_VALUES];
     {
@@ -598,12 +848,6 @@ static PyObject *call_putmask(HK_VECTORCALL_PARAMETERS) {
     return functions[F_PUTMASK].original(callable, args, nargsf, kwnames);
 }
 
-// True when two arrays have the same shape.
-static bool same_shape(PyArrayObject *a, PyArrayObject *b) {
-    return PyArray_NDIM(a) == PyArray_NDIM(b) &&
-           PyArray_CompareLists(PyArray_DIMS(a), PyArray_DIMS(b), PyArray_NDIM(a));
-}
-
 // np.copyto(dst, src, where=mask) for a contiguous writable float64 `dst`, a
 // Python float or int as `src`, and a contiguous boolean mask of the same
 // shape, with no `casting`. NumPy broadcasts the mask against `dst`, so a
@@ -620,7 +864,7 @@ static HK_NOINLINE bool try_copyto(PyObject *const *args, Py_ssize_t nargs, PyOb
     *masked = bound[WHERE] != NULL;
     if (bound[DST] == NULL || bound[SRC] == NULL || bound[WHERE] == NULL || bound[CASTING] != NULL) return false;
     if (!hk_is_plain_array(bound[DST]) || !hk_is_plain_array(bound[WHERE])) return false;
-    if (!same_shape((PyArrayObject *)bound[DST], (PyArrayObject *)bound[WHERE])) return false;
+    if (!hk_same_shape((PyArrayObject *)bound[DST], (PyArrayObject *)bound[WHERE])) return false;
     return hk_try_maskfill(bound[DST], bound[WHERE], bound[SRC]);
 }
 
@@ -631,20 +875,6 @@ static PyObject *call_copyto(HK_VECTORCALL_PARAMETERS) {
     if (try_copyto(args, PyVectorcall_NARGS(nargsf), kwnames, &masked)) Py_RETURN_NONE;
     if (masked) hk_pass(HK_OP_MASKFILL);
     return functions[F_COPYTO].original(callable, args, nargsf, kwnames);
-}
-
-// np.where(condition) with nothing but a one-dimensional contiguous boolean
-// array: the positions that are True, as np.nonzero gives them. np.where
-// calls NumPy's C code for nonzero directly, so the method hook does not see
-// this call. With `x` and `y` it is another operation, which is passed on
-// without being counted. NumPy accepts no keywords here.
-static PyObject *call_where(HK_VECTORCALL_PARAMETERS) {
-    if (PyVectorcall_NARGS(nargsf) == 1 && kwnames == NULL) {
-        PyObject *result = hk_try_nonzero(args[0]);
-        if (result != NULL) return result;
-        hk_pass(HK_OP_NONZERO);
-    }
-    return functions[F_WHERE].original(callable, args, nargsf, kwnames);
 }
 
 // -------------------------------------------------------------------- clip
@@ -736,6 +966,78 @@ static PyObject *run_clip(PyArrayObject *x, hk_kernel kernel, double lo, double 
     return result;
 }
 
+// ---- int64, on short arrays
+//
+// No kernel serves int64, and NumPy's clip loop for it is quick: what a
+// short call costs is NumPy's call path, about 1.7 us at 32 elements, against
+// a few nanoseconds for the loop. So the function and method hooks run a
+// plain C loop of their own, up to CLIP_I64_MAX_N elements; above it NumPy's
+// own loop, in vector code, is the better one and the call goes on to NumPy.
+// Such a call was never counted, as no hook served an int64 clip, and it is
+// still not counted.
+//
+// NumPy keeps the result int64 for a bound that is a Python int, a weak
+// scalar under NEP 50, and for an np.int64. A Python int outside the range of
+// int64 is NumPy's: it raises for some and accepts others. Any other bound,
+// a Python float, a bool or a NumPy scalar of another type, is NumPy's too:
+// most change the result's type.
+
+// Most elements of an int64 array the binding's loop clips. Measured from
+// Python on the Intel Core i5-14600KF, `np.clip(x, -100, 100)` was 16x
+// faster than NumPy at 16 elements, 7.1x at 1,024 and 3.5x at 4,096, the
+// largest size this limit was chosen among. The loop stays ahead further
+// (2.0x at 16,384, 1.5x at 32,768, level from 262,144), but those sizes are
+// not short arrays: they are left to NumPy, and the loop never needs to
+// release the interpreter lock, which the binding does from HK_NOGIL_MIN_N.
+#define CLIP_I64_MAX_N 4096
+
+// Convert a bound for an int64 array: an np.int64 as it is, or a Python int
+// that fits int64. Returns false for anything else, with no exception set.
+static bool clip_bound_i64(PyObject *bound, int64_t *value) {
+    if (Py_IS_TYPE(bound, &PyInt64ArrType_Type)) {
+        *value = PyArrayScalar_VAL(bound, Int64);
+        return true;
+    }
+    if (!PyLong_CheckExact(bound)) return false;
+    int overflow = 0;
+    const long long v = PyLong_AsLongLongAndOverflow(bound, &overflow);
+    if (overflow != 0 || (v == -1 && PyErr_Occurred())) {
+        PyErr_Clear();
+        return false;
+    }
+    *value = (int64_t)v;
+    return true;
+}
+
+// out[i] = min(max(x[i], lo), hi) for the `n` elements at `x`, as NumPy's
+// clip loop computes it for integers. Compiled for the kernels' level, where
+// the compiler makes it a compare and a blend per four elements; for any
+// x86-64 it would leave it a scalar loop, since SSE2 has no 64-bit compare.
+static HK_TARGET_KERNEL_LEVEL void clip_i64_loop(const int64_t *restrict x, int64_t *restrict out, size_t n,
+                                                 int64_t lo, int64_t hi) {
+    for (size_t i = 0; i < n; i++) {
+        const int64_t raised = x[i] < lo ? lo : x[i];
+        out[i] = raised > hi ? hi : raised;
+    }
+}
+
+// np.clip(x, lo, hi) or x.clip(lo, hi) on a contiguous int64 array: the
+// caller has tested the array's type. Returns NULL with no exception set for
+// a call that is NumPy's. The lock stays held: the array is short.
+static HK_NOINLINE PyObject *try_clip_i64(PyArrayObject *x, PyObject *lo, PyObject *hi) {
+    const npy_intp n = PyArray_SIZE(x);
+    int64_t lo64, hi64;
+    if (n > CLIP_I64_MAX_N || !clip_bound_i64(lo, &lo64) || !clip_bound_i64(hi, &hi64) || lo64 > hi64) return NULL;
+    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), NPY_INT64);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    clip_i64_loop(PyArray_DATA(x), PyArray_DATA((PyArrayObject *)result), (size_t)n, lo64, hi64);
+    hk_take(HK_CLIP_I64);
+    return result;
+}
+
 // The bounds are compared with islessequal, which raises no flag for a NaN:
 // a NaN bound fails the comparison, as does lo > hi, and both are NumPy's.
 // The float32 bounds are compared after their conversion, as the loop sees
@@ -746,6 +1048,7 @@ HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi) {
     // NumPy returns an empty array without calling the loop; the kernels are
     // never called with n = 0.
     if (PyArray_SIZE(x) < 1) return NULL;
+    if (hk_is_flat(array, NPY_INT64)) return try_clip_i64(x, lo, hi);
     if (hk_is_flat(array, NPY_FLOAT)) {
         float lo32, hi32;
         if (!clip_bound_f32(lo, &lo32) || !clip_bound_f32(hi, &hi32) || !islessequal(lo32, hi32)) return NULL;
@@ -759,7 +1062,8 @@ HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi) {
     return NULL;
 }
 
-// np.clip(a, a_min, a_max) for a contiguous float32 or float64 array, with
+// np.clip(a, a_min, a_max) for a contiguous float32 or float64 array, or a
+// short int64 one, with
 // the bounds given by position, as `a_min=` and `a_max=`, or, where NumPy
 // has them, as `min=` and `max=`; `out` absent or None; nothing else. A
 // bound left out, None, or both spellings at once are NumPy's: it raises, or
@@ -808,6 +1112,317 @@ static void prepare_clip(PyObject *object) {
     PyErr_Clear();
 }
 
+// ------------------------------------------------------------------- where
+//
+// np.where has two operations behind one name. With the condition alone it
+// gives the positions that are True, as np.nonzero does: the nonzero_bool
+// kernel, counted under nonzero. With `x` and `y` it selects, element by
+// element, from `x` where the condition is True and from `y` where it is
+// not: the where_f64 kernel, counted under where. NumPy accepts no keywords
+// for either, and a call with keywords or another number of arguments is
+// passed on without being counted.
+//
+// The selection is taken only when it needs no broadcasting and no type
+// conversion: the condition and the arrays have one shape, and the arrays
+// one element type. The kernel only moves 64-bit elements, so it serves
+// float64 and int64 alike, and a NaN keeps its payload. Which type NumPy
+// gives the result follows NEP 50: beside a float64 array a Python float, a
+// Python int or an np.float64 leaves it float64, so such a scalar is taken
+// on either side, converted as a float64 clip bound is (clip_bound_f64: an
+// int only when a double holds it exactly). Beside an int64 array a float
+// would change the result's type, and an int may not fit; both are NumPy's.
+
+// Run where_f64 into a new array of the condition's shape and of NumPy type
+// `type_num`. `a` and `b` are the data of the arrays selected from, of the
+// condition's size; either may be NULL, and that side is then the scalar
+// `fill` at every position. The result is the binding's own buffer and cannot
+// overlap an input, which the kernel requires.
+//
+// The kernel reads n elements from each side, so a scalar is spread over a
+// buffer on the stack, WHERE_BLOCK elements long, and the kernel runs block
+// by block with that buffer as the scalar's side. A buffer of n elements
+// would be written in full and read back from wherever it lies; at a million
+// elements that made the call no faster than NumPy's. The blocks give up the
+// x86-64 kernel's stores past the caches, which it starts from millions of
+// elements.
+//
+// Both kernels take any non-zero byte of the condition as True, as NumPy
+// does, but the spec promises only 0 and 1; the condition is checked first,
+// as for the other mask kernels, and one with another byte is NumPy's. Returns NULL with no exception set when the call
+// goes to NumPy after all.
+static HK_NOINLINE PyObject *run_where(PyArrayObject *condition, const void *a, const void *b, double fill,
+                                       int type_num) {
+    const npy_intp n = PyArray_SIZE(condition);
+    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(condition), PyArray_DIMS(condition), type_num);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    const bool *c = PyArray_DATA(condition);
+    double *out = PyArray_DATA((PyArrayObject *)result);
+    bool clean = true;
+    {
+        // The kernel reads each input once and writes only the new array, which
+        // no other thread can see yet.
+        HK_BEGIN_NOGIL(n)
+        if (a != NULL && b != NULL) {
+            clean = hk_mask_is_clean((const uint8_t *)c, (size_t)n);
+            if (clean) where_f64(c, a, b, out, (size_t)n);
+        } else {
+            double spread[WHERE_BLOCK];
+            const npy_intp filled = n < WHERE_BLOCK ? n : WHERE_BLOCK;
+            for (npy_intp i = 0; i < filled; i++) spread[i] = fill;
+            const double *array = a != NULL ? a : b;
+            // Each block's condition is checked just before the kernel reads it,
+            // from the first-level cache. A bad byte drops the whole result.
+            for (npy_intp done = 0; done < n; done += WHERE_BLOCK) {
+                const size_t count = (size_t)(n - done < WHERE_BLOCK ? n - done : WHERE_BLOCK);
+                clean = hk_mask_is_clean((const uint8_t *)c + done, count);
+                if (!clean) break;
+                if (a != NULL) where_f64(c + done, array + done, spread, out + done, count);
+                else where_f64(c + done, spread, array + done, out + done, count);
+            }
+        }
+        HK_END_NOGIL
+    }
+    if (!clean) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    hk_take(HK_WHERE_F64);
+    return result;
+}
+
+// np.where(condition, x, y) for a contiguous boolean condition with at least
+// one dimension and, of exactly its shape, two contiguous float64 arrays, two
+// contiguous int64 arrays, or one contiguous float64 array and a scalar that
+// keeps the result float64 (see above). An empty condition is taken: the
+// kernel writes nothing and the result is NumPy's empty array of that shape.
+static HK_NOINLINE PyObject *try_where(PyObject *condition, PyObject *x, PyObject *y) {
+    if (!hk_is_flat(condition, NPY_BOOL)) return NULL;
+    PyArrayObject *c = (PyArrayObject *)condition;
+    double fill = 0.0;
+    if (hk_is_plain_array(x) && hk_is_plain_array(y)) {
+        const int type_num = PyArray_TYPE((PyArrayObject *)x);
+        if (type_num != NPY_DOUBLE && type_num != NPY_INT64) return NULL;
+        if (!hk_is_flat(x, type_num) || !hk_is_flat(y, type_num)) return NULL;
+        if (!hk_same_shape(c, (PyArrayObject *)x) || !hk_same_shape(c, (PyArrayObject *)y)) return NULL;
+        return run_where(c, PyArray_DATA((PyArrayObject *)x), PyArray_DATA((PyArrayObject *)y), fill, type_num);
+    }
+    if (hk_is_flat(x, NPY_DOUBLE) && hk_same_shape(c, (PyArrayObject *)x) && clip_bound_f64(y, &fill)) {
+        return run_where(c, PyArray_DATA((PyArrayObject *)x), NULL, fill, NPY_DOUBLE);
+    }
+    if (hk_is_flat(y, NPY_DOUBLE) && hk_same_shape(c, (PyArrayObject *)y) && clip_bound_f64(x, &fill)) {
+        return run_where(c, NULL, PyArray_DATA((PyArrayObject *)y), fill, NPY_DOUBLE);
+    }
+    return NULL;
+}
+
+// np.where(condition, x, y), and np.where(condition) with nothing but a
+// one-dimensional contiguous boolean array: the positions that are True, as
+// np.nonzero gives them. np.where calls NumPy's C code for nonzero directly,
+// so the method hook does not see that call.
+static PyObject *call_where(HK_VECTORCALL_PARAMETERS) {
+    const Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    if (kwnames == NULL && nargs == 3) {
+        PyObject *result = try_where(args[0], args[1], args[2]);
+        if (result != NULL) return result;
+        hk_pass(HK_OP_WHERE);
+    } else if (kwnames == NULL && nargs == 1) {
+        PyObject *result = hk_try_nonzero(args[0]);
+        if (result != NULL) return result;
+        hk_pass(HK_OP_NONZERO);
+    }
+    return functions[F_WHERE].original(callable, args, nargsf, kwnames);
+}
+
+// --------------------------------------------------------------------- any
+
+// np.any(m, axis=1) for a two-dimensional boolean array: the array and the
+// axis, the Python int 1 or -1, by position or the axis as `axis=`, and
+// nothing else. For a plain ndarray np.any calls np.logical_or.reduce itself
+// and never reaches the method, so it needs this hook as well; the work is
+// the method hook's (hk_try_any_rows). The parameters are a, axis, out,
+// keepdims and, by keyword only, where.
+static HK_NOINLINE PyObject *try_any(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    const Py_ssize_t keywords = kwnames == NULL ? 0 : PyTuple_GET_SIZE(kwnames);
+    if (nargs < 1 || nargs + keywords != 2) return NULL;
+    if (keywords == 1 && !hk_text_is(PyTuple_GET_ITEM(kwnames, 0), "axis")) return NULL;
+    // A keyword's value follows the positional arguments, so either way the
+    // axis is args[1].
+    if (!hk_is_last_axis(args[1])) return NULL;
+    return hk_try_any_rows(args[0]);
+}
+
+// `np.any(m)` with the array alone is one of the commonest NumPy calls and
+// has no kernel: it goes on at the first test, uncounted, as does any call
+// whose first argument is not a plain boolean array of two dimensions. A call
+// on such an array with more arguments that is not taken is counted.
+static PyObject *call_any(HK_VECTORCALL_PARAMETERS) {
+    const Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    if ((nargs > 1 || kwnames != NULL) && nargs >= 1 && hk_is_bool_matrix(args[0])) {
+        PyObject *result = try_any(args, nargs, kwnames);
+        if (result != NULL) return result;
+        hk_pass(HK_OP_ANY);
+    }
+    return functions[F_ANY].original(callable, args, nargsf, kwnames);
+}
+
+// ------------------------------------------------------------------- round
+
+// np.round(a, decimals, out) and np.around, which in NumPy 2 is a second
+// function object with the same parameters and the same body: a contiguous
+// float64 array, `decimals` absent or a Python int from 0 to 15, `out`
+// absent or None, by position or by keyword. The work is the method hook's
+// (hk_try_round).
+static HK_NOINLINE PyObject *try_round_function(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { A, DECIMALS, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"a", "decimals", "out"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[A] == NULL || !hk_is_flat(bound[A], NPY_DOUBLE) || !hk_is_absent(bound[OUT])) return NULL;
+    return hk_try_round(bound[A], bound[DECIMALS]);
+}
+
+// A call left to NumPy calls the array's `round` method, whose hook counts
+// it, so it is not counted here.
+static PyObject *call_round_with(HK_VECTORCALL_PARAMETERS, int function) {
+    PyObject *result = try_round_function(args, PyVectorcall_NARGS(nargsf), kwnames);
+    if (result != NULL) return result;
+    return functions[function].original(callable, args, nargsf, kwnames);
+}
+
+static PyObject *call_round(HK_VECTORCALL_PARAMETERS) {
+    return call_round_with(callable, args, nargsf, kwnames, F_ROUND);
+}
+
+static PyObject *call_around(HK_VECTORCALL_PARAMETERS) {
+    return call_round_with(callable, args, nargsf, kwnames, F_AROUND);
+}
+
+// ------------------------------------------------------------------ median
+//
+// np.median is a Python function: it partitions a copy of the array around
+// its middle with np.partition, and takes np.mean of the middle element, or
+// of the two middle elements for an even count. On the short arrays it is
+// called on that is nearly all of the call: about 4.8 us at 32 elements, for
+// a selection of a few dozen nanoseconds. So the function hook answers
+// np.median(x) on a short float64 array with a loop of the binding's own:
+// copy, sort, take the middle. No kernel serves it.
+//
+// NumPy's mean of the middle elements is their sum, from np.add.reduce,
+// divided by their count. For one element that is the element; for two it
+// is a + b, then / 2. The loop computes the same, so the result is the same
+// bits, with three exceptions, each sent to NumPy:
+//
+// - A NaN anywhere: NumPy's answer and its handling of it are its own.
+// - A flag NumPy would report from the sum or the division: a sum that
+//   overflows (NumPy warns), infinities of both signs (invalid, NumPy warns),
+//   or a division that underflows (NumPy is silent by default, and raises
+//   under np.errstate(under='raise')). Each is recognised from the numbers
+//   (median_raises) rather than from the status flags: the compiler may move
+//   inline arithmetic across a read of MXCSR, where it does not move a call
+//   that writes memory, which is how np.round's loop is fenced.
+// - A zero median when the array holds a negative zero. Which zeros end up
+//   in the middle depends on where NumPy's partition leaves equal elements,
+//   and np.add.reduce of a single -0.0 gives +0.0 in NumPy 2.5; neither is
+//   worth reproducing.
+//
+// Infinities of one sign are numbers here: their sum raises no flag.
+
+// Most elements of a float64 array whose median the binding's loop takes, and
+// the length of the buffer on the stack they are copied to: 1 KB. The sort
+// takes time in the square of the count, and NumPy's partition does not.
+// Measured from Python on the Intel Core i5-14600KF, on normally distributed
+// values, np.median(x) was 47x faster than NumPy at 16 elements, 13x at 64,
+// 3.2x at 128 and 0.86x at 256. On values in descending order, the sort's
+// worst case, it was 1.48x at 128: still ahead of NumPy.
+#define MEDIAN_F64_MAX_N 128
+
+// Sort the `n` doubles at `v`, none of them NaN, into ascending order: an
+// insertion sort, which on a few dozen elements is quicker than anything
+// that needs more bookkeeping. Comparisons of numbers raise no flag NumPy
+// reports.
+static void median_sort(double *v, size_t n) {
+    for (size_t i = 1; i < n; i++) {
+        const double value = v[i];
+        size_t j = i;
+        for (; j > 0 && v[j - 1] > value; j--) v[j] = v[j - 1];
+        v[j] = value;
+    }
+}
+
+// True when NumPy's mean of the middle elements raises a flag it reports.
+// `sum` is the sum of the two middle elements and `median` that divided by
+// two; for an odd count nothing is computed and nothing can be raised. The
+// sum overflows exactly when it is infinite and neither element is, and is
+// invalid exactly when it is a NaN, the elements being numbers. The division
+// underflows when its result is tiny and not exact; it is exact when twice
+// the result, which doubling computes exactly at that size, is the sum. A
+// result of exactly the smallest normal number counts as tiny, which takes
+// no position on whether the processor detects tininess before rounding or
+// after: such a call is NumPy's either way.
+static bool median_raises(double low, double high, double sum, double median) {
+    if (isnan(sum) || (isinf(sum) && !isinf(low) && !isinf(high))) return true;
+    return fabs(median) <= DBL_MIN && median * 2.0 != sum;
+}
+
+// True when one of the `n` doubles at `v` is a negative zero.
+static bool median_has_negative_zero(const double *v, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (v[i] == 0.0 && signbit(v[i])) return true;
+    }
+    return false;
+}
+
+// np.median(x) for a contiguous float64 array: the caller has tested the
+// type. Returns the np.float64 NumPy returns, or NULL with no exception set
+// for a call that is NumPy's. The array is read twice, for NaN and by the
+// copy; the lock stays held, as the array is short.
+static HK_NOINLINE PyObject *try_median(PyArrayObject *x) {
+    const npy_intp n = PyArray_SIZE(x);
+    // NumPy warns and answers NaN for an empty array.
+    if (n < 1 || n > MEDIAN_F64_MAX_N) return NULL;
+    const double *data = PyArray_DATA(x);
+    // A signalling NaN raises the invalid flag in this comparison; the call
+    // is then NumPy's, whose ufuncs clear the flags before they compute.
+    if (hk_has_nan(data, (size_t)n)) return NULL;
+    double sorted[MEDIAN_F64_MAX_N];
+    memcpy(sorted, data, (size_t)n * sizeof sorted[0]);
+    median_sort(sorted, (size_t)n);
+    const size_t half = (size_t)n / 2;
+    double median = sorted[half];
+    if (n % 2 == 0) {
+        // The two operations of NumPy's mean, in its order.
+        const double sum = sorted[half - 1] + sorted[half];
+        median = sum / 2.0;
+        if (median_raises(sorted[half - 1], sorted[half], sum, median)) return NULL;
+        // The sum may have raised the precision flag, which NumPy's own loops
+        // leave clear. The test above depends on the arithmetic, so this
+        // cannot run before it. A call passed on leaves the flags to NumPy,
+        // whose ufuncs clear them before they compute.
+        hk_clear_float_flags();
+    }
+    if (median == 0.0 && median_has_negative_zero(sorted, (size_t)n)) return NULL;
+    PyObject *result = hk_scalar(NPY_DOUBLE, (void *)&median);
+    if (result != NULL) hk_take(HK_MEDIAN_F64);
+    return result;
+}
+
+// np.median(x) with the array alone, by position. Its other parameters,
+// axis, out, overwrite_input and keepdims, are NumPy's even at their
+// defaults, and so is `a=` by keyword. The argument count and the array's
+// type are tested first, so that a call left to NumPy costs two comparisons
+// and a count. Every call not taken is counted.
+static PyObject *call_median(HK_VECTORCALL_PARAMETERS) {
+    if (PyVectorcall_NARGS(nargsf) == 1 && kwnames == NULL && hk_is_flat(args[0], NPY_DOUBLE)) {
+        PyObject *result = try_median((PyArrayObject *)args[0]);
+        if (result != NULL) return result;
+    }
+    hk_pass(HK_OP_MEDIAN);
+    return functions[F_MEDIAN].original(callable, args, nargsf, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_function functions[F_COUNT] = {
@@ -825,6 +1440,10 @@ static hk_function functions[F_COUNT] = {
     [F_COPYTO] = {"copyto", call_copyto, NULL, NULL, NULL},
     [F_WHERE] = {"where", call_where, NULL, NULL, NULL},
     [F_CLIP] = {"clip", call_clip, prepare_clip, NULL, NULL},
+    [F_ANY] = {"any", call_any, NULL, NULL, NULL},
+    [F_ROUND] = {"round", call_round, NULL, NULL, NULL},
+    [F_AROUND] = {"around", call_around, NULL, NULL, NULL},
+    [F_MEDIAN] = {"median", call_median, NULL, NULL, NULL},
 };
 
 // Return the address of the call pointer inside a callable object, or NULL
@@ -889,5 +1508,9 @@ hk_hook hk_function_hooks[] = {
     {"function.copyto", function_apply, function_remove, F_COPYTO, false},
     {"function.where", function_apply, function_remove, F_WHERE, false},
     {"function.clip", function_apply, function_remove, F_CLIP, false},
+    {"function.any", function_apply, function_remove, F_ANY, false},
+    {"function.round", function_apply, function_remove, F_ROUND, false},
+    {"function.around", function_apply, function_remove, F_AROUND, false},
+    {"function.median", function_apply, function_remove, F_MEDIAN, false},
     {NULL, NULL, NULL, 0, false},
 };

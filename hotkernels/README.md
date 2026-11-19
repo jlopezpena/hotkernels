@@ -1,13 +1,13 @@
 # hotkernels
 
-Faster NumPy on Apple Silicon, with one line and no other change to your code.
+Faster NumPy on Apple Silicon and on x86-64 Linux, with one line and no other change to your code.
 
 ```python
 import hotkernels
 hotkernels.install()
 ```
 
-`install()` points NumPy at hand-written ARM64 kernels for the calls where NumPy is slowest. Every kernel is checked against NumPy's own output, including NaN, infinities, signed zeros and ties, and is memory-safe by test. A call no kernel handles goes to NumPy exactly as it was written.
+`install()` points NumPy at hand-written assembly kernels, ARM64 NEON or x86-64 AVX2, for the calls where NumPy is slowest. Every kernel is checked against NumPy's own output, including NaN, infinities, signed zeros and ties, and is memory-safe by test. A call no kernel handles goes to NumPy exactly as it was written.
 
 ## Install
 
@@ -15,11 +15,13 @@ hotkernels.install()
 pip install hotkernels
 ```
 
-Wheels are for macOS on Apple Silicon, CPython 3.11 to 3.14, with NumPy 2.3 or a later NumPy 2. Another Python on an Apple Silicon Mac builds from source, which needs the Xcode command line tools. On any other machine the package installs without a compiler and `install()` does nothing, so code that calls it stays portable.
+Wheels are for macOS on Apple Silicon and for Linux on x86-64 (glibc), CPython 3.11 to 3.14, with NumPy 2.3 or a later NumPy 2. Another Python on one of those builds from source, which needs the Xcode command line tools on a Mac, or a C compiler and GNU binutils on Linux. On Linux the processor must have the x86-64-v3 instruction sets (AVX2, FMA, BMI1, BMI2, LZCNT, MOVBE, POPCNT), which Intel processors have had since 2013 and AMD's since 2015; on an older one, and on any other machine, `install()` does nothing and `report()` says why, so code that calls it stays portable.
+
+The speed figures on this page were measured on an Apple M1 Pro. On x86-64 NumPy has vector loops of its own for some of these calls, so the gains differ: larger for some, close to none for `clip` and `astype`.
 
 ## What gets faster
 
-`np.argmax`, `np.argmin`, `np.clip`, `x[mask]` (and `np.compress`, `np.extract`), `x[mask] = v` (and `np.putmask`, `np.copyto(..., where=mask)`), `np.nonzero` (and `np.where(mask)`), `np.cumsum`, `x.astype(np.float32)` from `uint8`, `np.sum` on `uint8`, `np.count_nonzero`, `np.histogram`, `np.bincount`, `np.isin`, `np.searchsorted` (and `np.digitize`, which calls it) and `np.interp`, for the element types each kernel covers. At a million elements, from Python, `x[mask]` on `float32` is about 31x faster and `np.histogram` about 9x. On small arrays most of a NumPy call is NumPy's own call path, which hotkernels skips where it can: on 16 elements `np.clip(x, -0.5, 0.5)` is about 10x faster, when its bounds are plain numbers and there is no `out`, and `np.argmax(x)` about 14x.
+`np.argmax`, `np.argmin`, `np.clip` (on `int64` for arrays of up to 4,096 elements), `x[mask]` (and `np.compress`, `np.extract`), `x[mask] = v` (and `np.putmask`, `np.copyto(..., where=mask)`), `np.nonzero` (and `np.where(mask)`), `np.where(mask, a, b)` on arrays of one shape, `np.cumsum` (on boolean masks too), `np.maximum.accumulate` and `np.fmax.accumulate` on one-dimensional arrays, `np.fmax.reduceat` on short runs (runs of 16 are about 3x faster than NumPy at a million elements on an Apple M1 Pro; runs of 256 or more are slower than NumPy on large arrays, by up to 1.6x on Apple Silicon), `m.any(axis=1)` on two-dimensional boolean arrays, `np.round` on `float64` arrays of up to 4,096 elements, `np.median` on `float64` arrays of up to 128 elements, `x.astype(np.float32)` from `uint8`, `np.sum` on `uint8` and on boolean masks, `np.count_nonzero`, `np.histogram`, `np.bincount` (on `uint8`, `int16` and `int64`), `np.isin`, `np.searchsorted` (and `np.digitize`, which calls it) and `np.interp`, for the element types each kernel covers. At a million elements, from Python, `x[mask]` on `float32` is about 31x faster and `np.histogram` about 9x. On small arrays most of a NumPy call is NumPy's own call path, which hotkernels skips where it can: on 16 elements `np.clip(x, -0.5, 0.5)` is about 10x faster, when its bounds are plain numbers and there is no `out`, and `np.argmax(x)` about 14x. `np.clip` on a short `int64` array, and `np.round` and `np.median` on a short `float64` one, which no kernel serves, are answered by plain C loops inside hotkernels for the same reason: `np.median` of 16 elements about 45x faster, measured on x86-64.
 
 ## Using it
 

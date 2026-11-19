@@ -53,7 +53,7 @@ flowchart TD
 | **Inner loop** | A ufunc's loop for one element type | Yes: a public C API exists for exactly this |
 | **Type slot** | The `argmax` and `argmin` entries each element type holds | The accessor is public; writing through it is not a documented use |
 | **Function** | The call pointer inside a NumPy function object | No |
-| **Method** | The C function pointer in `ndarray`'s method table | No |
+| **Method** | The C function pointer in `ndarray`'s method table, and in the ufunc type's for `accumulate` and `reduceat` | No |
 | **Indexing** | The two pointers behind `a[i]` and `a[i] = v` in `ndarray`'s type | No |
 
 The honest reading of the last column: one hook is sanctioned, one is a grey area, and three reach into NumPy's objects in ways NumPy never invited. With the two sanctioned-or-nearly hooks alone, 3 of the 15 operations could be served. The project decided to use all five, and built the defences described below to make that safe.
@@ -116,7 +116,7 @@ A deep hook delivers the kernel but does nothing about what happens above it. Th
 
 A 14x speedup on 16 elements has almost nothing to do with assembly: the loop is 2 ns either way. It is the wrapper being skipped. The same effect makes `np.sum` on 16 bytes 32x faster.
 
-`np.clip` shows both halves. Its kernel was first reached only through the clip ufunc's inner loop, beneath `np.clip`'s Python wrapper, `x.clip`, NumPy's `_methods._clip` and the ufunc machinery: on 16 elements it gained nothing (1.00x), at a million elements 5x to 11x. A function hook on `np.clip` and a method hook on `x.clip` now call the kernel before any of that runs, and 16 elements take 120 ns instead of 1.2 µs. They take only the calls whose result they can reproduce without the machinery: bounds that are plain numbers, or NumPy scalars of the array's own type, so that the result keeps the element type NumPy would give it, and no `out`. Anything else goes on to the ufunc, where the loop hook still serves it.
+`np.clip` shows both halves. Its kernel was first reached only through the clip ufunc's inner loop, beneath `np.clip`'s Python wrapper, `x.clip`, NumPy's `_methods._clip` and the ufunc machinery: on 16 elements it gained nothing (1.00x), at a million elements 5x to 11x. A function hook on `np.clip` and a method hook on `x.clip` now call the kernel before any of that runs, and 16 elements take 120 ns instead of 1.2 µs. They take only the calls whose result they can reproduce without the machinery: bounds that are plain numbers, or NumPy scalars of the array's own type, so that the result keeps the element type NumPy would give it, and no `out`. Anything else goes on to the ufunc, where the loop hook still serves it. On int64, which has no kernel, the same two hooks run a plain C loop of the binding's own for arrays of up to 4,096 elements: on 16 elements 117 ns instead of 1.8 µs, measured on x86-64. Above that size NumPy's own loop is as good, and the call is NumPy's. `np.round` on float64 is served the same way, by function hooks on `np.round` and `np.around` and a method hook on `x.round`: a loop that multiplies, rounds and divides as NumPy's three passes do, on arrays of up to 4,096 elements. `np.median`, a Python function in NumPy that partitions a copy and takes a mean, is answered on float64 arrays of up to 128 elements by sorting a copy on the stack.
 
 There is a mirror-image case. The type slot must take the interpreter lock (see below), which costs about 40 ns per call, more than the kernel saves on a short array. So that hook leaves runs under 128 elements to NumPy. A method already holds the lock, so `x.argmax()` on a short contiguous array is served by the method hook instead: 55 ns against NumPy's 172 ns at 16 elements. Where a hook cannot win, it stands aside: the exit criterion was that no entry point is slower than NumPy at any size measured.
 
@@ -137,7 +137,7 @@ sequenceDiagram
   alt not a mask, or conditions not met
     H->>N: original function, same arguments
     N-->>P: result
-  else plain 1-D float64 and a mask of the same length
+  else plain contiguous float64 and a mask of the same shape
     H->>H: scratch buffer of n elements (on the stack up to 2 KB)
     H->>H: scan the mask once: every byte 0 or 1?
     H->>K: x, mask, scratch, n
@@ -221,11 +221,11 @@ The judge proves a kernel right as a native function. It says nothing about the 
 | Spellings | Positional, keyword, `out=`, `axis=`, method and function forms |
 | Values | The judge's value classes: NaN, infinities, signed zeros, ties |
 
-That is **96,734 calls over the 15 hooked operations**, and all agree.
+That is **166,029 calls over the 21 hooked operations** (on x86-64 and on the Apple M1 Pro; 96,734 over 15 when the first kernels were bound), and all agree.
 
 **Each case also states whether a kernel should have run**, and the counters are checked against it. Without that, a check that quietly stopped matching would pass every comparison, since NumPy's fallback is always right, while delivering nothing.
 
-**NumPy's own test suite**, run once on plain NumPy and once with the kernels installed, gives the same outcome for each of its **47,234 tests**. This is the broadest evidence available for "never break anything", and it cost nothing to write.
+**NumPy's own test suite**, run once on plain NumPy and once with the kernels installed, gives the same outcome for each of its **48,659 tests** (NumPy 2.5.5 on x86-64, with every exact kernel and loop installed). This is the broadest evidence available for "never break anything", and it cost nothing to write.
 
 The test earned its keep while it was being written. It found two defects in the binding: `np.count_nonzero` returned a Python `int` where NumPy returns `np.intp`, and `np.histogram` issued NumPy's overflow warnings twice for a range wider than a double can hold. Neither was a wrong number. Both were differences a user's code could have observed.
 
@@ -235,6 +235,6 @@ The binding runs without guard pages. A wrong length passed to a correct kernel 
 
 ## Where that leaves things
 
-Of the 23 kernels, 21 are installed by `install()` and the other 2 with `install(inexact=True)`. `searchsorted` and `interp` were bound late: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. The last kernel added is the right side of the search, which `np.digitize` asks for by default. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
+Of the 31 kernels, 29 are installed by `install()` and the other 2 with `install(inexact=True)`. `searchsorted` and `interp` were bound late: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. The last kernel added is the right side of the search, which `np.digitize` asks for by default. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
 
 The last chapter collects every number, and is candid about which of them mean less than they appear to.

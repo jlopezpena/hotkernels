@@ -14,7 +14,7 @@ Make `kernels/<kernel>/<arch>/kernel.s` as fast as you can while keeping it corr
 
 **How to iterate.**
 
-1. Read `kernels/<kernel>/attempts.md` so you do not repeat earlier attempts on this architecture. If the kernel has assembly for another architecture, read that `kernel.s` and its attempts for the idea and the proofs. Do not start from that code, and do not treat an attempt rejected there as rejected here.
+1. Read `kernels/<kernel>/<arch>/attempts.md` so you do not repeat earlier attempts on this architecture. If the kernel has assembly for another architecture, read that `kernel.s` and the `attempts.md` beside it for the idea and the proofs. Do not start from that code, and do not treat an attempt rejected there as rejected here.
 2. Make one change to `kernel.s`.
 3. Run `uv run judge check <kernel>`. If it fails, fix or revert.
 4. Run `uv run judge compare <kernel> --against HEAD`. Keep the change only if the result is `significantly faster`; otherwise revert it.
@@ -38,4 +38,4 @@ If there is no `kernel.s` yet, start with the simplest correct version, get `che
 - anything you left untried, and why
 - on x86-64, each of the family's candidates: kept, rejected with the judge's result, or not tried and why
 
-**Limits.** Edit only `kernels/<kernel>/<arch>/kernel.s` and `kernels/<kernel>/attempts.md`. Never pass `--unlocked`. If you think the spec, the naive reference or the judge is wrong, stop and report it.
+**Limits.** Edit only `kernels/<kernel>/<arch>/kernel.s` and `kernels/<kernel>/<arch>/attempts.md`. Never pass `--unlocked`. If you think the spec, the naive reference or the judge is wrong, stop and report it.

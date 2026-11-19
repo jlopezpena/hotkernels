@@ -15,10 +15,14 @@ static const char *const HK_KERNEL_NAMES[HK_KERNEL_COUNT] = {
     "argmax_f32", "argmax_f64", "argmin_f32", "argmin_f64",
     "clip_f32", "clip_f64",
     "compress_f32", "compress_f64", "maskfill_f64", "nonzero_bool",
-    "cumsum_i64", "cumsum_f32", "cumsum_f64",
+    "cumsum_i64", "cumsum_f32", "cumsum_f64", "cumsum_bool",
     "cast_u8_f32", "sum_u8", "count_nonzero_i64", "count_nonzero_f64",
     "histogram_f64", "bincount_u8", "isin_i64",
     "searchsorted_f64", "searchsorted_right_f64", "interp_f64",
+    "where_f64", "cummax_i64", "cumfmax_f64", "fmax_reduce_f64", "any_rows_bool",
+    "bincount_i16", "bincount_i64",
+    // Built into the binding.
+    "clip_i64", "round_f64", "median_f64",
 };
 
 // Operation names, in the order of hk_operation.
@@ -26,6 +30,7 @@ static const char *const HK_OPERATION_NAMES[HK_OPERATION_COUNT] = {
     "argmax", "argmin", "clip", "compress", "maskfill",
     "nonzero", "cumsum", "astype", "sum", "count_nonzero",
     "histogram", "bincount", "isin", "searchsorted", "interp",
+    "where", "accumulate", "reduceat", "any", "round", "median",
 };
 
 // Every table of hooks, in the order hooks are listed to Python: deepest first.

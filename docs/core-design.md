@@ -59,8 +59,8 @@ kernels/<name>/
   spec.py          signature, dtypes, NumPy oracle, correctness mode
   naive.c          naive C reference: the simplest correct loop
   arm64/kernel.s   hand-written NEON (absent for a kernel shipped as C on ARM64)
-  x86_64/kernel.s  hand-written AVX2 (designed in x86-64-design.md; none exists yet)
-  attempts.md      log of what was tried and what the judge said
+  x86_64/kernel.s  hand-written AVX2 (designed in x86-64-design.md)
+  <arch>/attempts.md   log of what was tried on that architecture and what the judge said
 ```
 
 - `spec.py` and `naive.c` are shared by all architectures.
@@ -79,7 +79,7 @@ Each kernel declares one of two modes in its spec.
 
 ## Architectures
 
-Two are in the design: ARM64 on macOS, which is built, and x86-64 on Linux, where the judge runs and the kernels are being written to [x86-64-design.md](x86-64-design.md).
+Two are in the design, and both are built: ARM64 on macOS, and x86-64 on Linux, whose kernels were written to [x86-64-design.md](x86-64-design.md).
 
 | Shared by every architecture | Per architecture |
 |---|---|
@@ -163,7 +163,7 @@ Take the shortlisted kernels to `install()`, in the order given in [survey-desig
 - An unmodified script runs faster after adding the one line, with output that meets each kernel's correctness mode, and `report()` shows the kernels being hit.
 - The overhead of a patched call that falls back is measured and negligible.
 
-**Status:** the kernels have had a first pass, recorded in [kernel-findings.md](kernel-findings.md): 22 of the 23 have assembly that beats naive C and one ships as C. The binding and `install()` are built as [delivery-design.md](delivery-design.md) describes: 21 of the 23 kernels are installed, and that document holds the result against this exit criterion. The two search kernels are not bound until they take a second size.
+**Status:** the kernels have had a first pass, recorded in [kernel-findings.md](kernel-findings.md): 22 of the 23 have assembly that beats naive C and one ships as C. The binding and `install()` are built as [delivery-design.md](delivery-design.md) describes: 21 of the 23 kernels are installed, and that document holds the result against this exit criterion. The two search kernels are not bound until they take a second size. Kernels added since from a second shortlist are recorded in [second-shortlist-design.md](second-shortlist-design.md).
 
 ## Non-goals
 

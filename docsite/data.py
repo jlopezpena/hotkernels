@@ -18,6 +18,17 @@ KERNELS = ROOT / "kernels"
 README = ROOT / "README.md"
 FINDINGS = ROOT / "docs" / "kernel-findings.md"
 PYTHON_TIMINGS = ROOT / "delivery" / "results" / "apple-m1-pro.json"
+PYTHON_TIMINGS_X86_64 = ROOT / "delivery" / "results" / "intel-r-core-tm-i5-14600kf.json"
+
+# The architectures kernels are written for, by the name of their directory
+# under kernels/<name>/. Each holds that architecture's kernel.s and attempts.md.
+ARM64, X86_64 = "arm64", "x86_64"
+# The heading in kernel-findings.md whose table holds the x86-64 results. The
+# ARM64 table is the first in the file; this one is found by its heading.
+_X86_64_HEADING = "### x86-64"
+# The size of the one single-size column the x86-64 table and the x86-64
+# chapter quote.
+X86_64_SIZE = 1048576
 
 # "## 7. Unroll the main loop": the heading that opens one attempt in an attempts log.
 _ATTEMPT_HEADING = re.compile(r"^## (\d+)\. (.+)$")
@@ -141,25 +152,28 @@ def _parse_attempts(text: str, inline: Callable[[str], str]) -> list[dict]:
     return attempts
 
 
-def attempts(inline: Callable[[str], str]) -> dict:
-    """Collect the attempts log of every kernel.
+def attempts(inline: Callable[[str], str], arch: str = ARM64) -> dict:
+    """Collect the attempts log of every kernel on one architecture.
 
     Args:
         inline: Renders a line of Markdown to HTML.
+        arch: ARM64 or X86_64: which `kernels/<name>/<arch>/attempts.md` to read.
 
     Returns:
-        `kernels`, one entry per kernel with its attempts, and the totals over
-        all of them: `total`, `kept`, `reverted`, and how many attempts got
-        each verdict from `judge compare`.
+        `kernels`, one entry per kernel with its attempts and whether it has
+        assembly on that architecture, and the totals over all of them:
+        `total`, `kept`, `reverted`, and how many attempts got each verdict
+        from `judge compare`.
     """
     kernels = []
-    for log_path in sorted(KERNELS.glob("*/attempts.md")):
+    for log_path in sorted(KERNELS.glob(f"*/{arch}/attempts.md")):
         tried = _parse_attempts(log_path.read_text(), inline)
         if not tried:
             raise ValueError(f"{log_path}: no numbered attempts found")
         kernels.append({
-            "name": log_path.parent.name,
-            "assembly": any(log_path.parent.glob("*/kernel.s")),
+            # kernels/<name>/<arch>/attempts.md
+            "name": log_path.parent.parent.name,
+            "assembly": (log_path.parent / "kernel.s").exists(),
             "attempts": tried,
         })
     everything = [a for k in kernels for a in k["attempts"]]
@@ -279,11 +293,59 @@ def headline() -> list[dict]:
     return rows
 
 
-def python_timings() -> dict:
+def python_timings(path: Path = PYTHON_TIMINGS) -> dict:
     """The recorded timings of Python statements, with and without hotkernels.
 
+    Args:
+        path: The delivery tool's recorded result for one machine.
+
     Returns:
-        The contents of the delivery tool's recorded result: `meta` describes
-        the machine and `rows` holds one statement at one size each.
+        Its contents: `meta` describes the machine and `rows` holds one
+        statement at one size each.
     """
-    return json.loads(PYTHON_TIMINGS.read_text())
+    return json.loads(path.read_text())
+
+
+def findings_x86_64() -> list[dict]:
+    """The x86-64 results table of docs/kernel-findings.md.
+
+    Returns:
+        One entry per row, with the cells as written: `kernel` (without its
+        backticks, and with any footnote mark kept in `mark`), `input`,
+        `vs_c`, `vs_numpy` and `vs_numpy_1m`. A kernel timed on two kinds of
+        input has both figures in one cell, separated by a slash.
+    """
+    lines = FINDINGS.read_text().splitlines()
+    headings = [i for i, line in enumerate(lines) if line == _X86_64_HEADING]
+    if not headings:
+        raise ValueError(f"{FINDINGS}: no heading {_X86_64_HEADING!r}")
+    starts = [i for i in range(headings[0], len(lines)) if lines[i].startswith(_FINDINGS_HEADER)]
+    if not starts:
+        raise ValueError(f"{FINDINGS}: no results table under {_X86_64_HEADING!r}")
+    rows = []
+    # Skip the header and the |---|---| line under it.
+    for line in lines[starts[0] + 2:]:
+        if not line.startswith("|"):
+            break
+        kernel, kind, vs_c, vs_numpy, vs_numpy_1m = (cell.strip() for cell in line.strip().strip("|").split("|"))
+        name, _, mark = kernel.partition("` ")
+        rows.append({"kernel": name.strip("`"), "mark": mark, "input": kind, "vs_c": vs_c,
+                     "vs_numpy": vs_numpy, "vs_numpy_1m": vs_numpy_1m})
+    if not rows:
+        raise ValueError(f"{FINDINGS}: the x86-64 results table is empty")
+    return rows
+
+
+def python_at(timings: dict, n: int) -> list[dict]:
+    """The statements a kernel took at one size, from a recorded timing run.
+
+    Args:
+        timings: What `python_timings` returned.
+        n: The element count to keep.
+
+    Returns:
+        One entry per statement timed at `n` elements and served by a kernel:
+        `statement`, `data`, and `speedup`, NumPy's time over hotkernels'.
+    """
+    return [{"statement": row["statement"], "data": row["data"], "speedup": row["numpy_ns"] / row["hotkernels_ns"]}
+            for row in timings["rows"] if row["kernel"] and row["n"] == n]

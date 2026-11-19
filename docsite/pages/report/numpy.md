@@ -83,7 +83,7 @@ Sixty-one variants were timed: each candidate operation at the element types and
 | `x[mask]`, half selected | 14x behind a branch-free loop | 4.75 / 0.34 | No |
 | `np.argmax`, float32 | NumPy 3x **ahead** | 0.43 / 1.29 | No |
 
-And on the other side of the ledger, where NumPy already has hand-tuned vector code, it is 10 to 50 times *ahead* of naive C: `np.max`, `np.any`, `np.all`, `np.count_nonzero` on booleans and `np.packbits` all run at 0.01 to 0.05 ns per element. Float `np.sum`, `np.where(c, a, b)`, `np.diff`, fancy indexing with `a[idx]`, and everything on stepped slices like `a[::2]` are level with naive C or better. None of these is a target, and nothing in this project touches them.
+And on the other side of the ledger, where NumPy already has hand-tuned vector code, it is 10 to 50 times *ahead* of naive C: `np.max`, `np.any`, `np.all`, `np.count_nonzero` on booleans and `np.packbits` all run at 0.01 to 0.05 ns per element. Float `np.sum`, `np.where(c, a, b)`, `np.diff`, fancy indexing with `a[idx]`, and everything on stepped slices like `a[::2]` are level with naive C or better on the M1. None of these was a target of the first pass. `np.where(c, a, b)` has a kernel since: on x86-64 NumPy is several times behind naive C there, and a later shortlist took it up.
 
 ::: takeaway The shape of the opportunity
 NumPy's speed is uneven. A handful of loops have had years of attention and run at the limit of the hardware. Others are generic code paths that handle every element type, stride and corner case through one mechanism, and pay for the generality on every element.

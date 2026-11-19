@@ -12,33 +12,41 @@ These are the figures that matter to someone running NumPy code: one Python stat
 
 | Statement | Elements | 16 elements | 1,048,576 elements |
 |---|---|---|---|
-| `np.argmax(x)` | float32 | 14.2x | 8.89x |
-| `x.argmax()` | float32 | 3.11x | 8.87x |
-| `np.clip(x, -0.5, 0.5)` | float32 | 11.0x | 9.92x |
-| `np.clip(x, -0.5, 0.5)` | float64 | 9.76x | 4.93x |
-| `x[mask]`, half selected | float32 | 2.49x | 31.0x |
-| `x[mask]`, half selected | float64 | 2.54x | 15.9x |
-| `x[mask] = 0.0`, half selected | float64 | 5.24x | 20.3x |
-| `np.nonzero(mask)`, few selected | bool | 1.25x | 13.5x |
-| `np.cumsum(x)` | int64 | 1.95x | 12.7x |
-| `x.astype(np.float32)` | uint8 | 1.89x | 4.11x |
-| `np.sum(x)` | uint8 | 32.5x | 15.7x |
-| `np.count_nonzero(x)` | float64 | 3.59x | 3.74x |
-| `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.16x | 9.43x |
-| `np.bincount(x)` | uint8 | 2.32x | 6.66x |
-| `np.isin(x, eight_values)` | int64 | 71.2x | 18.8x |
-| `np.searchsorted(a, v)` | float64 | 1.51x | 8.57x |
-| `np.searchsorted(a, v, side='right')` | float64 | 1.46x | 9.16x |
-| `np.digitize(x, bins)`, 1,000 bin edges | float64 | 1.10x | 26.7x |
-| `np.interp(x, xp, fp)` | float64 | 5.54x | 22.4x |
+| `np.argmax(x)` | float32 | 13.2x | 8.89x |
+| `x.argmax()` | float32 | 2.98x | 8.89x |
+| `np.clip(x, -0.5, 0.5)` | float32 | 11.1x | 11.3x |
+| `np.clip(x, -0.5, 0.5)` | float64 | 9.81x | 4.69x |
+| `x[mask]`, half selected | float32 | 2.48x | 30.7x |
+| `x[mask]`, half selected | float64 | 2.53x | 16.3x |
+| `x[mask] = 0.0`, half selected | float64 | 5.19x | 20.7x |
+| `np.nonzero(mask)`, few selected | bool | 1.25x | 13.4x |
+| `np.cumsum(x)` | int64 | 1.94x | 12.3x |
+| `x.astype(np.float32)` | uint8 | 1.90x | 5.15x |
+| `np.sum(x)` | uint8 | 29.4x | 15.6x |
+| `np.count_nonzero(x)` | float64 | 3.34x | 3.78x |
+| `np.histogram(x, 50, (-3.0, 3.0))` | float64 | 6.13x | 9.33x |
+| `np.bincount(x)` | uint8 | 2.27x | 6.75x |
+| `np.isin(x, eight_values)` | int64 | 72.6x | 18.2x |
+| `np.searchsorted(a, v)` | float64 | 1.49x | 8.83x |
+| `np.searchsorted(a, v, side='right')` | float64 | 1.45x | 7.71x |
+| `np.digitize(x, bins)`, 1,000 bin edges | float64 | 1.10x | 26.8x |
+| `np.interp(x, xp, fp)` | float64 | 5.61x | 21.0x |
+| `np.cumsum(mask)`, half True | bool | 2.77x | 19.2x |
+| `np.maximum.accumulate(x)` | int64 | 2.93x | 14.2x |
+| `np.fmax.accumulate(x)` | float64 | 2.85x | 12.8x |
+| `np.fmax.reduceat(x, starts)`, runs of 16, 5% NaN | float64 | 3.46x | 3.05x |
+| `m.any(axis=1)`, rows of 22 | bool | 5.52x | 24.0x |
+| `np.bincount(x)`, codes 0 to 63 | int16 | 4.48x | 9.44x |
+| `np.bincount(x)`, codes 0 to 63 | int64 | 2.71x | 4.26x |
+| `np.where(c, a, b)`, half true | float64 | 4.79x | 1.60x |
 
-The search and `np.interp` rows are timed with as many needles as elements, and `np.digitize` with 1,000 bin edges. The run started at a load average of 2.0, on a machine that also runs other work.
+The search and `np.interp` rows are timed with as many needles as elements, and `np.digitize` with 1,000 bin edges. The run started at a load average of 2.2, on a machine that also runs other work.
 
-Read the two columns as two different stories. At a million elements the number is the kernel. At 16 elements it is mostly NumPy's own call path being skipped: `np.sum` on 16 bytes is 32x faster because a 1.2 µs wrapper was replaced by a 36 ns call, not because of how the bytes are added, and `np.clip` is 11x faster because the kernel is called before NumPy's wrapper and ufunc machinery run.
+Read the two columns as two different stories. At a million elements the number is the kernel. At 16 elements it is mostly NumPy's own call path being skipped: `np.sum` on 16 bytes is 29x faster because a 1.2 µs wrapper was replaced by a 40 ns call, not because of how the bytes are added, and `np.clip` is 11x faster because the kernel is called before NumPy's wrapper and ufunc machinery run.
 
 **A whole program.** `examples/workload.py` in the repository is an ordinary NumPy script, written with no knowledge of hotkernels: it cleans a signal, summarises an 8-bit image and looks up some ids, using eleven of these operations on two million elements. It runs in **45 ms on plain NumPy and 8.4 ms with the one line added**, and every result is identical bit for bit.
 
-**The cost of being there.** A call that reaches a hook and is not served costs 0.3 to 1.5 ns more than on plain NumPy: `x[3]` goes from 60.5 ns to 60.8 ns. Hooks that read keyword arguments cost a little more, and on calls that cost more: `np.clip(x, -0.5, None)`, which no kernel serves, goes from 1.03 µs to 1.04 µs.
+**The cost of being there.** A call that reaches a hook and is not served costs 0.3 to 1.5 ns more than on plain NumPy: `x[3]` takes 66.7 ns on plain NumPy and 66.6 ns with hotkernels. Hooks that read keyword arguments cost a little more, and on calls that cost more: `np.clip(x, -0.5, None)`, which no kernel serves, goes from 1.02 µs to 1.04 µs.
 
 ## What the kernels do: timings as native functions
 
@@ -62,8 +70,8 @@ Three patterns are worth reading out of that table:
 
 - **Machine.** Apple M1 Pro, macOS, NumPy 2.5.5, Apple clang 21. Native, one core.
 - **Method.** 30 interleaved samples per contender per size; ratio of medians; paired bootstrap interval, as in [chapter 3]([[ root ]]report/judge/#deciding-what-faster-means).
-- **Passes.** Most rows come from one pass on an idle machine. The `clip` and search rows, marked †, were taken later on a machine that could not be made quiet (load average about 3 for most runs), so each is the mean of ten locked runs. Up to about 65,536 elements those runs agree within 1%; from a million elements up single runs differ by 10 to 15%.
-- **Unlocked.** The judge normally refuses to time a kernel whose spec differs from the main branch. The single-pass runs were made in the same change that introduced the specs, with that refusal overridden, and the judge marks such results as untrusted. Nothing has been recorded as an official result for that reason.
+- **Passes.** Most rows come from one pass on an idle machine. The rows of the eight second-shortlist kernels, the last in the table, are one recorded run each, taken on a quiet machine at a load average of 1.4 to 2.9: locked for six, and `--unlocked` for `fmax_reduce_f64` and `cumfmax_f64`, whose narrowed specs are not yet on the main branch. The `clip` and search rows, marked †, were taken later on a machine that could not be made quiet (load average about 3 for most runs), so each is the mean of ten locked runs. Up to about 65,536 elements those runs agree within 1%; from a million elements up single runs differ by 10 to 15%.
+- **Unlocked.** The judge normally refuses to time a kernel whose spec differs from the main branch. The single-pass runs were made in the same change that introduced the specs, with that refusal overridden, and the judge marks such results as untrusted. Nothing was recorded as an official result from those runs for that reason.
 
 ## Where a result is narrower than its number
 
@@ -117,7 +125,7 @@ The pattern is consistent: the judge verifies what its generated inputs exercise
 
 - **`np.digitize` with decreasing bins.** It searches the bins reversed, as a view no kernel takes.
 - **`np.interp` with `left`, `right` or `period`**, and with more than 64 sample points per query, where reading the sample points for NaN would cost more than the kernel saves.
-- **One or two element types per operation.** `np.argmax` on int32, `x[mask]` on int64, `np.sum` on float64: all go to NumPy. (NumPy is already fast on several of those.)
+- **One or two element types per operation.** `np.argmax` on int32, `x[mask]` on int32, `np.sum` on float64: all go to NumPy. (NumPy is already fast on several of those.)
 - **Plain arrays only.** Subclasses reaching the function, method and indexing hooks go to NumPy.
 - **`np.compress` with `axis` or `out`.** The compress kernels write past the elements they keep, so they never run on a buffer the caller owns.
 - **In-place `clip`.** `np.clip(x, 0, 1, out=x)` goes to NumPy.

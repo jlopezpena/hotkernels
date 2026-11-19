@@ -1,9 +1,9 @@
 <section class="hero">
-<p class="eyebrow">NumPy on Apple Silicon</p>
+<p class="eyebrow">NumPy on Apple Silicon and x86-64 Linux</p>
 <div class="hero-grid">
 <div>
 <h1>The slow parts of NumPy, <em>rewritten underneath it</em>.</h1>
-<p class="lede">hotkernels replaces the loops inside 15 NumPy operations with hand-written ARM64 kernels. Your code does not change. Every kernel is checked against NumPy's own output, and a call no kernel takes costs about a nanosecond more than before.</p>
+<p class="lede">hotkernels replaces the loops inside 21 NumPy operations with hand-written ARM64 kernels. Your code does not change. Every kernel is checked against NumPy's own output, and a call no kernel takes costs about a nanosecond more than before.</p>
 <div class="cta">
 <a class="btn primary" href="[[ root ]]start/">Get started</a>
 <a class="btn" href="[[ root ]]report/">Read how it works</a>
@@ -22,7 +22,7 @@ np.argmax(x)       <span class="c"># 7x faster</span></code></pre>
 </section>
 
 <div class="stats">
-<div><b>23</b><span>kernels for 15 NumPy operations, all of them bound to NumPy</span></div>
+<div><b>31</b><span>kernels for 21 NumPy operations, all of them bound to NumPy</span></div>
 <div><b>5x+</b><span>faster than NumPy for 17 of the 22 in the results table, at a million elements</span></div>
 <div><b>21 / 23</b><span>return NumPy's result bit for bit; the other two are opt-in</span></div>
 <div><b>~1 ns</b><span>added to a call that no kernel takes</span></div>
@@ -39,12 +39,12 @@ Each bar is one NumPy call on an array of 1,048,576 elements, timed as a native 
 
 ## What stands behind the numbers
 
-- **Checked against NumPy, not against a description of it.** Every kernel is compared with NumPy's own output on inputs that include NaN, infinities, signed zeros, ties and denormals. Twenty match bit for bit. The two float `cumsum` kernels regroup the additions, which is where their speed comes from; they stay inside a declared error bound and are installed only on request.
+- **Checked against NumPy, not against a description of it.** Every kernel is compared with NumPy's own output on inputs that include NaN, infinities, signed zeros, ties and denormals. Twenty-nine of the 31 match bit for bit. The two float `cumsum` kernels regroup the additions, which is where their speed comes from; they stay inside a declared error bound and are installed only on request.
 - **Memory-safe by test.** Each kernel is run with its buffers pressed against pages the process may not touch. Reading or writing one byte outside a buffer crashes the check.
 - **Assembly only where it wins.** A kernel keeps its assembly only if it is measurably faster than the compiled C. Where it is not, the C ships.
 - **Nothing breaks when a kernel does not apply.** A strided array, another element type, an argument a kernel does not implement: the call goes to NumPy exactly as written. With hotkernels installed, NumPy's own test suite gives the same outcome for each of its 47,234 tests.
 
-There are limits, and the site does not hide them: one machine, macOS on Apple Silicon only, one or two element types per operation, and a few results that depend on the arguments. They are set out in [what the numbers do not say]([[ root ]]report/results/).
+There are limits, and the site does not hide them: figures from one machine, an Apple M1 Pro, with the x86-64 kernels measured separately and written up in [a chapter of their own]([[ root ]]report/x86-64/); one or two element types per operation, and a few results that depend on the arguments. They are set out in [what the numbers do not say]([[ root ]]report/results/).
 
 ## How it was built, and why you might care
 

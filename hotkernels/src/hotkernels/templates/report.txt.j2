@@ -1,4 +1,4 @@
-{# The table hotkernels.report() prints: a status line, one row per kernel, and any hooks that failed. #}
+{# The table hotkernels.report() prints: a status line, one row per kernel and per loop built into the binding, and any hooks that failed. The status line counts the kernels only. #}
 {% set call_width = 19 %}
 {% set type_width = 9 %}
 {% set kind_width = 10 %}
@@ -9,7 +9,7 @@ hotkernels {{ report.version }}: not installed: {{ report.unsupported }}
 {% elif not report.installed %}
 hotkernels {{ report.version }}: not installed (NumPy {{ report.numpy_version }}). Call hotkernels.install().
 {% else %}
-hotkernels {{ report.version }}: installed, {{ report.installed_count }} of {{ report.kernels | length }} kernels (NumPy {{ report.numpy_version }})
+hotkernels {{ report.version }}: installed, {{ report.installed_count }} of {{ report.kernel_count }} kernels (NumPy {{ report.numpy_version }})
 {% endif %}
 {% if report.installed %}
 
@@ -26,6 +26,13 @@ hotkernels {{ report.version }}: installed, {{ report.installed_count }} of {{ r
 "Left to NumPy" counts calls that reached a hook and did not meet a kernel's
 conditions: another element type, a strided array, an argument the kernel does
 not implement. It is counted per NumPy call and shown on its first row.
+{% set builtins = report.kernels | selectattr("builtin") | list %}
+{% if builtins %}
+Not counted on the first line, because they are loops built into hotkernels
+for short arrays rather than kernels:
+{% for kernel in builtins %}{{ kernel.numpy_call }} on {{ kernel.elements }}{{ ", " if not loop.last else "." }}{% endfor %}
+
+{% endif %}
 {% if not report.inexact %}
 Kernels marked "within tolerance" are not bit-identical to NumPy and are
 installed only by install(inexact=True).

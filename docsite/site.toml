@@ -94,3 +94,11 @@ title = "Results, and what they do not say"
 label = "Results and limits"
 summary = "Every number, where it came from, and the cases where the result is narrower than the headline."
 layout = "report"
+
+[[page]]
+path = "report/x86-64"
+source = "report/x86-64.md"
+title = "The same kernels on a second architecture"
+label = "A second architecture"
+summary = "The 23 kernels written again for x86-64 with AVX2: what carried over from ARM64, what did not, and what they are worth where NumPy already has vector loops."
+layout = "report"

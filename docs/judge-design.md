@@ -37,7 +37,7 @@ kernels/<name>/        one directory per kernel (the contract from core-design.m
   spec.py
   naive.c
   <arch>/kernel.s      arm64 or x86_64
-  attempts.md
+  <arch>/attempts.md   what was tried on that architecture
 results/               recorded results, committed
 .judge/                build output and raw runs, not committed
 ```
@@ -110,7 +110,7 @@ The first real kernels needed more than the two fixtures do. Each addition below
 | `In("v", "f64", len="needles")` | An input whose length is the value of an integer scalar, so a kernel can have two lengths that vary independently. See [A second length](#a-second-length) | `searchsorted` (the needles), `interp` (the queries) |
 | `Out("counts", "i64", capacity=256)` | An output whose size is fixed | `bincount` |
 | `Out("counts", "i64", capacity="nbins")` | An output whose size is the value of an integer scalar, so it changes with the scalar set | `histogram` |
-| `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs | `searchsorted` and `interp` (sorted data) |
+| `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs. Timing inputs that a distribution supplies do not pass through it | `searchsorted` and `interp` (sorted data); `cumfmax_f64` and `fmax_reduce_f64` (no `-0.0` where a zero is the maximum: a domain that leaves out the inputs the binding sends to NumPy, where NumPy's builds disagree) |
 | `In("test", "i64", len=8, classes={"padded_3": fn})` | Value classes of one argument alone, tried next to the ones every argument of its type gets, for inputs a caller sends that the general classes do not produce. Each function takes the argument's default random array and returns the array to use. They are checked like any plain class, pairings included, and are not timed | `isin_i64` (test values padded by repeating the first, as the binding pads them) |
 | `In("v", "f64", len="needles", draws_from="a")` | One more value class, `from_a`, whose elements are elements of `a` as the kernel receives it. Tried with `a` random and with `a` holding repeated values at every size and in every scalar set. See [Values drawn from another argument](#values-drawn-from-another-argument) | `searchsorted` (needles equal to elements, at every path), `interp` (queries on sample points) |
 | `InOut("x", "f64")` | A buffer the kernel modifies in place. It starts as an input and is compared in full with the oracle's result | masked assignment |
@@ -496,7 +496,7 @@ The NumPy version is pinned in the lock file. Results are only comparable across
 
 An agent told to make a number go up will sometimes do it the wrong way. The judge closes the obvious routes:
 
-- **Limited write access.** During a kernel run, the only files allowed to change are that kernel's `<arch>/kernel.s` and `attempts.md`. The judge checks with git that the spec, `naive.c` and the judge itself match the main branch, and fails the run otherwise.
+- **Limited write access.** During a kernel run, the only files allowed to change are that kernel's `<arch>/kernel.s` and the `attempts.md` beside it. The judge checks with git that the spec, `naive.c` and the judge itself match the main branch, and fails the run otherwise.
 - **A human approves the reference.** `spec.py` and `naive.c` are reviewed by a person when a kernel is created, because everything else is measured against them.
 - **Fixed compiler flags** for the baseline, as above.
 - **Fresh random cases** on every correctness run, as above.
