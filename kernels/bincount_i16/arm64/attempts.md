@@ -35,3 +35,19 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.159x [1.158 – 1.160]
 - **Kept:** yes
 - **Notes:** uniform codes, 64 counters: 1.66x at 16,384, 1.93x at 1,048,576 (0.139 ns per element against 0.27). Four values: 1.49x–1.64x (0.216 ns per element against 0.36): with four values there are sixteen pairs, and consecutive increments of the same pair still wait for each other. 1,000 counters unchanged.
+
+## 5. Two pair tables, the second pair of each word in the second
+
+- **Idea:** with four values, consecutive pairs hit the same counter one time in sixteen; give the two pairs of each word tables of their own (32 KB), the second added into the first before the totals are taken.
+- **check:** pass
+- **compare:** significantly faster, 1.011x [1.010 – 1.011]
+- **Kept:** no: it wins one table by losing another
+- **Notes:** four values 1.16x from 1,048,576 up (0.195 ns per element against 0.225), but uniform codes 0.87x at 16,384 and 0.96x at 65,536: clearing 32 KB and adding 16 KB more costs about 0.4 us a call, and uniform codes gain nothing from the second table.
+
+## 6. Four-table path: one vector test per sixteen elements
+
+- **Idea:** the four-table loop spent a compare and a branch on every element. Load sixteen elements also as two vectors, `cmhs` against `bins` as unsigned 16-bit numbers (a negative element is at least 32,768, `bins` at most 1,024 here), `orr`, `umaxv`, one branch; when all sixteen are inside, each is taken out of its word with `and`/`ubfx`/`lsr` and counted with no test. Sixteen with any element outside go one at a time with the full test, out of line.
+- **check:** pass
+- **compare:** significantly faster, 1.030x [1.021 – 1.039]
+- **Kept:** yes
+- **Notes:** uniform codes with 1,000 counters 1.10x–1.13x from 16,384 up (0.246 ns per element against 0.276); 64 counters 1.14x–1.15x at 1,024 and 4,096 (below the pair path). Four values unchanged within noise: there the wait for the counters, not the instructions, sets the speed.

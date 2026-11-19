@@ -39,6 +39,40 @@
 1:
 .endm
 
+// Count the four elements of the word in \w, each known to be below bins,
+// in the four tables sp, x4, x5 and x16.
+.macro TABLE4 w
+    and     x10, \w, #0xffff
+    ubfx    x11, \w, #16, #16
+    ubfx    x12, \w, #32, #16
+    lsr     x13, \w, #48
+    ldr     w14, [sp, x10, lsl #2]
+    add     w14, w14, #1
+    str     w14, [sp, x10, lsl #2]
+    ldr     w15, [x4, x11, lsl #2]
+    add     w15, w15, #1
+    str     w15, [x4, x11, lsl #2]
+    ldr     w14, [x5, x12, lsl #2]
+    add     w14, w14, #1
+    str     w14, [x5, x12, lsl #2]
+    ldr     w15, [x16, x13, lsl #2]
+    add     w15, w15, #1
+    str     w15, [x16, x13, lsl #2]
+.endm
+
+// The same for four elements that are not all below bins: each is
+// sign-extended and tested.
+.macro TABLE4S w
+    sxth    x10, \w
+    sbfx    x11, \w, #16, #16
+    sbfx    x12, \w, #32, #16
+    asr     x13, \w, #48
+    COUNTT  x10, sp, w14
+    COUNTT  x11, x4, w15
+    COUNTT  x12, x5, w14
+    COUNTT  x13, x16, w15
+.endm
+
 // Count the sign-extended element in \reg into counts, if it is below bins.
 .macro COUNT reg, tmp
     cmp     \reg, x3
@@ -160,27 +194,30 @@ Lcleartables:
     cmp     x6, x7
     b.lo    Lcleartables
 
-    subs    x2, x2, #8              // at least eight elements: n >= 8 * bins
-Ltables8:
-    ldp     x6, x7, [x0], #16
-    sxth    x8, w6
-    sbfx    x9, x6, #16, #16
-    sbfx    x10, x6, #32, #16
-    asr     x11, x6, #48
-    COUNTT  x8, sp, w12
-    COUNTT  x9, x4, w13
-    COUNTT  x10, x5, w14
-    COUNTT  x11, x16, w15
-    sxth    x8, w7
-    sbfx    x9, x7, #16, #16
-    sbfx    x10, x7, #32, #16
-    asr     x11, x7, #48
-    COUNTT  x8, sp, w12
-    COUNTT  x9, x4, w13
-    COUNTT  x10, x5, w14
-    COUNTT  x11, x16, w15
-    subs    x2, x2, #8
-    b.hs    Ltables8
+    // Sixteen elements per step. One vector test says whether all sixteen
+    // are below bins, read as unsigned 16-bit numbers, where a negative
+    // element is at least 32768 and bins at most 1024; if they are, each is
+    // taken out of its word unsigned and counted with no test of its own.
+    dup     v31.8h, w3
+    subs    x2, x2, #16             // at least sixteen elements: n >= 8 * bins
+Ltables16:
+    ldp     q0, q1, [x0]
+    cmhs    v0.8h, v0.8h, v31.8h
+    cmhs    v1.8h, v1.8h, v31.8h
+    orr     v0.16b, v0.16b, v1.16b
+    umaxv   h0, v0.8h
+    fmov    w8, s0
+    cbnz    w8, Lslow16
+    ldp     x6, x7, [x0]
+    ldp     x8, x9, [x0, #16]
+    TABLE4  x6
+    TABLE4  x7
+    TABLE4  x8
+    TABLE4  x9
+Lnext16:
+    add     x0, x0, #32
+    subs    x2, x2, #16
+    b.hs    Ltables16
 
     // counts[v] = the four tables' counters v, four counters per step; the
     // last step ends exactly at bins and may overlap the one before.
@@ -205,7 +242,18 @@ Lsum:
     cmp     x6, x3
     b.lo    Lsum
     add     sp, sp, x17, lsl #2
-    b       Ltail                   // 0 to 7 elements left, into counts
+    ands    x2, x2, #15             // 0 to 15 elements left, into counts
+    b.eq    Ldone
+    b       Lone
+
+Lslow16:                            // one of the sixteen is not below bins
+    ldp     x6, x7, [x0]
+    ldp     x8, x9, [x0, #16]
+    TABLE4S x6
+    TABLE4S x7
+    TABLE4S x8
+    TABLE4S x9
+    b       Lnext16
 
     // ---- The pair table ---------------------------------------------------
     // Four elements are read in one 8-byte word. If each is in 0..63, which
