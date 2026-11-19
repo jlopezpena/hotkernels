@@ -112,7 +112,8 @@ export function fmtX(x) {
 export function fmtNs(ns) {
   if (ns < 1e3) return `${ns < 10 ? ns.toFixed(1) : ns.toFixed(0)} ns`;
   if (ns < 1e6) return `${(ns / 1e3).toPrecision(3)} µs`;
-  return `${(ns / 1e6).toPrecision(3)} ms`;
+  if (ns < 1e9) return `${(ns / 1e6).toPrecision(3)} ms`;
+  return `${(ns / 1e9).toPrecision(3)} s`;
 }
 
 // 1048576 -> "1,048,576"

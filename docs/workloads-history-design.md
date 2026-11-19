@@ -85,7 +85,7 @@ A new workflow, `.github/workflows/nightly.yml`.
 | Job | Runs on | What it does |
 |---|---|---|
 | `gate` | `ubuntu-latest` | Reads the repository's runners, as `pick-runner.yml` does, with the same `RUNNER_STATUS_TOKEN`. Passes only if a runner labelled `hotkernels-mac` is online and none is busy. Otherwise it writes the reason to the job summary and the night has no run |
-| `run` | `hotkernels-mac` | Waits up to 15 minutes for the one-minute load average to fall under `BUSY_LOAD` (1.0, as `delivery time` uses). Then runs `delivery workloads --sizes M,L --history` into a worktree of `perf-history`, commits the new file and pushes it. A run that never saw a quiet minute still runs, and its file says so |
+| `run` | `hotkernels-mac` | Waits up to 15 minutes for the one-minute load average to fall under `BUSY_LOAD` (1.0, as `delivery time` uses). Then runs `delivery workloads --size M,L --history` into a worktree of `perf-history`, commits the new file and pushes it. A run that never saw a quiet minute still runs, and its file says so |
 | `site` | `ubuntu-latest` | Starts `pages.yml` with `gh workflow run`, so the site shows the night's run. A push made with the workflow's own token starts no other workflow; a `workflow_dispatch` is the exception |
 
 **Permissions.** `run` needs `contents: write` to push to `perf-history`, and `site` needs `actions: write`. Nothing else. The Mac only runs code from `main`.
@@ -191,3 +191,15 @@ No release note: nothing under `hotkernels/` changes.
 2. **Goal lines.** doesjitgobrrr draws lines at 5% and 10% faster, the JIT's targets. hotkernels has no target for the workloads yet. Proposed: the line at 1.0x only, and a goal line once a target is set.
 3. **Sizes and time.** `M` and `L` each night, at 02:00 UTC. `S` takes little time but measures mostly Python's call overhead; `L` takes most of the run. To be set once the length of a run is known.
 4. **One backfill run.** Whether to time the workloads once against the binding at a few past commits (the first `install()`, issue 17's function hooks, the two-sizes change), to give the history a start. Proposed: yes, as a one-off, with `source: backfill`.
+
+## What changed in the building
+
+Steps 2 and 4 are built; the page came before the week of nightly runs, from runs recorded by hand. Step 3, `nightly.yml`, is not built yet.
+
+- **`--size` takes a list**, `--size M,L`, instead of a new `--sizes`.
+- **Each row records `requires`**, the libraries the workload needs, so a break is decided per workload without importing the workloads.
+- **The time axis is the commit date.** Runs of one commit under the same versions form a group: the line goes through the group's median, and the group's range is the band. The headline and the per-workload charts use the same rule.
+- **Close merges share one marker.** Many pull requests merge within the same hour, and their labels overlapped.
+- **Where the site reads the runs:** `origin/perf-history`, else a local `perf-history` branch, else no runs and a warning. `pages.yml` warns instead of failing while the branch does not exist.
+- **The night's table sorts by its own column buttons.** No table on the site sorted before, so there was nothing to follow.
+- **The site's footer** said every figure came from one Apple M1 Pro. It now says each figure names its machine.
