@@ -6,11 +6,36 @@
 //
 // Each element is compared with bins as an unsigned 64-bit number, so a
 // negative element is a huge one and fails the same test as one that is
-// too large.
+// too large, and so does one with any of its high bits set. No counter
+// outside the tables and counts is ever touched, whatever the data.
+//
+// One counter is loaded, incremented and stored per element, and an
+// element that repeats one shortly before it waits for that store. Paths,
+// chosen once per call (all but the first need n < 2^32, so that no 32-bit
+// counter can overflow):
+//
+//   one table      counts itself, cleared 64 bytes per step; each element
+//                  tested on its own.
+//   pair table     bins <= 64 and n >= PAIRS_MIN_N. Two elements per
+//                  increment, in a 64 x 64 table of 32-bit counters on the
+//                  stack; on data that repeats and from TWO_PAIRS_MIN_N, a
+//                  second pair table takes the second pair of each four.
+//   four tables    4 <= bins <= 1024, and n >= 8 * bins, or n >= 2 * bins
+//                  on data that repeats. Element k of each group of four
+//                  goes to table k of bins 32-bit counters on the stack;
+//                  the four are tested together.
+//   eight tables   as four, from EIGHT_MIN_N elements on data that repeats.
+//
+// "Repeats" is a sample: SAMPLE_REPEATS or more of the first SAMPLE
+// elements equal the element four places on. Every path is right on any
+// data; the sample only picks the faster one.
+//
+// Stack: the pair path takes 32,768 + 256 bytes below the stack pointer,
+// the eight tables up to 32 KB (bins 1,024), the four up to 16 KB.
 
-// The table path is for at least this many counters (its sum works four at
-// a time) and at most this many: four tables of 32-bit counters, 16 KB of
-// stack. It is taken from 2^TABLES_SHIFT elements per counter.
+// The table paths are for at least this many counters (their sums work four
+// at a time) and at most this many: eight tables of 32-bit counters, 32 KB
+// of stack. It is taken from 2^TABLES_SHIFT elements per counter.
 .set TABLES_MIN_BINS, 4
 .set TABLES_MAX_BINS, 1024
 .set TABLES_SHIFT, 3

@@ -61,3 +61,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.014x [1.013 – 1.016]
 - **Kept:** yes
 - **Notes:** four values with 64 counters 1.10x at 65,536 and 1.14x from 262,144 up (0.261 ns per element at 1,048,576 against 0.299). Every other point 1.00x.
+
+## 8. The single table: one test per four elements
+
+- **Idea:** attempt 4 for the path that counts straight into `counts` (the counterpart of `bincount_i16` attempt 13).
+- **check:** pass
+- **compare:** significantly faster, 1.003x [1.002 – 1.003]
+- **Kept:** no: 1.04x at 16 and 64 elements with 64 counters, 0.99x to 1.02x everywhere else; too small to tell from drift between runs
+- **Notes:** in `bincount_i16` the same change also removed a sign extension per element and gained 8% to 13% at small sizes; here only the branch per element goes.
