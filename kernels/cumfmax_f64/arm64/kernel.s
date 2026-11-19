@@ -169,10 +169,10 @@ Lrising:
     uminv   s16, v16.4s
     fmov    w9, s16
     cbz     w9, Lrising_fail
-    stp     q0, q1, [x1]
-    stp     q2, q3, [x1, #32]
-    stp     q4, q5, [x1, #64]
-    stp     q6, q7, [x1, #96]
+    stnp    q0, q1, [x1]
+    stnp    q2, q3, [x1, #32]
+    stnp    q4, q5, [x1, #64]
+    stnp    q6, q7, [x1, #96]
     add     x0, x0, #128
     add     x1, x1, #128
     subs    x2, x2, #16
@@ -199,10 +199,10 @@ Lflat:
     fmaxnm  d24, d24, d31
     fcmp    d24, d31
     b.ne    Lflat_fail
-    stp     q31, q31, [x1]
-    stp     q31, q31, [x1, #32]
-    stp     q31, q31, [x1, #64]
-    stp     q31, q31, [x1, #96]
+    stnp    q31, q31, [x1]
+    stnp    q31, q31, [x1, #32]
+    stnp    q31, q31, [x1, #64]
+    stnp    q31, q31, [x1, #96]
     add     x0, x0, #128
     add     x1, x1, #128
     subs    x2, x2, #16

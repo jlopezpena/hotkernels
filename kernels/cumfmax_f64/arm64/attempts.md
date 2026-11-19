@@ -48,3 +48,12 @@ Apple M1 Pro, macOS, native.
 - **compare:** significantly faster, 1.174x [1.170 – 1.178]: 1.16x at 16, 1.04x to 1.07x at 64, 1.22x to 1.33x at 256, 1.34x to 1.73x at 1,024 and 4,096, 1.04x to 1.11x from 65,536 up.
 - **Kept:** yes
 - **Notes:** the gain at 1,024 and 4,096 is far more than the tail's: it is the alignment. A flat block now takes 0.106 ns per element at 4,096, 5.4 cycles per block, the speed of a copy in the first-level cache; with each `stp` of 32 bytes crossing a 64-byte line every other time it was 7.6. So an `out` that is not a multiple of 64 bytes (or at least 32) costs the kernel up to 1.7x in the first-level cache; the judge's timed buffers are aligned.
+- **Later, outside the judge:** with `x` at a page and `out` at a page plus 0, 16, 32 and 8 bytes, a random 4,096 takes 0.094, 0.088, 0.099 and 0.155 ns per element. Only an `out` that is not a multiple of 16 bytes pays: every other `stp` of 32 bytes then crosses a line.
+
+## 7. `stnp` in the flat and rising loops
+
+- **Idea:** as in `cummax_i64`: the non-temporal pair store for the two loops that store whole blocks without a prefix maximum.
+- **check:** pass
+- **compare:** significantly faster, 1.020x [1.017 – 1.024]; a second run, since nearly every size read 1.00x: 1.021x [1.017 – 1.025]. The gain is all at 16,384 elements, 1.36x on `random` and `some_nan` and 1.07x on `rising` in both runs; 0.98x to 0.99x at 1,024 and 4,096 on `random` and `some_nan`; 1.00x elsewhere.
+- **Kept:** yes
+- **Notes:** at 16,384 elements `x` is 128 KB, the size of this core's first-level data cache, and `x` and `out` together do not fit. With `stnp` the output seemingly does not displace the input, and a repeated call finds `x` where the last one left it: 0.11 ns per element there, against 0.15 before.
