@@ -16,6 +16,7 @@ import atexit
 import ctypes
 import ctypes.util
 import itertools
+import operator
 import tempfile
 from dataclasses import dataclass, replace
 from functools import partial
@@ -24,6 +25,7 @@ from typing import Callable, Iterator
 
 import numpy as np
 
+from hotkernels.hooks import ON_ARM64
 from judge import cases as judge_cases
 from judge.spec import DEFAULT_SCALARS, Kernel, load_spec, np_dtype
 
@@ -4381,6 +4383,262 @@ def unique_cases() -> Iterator[Case]:
     yield from _unique_value_cases()
     yield from _unique_range_cases()
     yield from _unique_layout_cases()
+# ---------------------------------------------------------------- inplace
+
+# The binding's loops for float64 adds and subtracts whose output is their
+# first input, on ARM64 (hook_loop.c). Elsewhere they are not built and every
+# call is NumPy's.
+INPLACE_KERNELS = {"add": "add_inplace_f64", "subtract": "subtract_inplace_f64"}
+# The ufunc and the in-place operator of each.
+INPLACE_UFUNCS = {"add": (np.add, operator.iadd), "subtract": (np.subtract, operator.isub)}
+# Element types beside float64 that the loops must leave to NumPy.
+INPLACE_NEIGHBOURS = ("f32", "i64")
+# Sizes of the sweep over values: the general sweep, and the sizes around the
+# distance in doubles at which the loops prefetch (INPLACE_AHEAD in
+# hook_loop.c), below which they prefetch nothing.
+INPLACE_AHEAD = 512
+INPLACE_SIZES = tuple(sorted({*VALUE_SIZES, INPLACE_AHEAD + 15, INPLACE_AHEAD + 16, INPLACE_AHEAD + 17}))
+# The scalar of the case with a scalar operand, which steps by zero.
+INPLACE_SCALAR = 0.375
+# Layouts on which a plain call must be taken: NumPy hands the loop the
+# array's own memory. On the others it may copy first, or not.
+INPLACE_TAKEN_LAYOUTS = ("contiguous", "rows")
+# Layouts the in-place cases skip: a list or a zero-dimensional array cannot
+# be written in place as an operand, and a masked array decides for itself.
+INPLACE_SKIPPED_LAYOUTS = ("list", "zero_d", "masked_array")
+# A value whose double overflows, for the cases under np.errstate.
+INPLACE_HUGE = 1e308
+# Shape of the matrix and of the batch of the case that reproduces the
+# gradient step of mlp_train: a product on several threads, then w -= b.
+INPLACE_MATRIX = (784, 256)
+INPLACE_BATCH = 128
+
+
+def _inplace_expect(operation: str, n: int) -> str | None:
+    """Say whether a loop takes a plain in-place call of `operation` on `n` float64 elements.
+
+    Args:
+        operation: "add" or "subtract".
+        n: Element count.
+
+    Returns:
+        The loop's name; None where the loops are not built or the array is
+        empty; ANY for one element, which NumPy may pass with steps of zero,
+        since the step of a dimension of one element means nothing.
+    """
+    if not ON_ARM64 or n == 0:
+        return None
+    return INPLACE_KERNELS[operation] if n > 1 else ANY
+
+
+def _pair(dtype: str, n: int, w_class: str, b_class: str, w_variant: Variant = CONTIGUOUS,
+          b_variant: Variant = CONTIGUOUS) -> tuple:
+    """Build the two operands of an in-place case.
+
+    Args:
+        dtype: Element type as a spec name.
+        n: Element count of each.
+        w_class: Value class of the array written to.
+        b_class: Value class of the other.
+        w_variant: Layout of the array written to.
+        b_variant: Layout of the other.
+
+    Returns:
+        (w, b).
+    """
+    w = w_variant.build(values(dtype, n, w_class, n // 2, "w"))
+    b = b_variant.build(values(dtype, n, b_class, n // 3, "b"))
+    return w, b
+
+
+def _nan_pair(n: int) -> tuple:
+    """Build two float64 operands that both hold NaNs, of different payloads and signs."""
+    return unusual_nans("f64", n), np.roll(unusual_nans("f64", n), 1)
+
+
+def _in_place(operation: str, w, b):
+    """Call `w += b` or `w -= b`, and return what the operator returns."""
+    return INPLACE_UFUNCS[operation][1](w, b)
+
+
+def _ufunc_out(operation: str, w, b):
+    """Call `np.add(w, b, out=w)` or the same for subtract."""
+    return INPLACE_UFUNCS[operation][0](w, b, out=w)
+
+
+def _ufunc_out_second(operation: str, w, b):
+    """Call `np.add(b, w, out=w)`: the output is the second input."""
+    return INPLACE_UFUNCS[operation][0](b, w, out=w)
+
+
+def _ufunc_new(operation: str, w, b):
+    """Call `np.add(w, b)`, into a new array."""
+    return INPLACE_UFUNCS[operation][0](w, b)
+
+
+def _with_itself(operation: str, w, b):
+    """Call `w += w` or `w -= w`."""
+    return INPLACE_UFUNCS[operation][1](w, w)
+
+
+def _scalar(operation: str, w, b):
+    """Call `w += 0.375`: a scalar operand steps by zero."""
+    return INPLACE_UFUNCS[operation][1](w, INPLACE_SCALAR)
+
+
+def _shifted(operation: str, w, b):
+    """Call `w[1:] += w[:-1]`: operands that overlap by all but one element."""
+    INPLACE_UFUNCS[operation][1](w[1:], w[:-1])
+    return w
+
+
+def _shifted_back(operation: str, w, b):
+    """Call `np.add(w[:-1], w[1:], out=w[:-1])`: the second input starts one element after the output."""
+    INPLACE_UFUNCS[operation][0](w[:-1], w[1:], out=w[:-1])
+    return w
+
+
+def _elided(operation: str, w, b):
+    """Call `(w * 1.0) + b`: NumPy may add into the temporary in place, which the loop then takes."""
+    temporary = w * 1.0
+    return temporary + b if operation == "add" else temporary - b
+
+
+def _reduce(operation: str, w, b):
+    """Call `np.add.reduce(w)`: the accumulator steps by zero."""
+    return INPLACE_UFUNCS[operation][0].reduce(w)
+
+
+def _accumulate(operation: str, w, b):
+    """Call `np.add.accumulate(w)`: each output is the next element's first input, one element apart."""
+    return INPLACE_UFUNCS[operation][0].accumulate(w)
+
+
+def _column_sums(operation: str, w, b):
+    """Call `np.add.reduce(rows, axis=0)` on a matrix: NumPy may add row after row into the result."""
+    return INPLACE_UFUNCS[operation][0].reduce(w.reshape(-1, COLUMNS), axis=0)
+
+
+def _broadcast_row(operation: str, w, b):
+    """Call `rows += b[:COLUMNS]`: one row added to every row of a matrix."""
+    rows = w.reshape(-1, COLUMNS)
+    INPLACE_UFUNCS[operation][1](rows, b[:COLUMNS])
+    return w
+
+
+def _errstate(setting: str, operation: str, w, b):
+    """Call `w += b` with every floating-point error set to `setting`.
+
+    Args:
+        setting: A value np.errstate takes, such as "raise" or "warn".
+        operation: "add" or "subtract".
+        w: The array written to.
+        b: The other.
+
+    Returns:
+        What the operator returns.
+    """
+    with np.errstate(all=setting):
+        return INPLACE_UFUNCS[operation][1](w, b)
+
+
+def _overflowing(operation: str, n: int) -> tuple:
+    """Build float64 operands whose sum or difference overflows at every third element."""
+    w, b = values("f64", n, arg="w"), values("f64", n, arg="b")
+    w[::3] = INPLACE_HUGE
+    b[::3] = INPLACE_HUGE if operation == "add" else -INPLACE_HUGE
+    return w, b
+
+
+def _after_product(operation: str, w, b):
+    """Multiply a batch by `w` with the BLAS, as a training loop does, then update `w` in place.
+
+    Args:
+        operation: "add" or "subtract".
+        w: The weights, INPLACE_MATRIX.
+        b: The update, INPLACE_MATRIX.
+
+    Returns:
+        w after the update, and the product, so both are compared.
+    """
+    batch = values("f64", INPLACE_BATCH * w.shape[0], arg="x").reshape(INPLACE_BATCH, w.shape[0])
+    product = batch @ w
+    INPLACE_UFUNCS[operation][1](w, b)
+    return w, product
+
+
+def _matrix_pair() -> tuple:
+    """Build the weights and the update of the gradient-step case."""
+    size = INPLACE_MATRIX[0] * INPLACE_MATRIX[1]
+    return values("f64", size, arg="w").reshape(INPLACE_MATRIX), values("f64", size, arg="b").reshape(INPLACE_MATRIX)
+
+
+def inplace_cases() -> Iterator[Case]:
+    """Yield the cases of float64 adds and subtracts whose output is their first input.
+
+    On ARM64 the binding's loops take a call when the output is the first
+    input, all three operands step by one element and the second input is
+    the output or shares no byte with it: `w += b`, `w -= b`,
+    `np.add(w, b, out=w)`, `w += w`, and an add NumPy makes in place into a
+    temporary. A reduction, an accumulation, a scalar, a strided or
+    byte-swapped operand, and every other element type are NumPy's. On other
+    architectures every call is NumPy's.
+    """
+    for operation in INPLACE_KERNELS:
+        call = partial(_in_place, operation)
+        text = f"w {'+' if operation == 'add' else '-'}= b"
+        plain, positional = judge_cases.classes("f64")
+        for n in INPLACE_SIZES:
+            for cls in (*plain, *positional):
+                yield Case("inplace", f"{text} f64 n={n} w={cls}", partial(_pair, "f64", n, cls, judge_cases.RANDOM),
+                           call, _inplace_expect(operation, n))
+                yield Case("inplace", f"{text} f64 n={n} b={cls}", partial(_pair, "f64", n, judge_cases.RANDOM, cls),
+                           call, _inplace_expect(operation, n))
+            yield Case("inplace", f"{text} f64 n={n} both=signalling and negative NaNs", partial(_nan_pair, n),
+                       call, _inplace_expect(operation, n))
+            for setting in ("raise", "warn", "ignore"):
+                yield Case("inplace", f"np.errstate(all={setting!r}) {text} f64 n={n} overflowing every third",
+                           partial(_overflowing, operation, n), partial(_errstate, setting, operation),
+                           _inplace_expect(operation, n))
+        spellings = (
+            (text, call, TAKES),
+            (f"np.{operation}(w, b, out=w)", partial(_ufunc_out, operation), TAKES),
+            (f"w {text[2:4]} w", partial(_with_itself, operation), TAKES),
+            (f"np.{operation}(b, w, out=w)", partial(_ufunc_out_second, operation), NEVER),
+            (f"np.{operation}(w, b)", partial(_ufunc_new, operation), NEVER),
+            (f"w {text[2:4]} 0.375", partial(_scalar, operation), NEVER),
+            (f"np.{operation}.reduce(w)", partial(_reduce, operation), NEVER),
+            (f"np.{operation}.accumulate(w)", partial(_accumulate, operation), NEVER),
+            (f"w[1:] {text[2:4]} w[:-1]", partial(_shifted, operation), MAYBE),
+            (f"np.{operation}(w[:-1], w[1:], out=w[:-1])", partial(_shifted_back, operation), MAYBE),
+            (f"(w * 1.0) {text[2]} b", partial(_elided, operation), MAYBE),
+            (f"np.{operation}.reduce(rows, axis=0)", partial(_column_sums, operation), MAYBE),
+            (f"rows {text[2:4]} b[:{COLUMNS}]", partial(_broadcast_row, operation), MAYBE),
+        )
+        for dtype in ("f64", *INPLACE_NEIGHBOURS):
+            for n in (0, *LAYOUT_SIZES):
+                for spelling_text, spelling_call, kind in spellings:
+                    for variant in variants_for(dtype, n):
+                        if variant.name in INPLACE_SKIPPED_LAYOUTS:
+                            continue
+                        takes = _inplace_expect(operation, n) if dtype == "f64" else None
+                        expect = None
+                        # A reduction down the rows of a matrix may add each
+                        # row into the result in place, which the loop takes.
+                        if spelling_call.func is _reduce and variant.dims == 2 and takes:
+                            expect = ANY
+                        elif kind != NEVER and takes:
+                            taken = kind == TAKES and variant.name in INPLACE_TAKEN_LAYOUTS
+                            expect = takes if taken else ANY
+                        yield Case("inplace", f"{spelling_text} {dtype} n={n} layout={variant.name}",
+                                   partial(_pair, dtype, n, judge_cases.RANDOM, judge_cases.RANDOM, variant, variant),
+                                   spelling_call, expect)
+        yield Case("inplace", f"x @ w, then {text}, on {INPLACE_MATRIX[0]} x {INPLACE_MATRIX[1]}", _matrix_pair,
+                   partial(_after_product, operation), _inplace_expect(operation, INPLACE_MATRIX[0]))
+        # Large enough for NumPy's elision of temporaries, which may then add
+        # into the temporary in place.
+        yield Case("inplace", f"(w * 1.0) {text[2]} b on {INPLACE_MATRIX[0]} x {INPLACE_MATRIX[1]}", _matrix_pair,
+                   partial(_elided, operation), ANY if ON_ARM64 else None)
 
 
 # Every operation that has a hook, with its exact cases.
@@ -4407,6 +4665,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "round": round_cases,
     "median": median_cases,
     "unique": unique_cases,
+    "inplace": inplace_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the

@@ -28,6 +28,11 @@ conditions: another element type, a strided array, an argument the kernel does
 not implement. It is counted per NumPy call and shown on its first row.
 Both columns count calls as written: np.argmax(m, axis=1) is one call, however
 many rows NumPy splits it into.
+{% set uncounted = report.kernels | selectattr("installed") | selectattr("uncounted") | list %}
+{% if uncounted %}
+It is not counted for {% for kernel in uncounted %}{{ kernel.numpy_call }}{{ " and " if loop.revindex == 2 else (", " if not loop.last else "") }}{% endfor %}, since every add and
+subtract of float64 arrays passes their hook.
+{% endif %}
 {% set builtins = report.kernels | selectattr("builtin") | list %}
 {% if builtins %}
 Not counted on the first line, because they are loops built into hotkernels
