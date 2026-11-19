@@ -1,13 +1,18 @@
-// Method hook: the C function pointer in ndarray's method table.
+// Method hook: the C function pointer in a type's method table.
 //
-// Each method of ndarray is described by a PyMethodDef in a table inside
-// NumPy, and every way of calling the method, including a bound method saved
-// earlier, reads the function pointer from that entry at the time of the
+// Each method of a built-in type is described by a PyMethodDef in a table
+// inside NumPy, and every way of calling the method, including a bound method
+// saved earlier, reads the function pointer from that entry at the time of the
 // call. Changing the pointer hooks the method and leaves `np.ndarray.astype`
 // the same object. NumPy's own functions of the same name call the method, so
 // `np.nonzero(x)` and `np.cumsum(x)` arrive here too. `np.sum(x)` does not:
 // it has its own function hook. `np.argmax(x)` and `np.clip(x, lo, hi)` have
 // one as well, and arrive here only when it passed them on.
+//
+// Most of the hooked methods are ndarray's. One is the ufunc type's:
+// `accumulate`, which every ufunc object shares, so `np.maximum.accumulate(x)`
+// and `np.add.accumulate(x)` reach the same entry and the wrapper tells them
+// apart by `self`.
 //
 // A method is called in one of several conventions, recorded in the entry's
 // flags. A wrapper must have the shape the flags say, so a hook is applied
@@ -15,7 +20,12 @@
 #include "binding.h"
 
 // The methods that are hooked, as indices into `methods`.
-enum { M_ASTYPE, M_SUM, M_NONZERO, M_CUMSUM, M_SEARCHSORTED, M_ARGMAX, M_ARGMIN, M_CLIP, M_COUNT };
+enum { M_ASTYPE, M_SUM, M_NONZERO, M_CUMSUM, M_SEARCHSORTED, M_ARGMAX, M_ARGMIN, M_CLIP, M_ACCUMULATE, M_COUNT };
+
+// The type whose method table holds a hooked method. The ufunc type is reached
+// through NumPy's table of pointers, which is filled only when the module is
+// imported, so a method names its type by this and not by a pointer.
+typedef enum { OWNER_NDARRAY, OWNER_UFUNC } hk_owner;
 
 // A method called with an argument array and keyword names
 // (METH_FASTCALL | METH_KEYWORDS). CPython names this type differently
@@ -25,8 +35,14 @@ typedef PyObject *(*hk_fast_keywords)(PyObject *self, PyObject *const *args, Py_
 
 // One hooked method.
 typedef struct {
-    // Method name on ndarray.
+    // Method name on its type.
     const char *name;
+    // The type whose method it is.
+    hk_owner owner;
+    // Fetches what the wrapper compares its arguments with, before the hook is
+    // first applied. Returns 0, or -1 with an exception set. NULL when the
+    // wrapper needs nothing.
+    int (*prepare)(void);
     // Calling convention the wrapper implements, as PyMethodDef.ml_flags.
     int flags;
     // The binding's function, stored as the generic pointer type.
@@ -52,6 +68,14 @@ static const char *const CUMSUM_PARAMETERS[] = {"axis", "dtype", "out"};
 // Fetched when the hook is applied.
 static PyObject *float32_type;
 static PyObject *float32_descr;
+
+// Fetch the two float32 objects. See hk_method.prepare.
+static int astype_prepare(void) {
+    if (float32_descr != NULL) return 0;
+    float32_type = (PyObject *)&PyFloatArrType_Type;
+    float32_descr = (PyObject *)PyArray_DescrFromType(NPY_FLOAT);
+    return float32_descr == NULL ? -1 : 0;
+}
 
 // True when `dtype`, the argument of astype, names native float32 in one of
 // the usual spellings: the type `np.float32`, its dtype object, or the
@@ -415,44 +439,212 @@ static PyObject *method_clip(PyObject *self, PyObject *const *args, Py_ssize_t n
     return ((hk_fast_keywords)(void (*)(void))methods[M_CLIP].original)(self, args, nargs, kwnames);
 }
 
+// -------------------------------------------------------------- accumulate
+
+// The ufunc objects `np.maximum` and `np.fmax`, the two whose accumulation has
+// a kernel. NumPy keeps one of each, so a call is recognised by comparing
+// `self` with them. Fetched when the hook is first applied, and kept.
+static PyObject *maximum_ufunc;
+static PyObject *fmax_ufunc;
+
+// Fetch np.maximum and np.fmax. See hk_method.prepare.
+static int accumulate_prepare(void) {
+    if (fmax_ufunc != NULL) return 0;
+    PyObject *numpy = PyImport_ImportModule("numpy");
+    if (numpy == NULL) return -1;
+    PyObject *maximum = PyObject_GetAttrString(numpy, "maximum");
+    PyObject *fmax = maximum != NULL ? PyObject_GetAttrString(numpy, "fmax") : NULL;
+    Py_DECREF(numpy);
+    if (fmax == NULL) {
+        Py_XDECREF(maximum);
+        return -1;
+    }
+    maximum_ufunc = maximum;
+    fmax_ufunc = fmax;
+    return 0;
+}
+
+// True when the `axis` argument of an accumulation names the only axis of a
+// one-dimensional array as NumPy's default does: absent, or the Python int 0
+// or -1, which NumPy turns into 0. None, a tuple and NumPy integers are
+// NumPy's to interpret.
+static bool accumulate_axis_is_first(PyObject *axis) {
+    if (axis == NULL) return true;
+    if (!PyLong_CheckExact(axis)) return false;
+    int overflow = 0;
+    const long value = PyLong_AsLongAndOverflow(axis, &overflow);
+    return overflow == 0 && (value == 0 || value == -1);
+}
+
+// `ufunc` is np.maximum or np.fmax: the kernel for its accumulation of
+// `array`, or HK_KERNEL_COUNT when there is none. int64 takes cummax_i64
+// under either ufunc: for integers the two are one function, and NumPy returns
+// int64 for both. float64 takes cumfmax_f64 under np.fmax only. np.maximum
+// on floats propagates NaN, which neither kernel does.
+static hk_kernel accumulate_kernel(PyObject *ufunc, PyObject *array) {
+    if (hk_is_flat_1d(array, NPY_INT64)) return HK_CUMMAX_I64;
+    if (ufunc == fmax_ufunc && hk_is_flat_1d(array, NPY_DOUBLE)) return HK_CUMFMAX_F64;
+    return HK_KERNEL_COUNT;
+}
+
+// True when np.fmax.accumulate of the `n` doubles at `values` is left to
+// NumPy: the array holds a signalling NaN, a negative zero, or NaNs of more
+// than one bit pattern.
+//
+// cumfmax_f64 ignores every NaN; NumPy ignores a quiet one and answers a
+// signalling one with a quiet NaN, through the C library's fmax. The other two
+// are where NumPy's own answer depends on its build: which zero a running
+// maximum of zeros of both signs is, and which NaN an output is while every
+// element so far is NaN. NumPy's x86-64 and ARM64 builds give a different sign
+// for the zero (seen in CI on Apple Silicon), and the kernel reproduces one
+// build. Both conditions are broader than needed, since a negative zero
+// matters only where a zero is the running maximum, and are kept simple.
+//
+// One pass with no branch. A NaN is the one value that differs from itself,
+// and a zero the one that equals 0.0: `nan` and `zero` are all ones for such
+// an element. `set` and `clear` gather the bits set and clear in some NaN,
+// so the NaNs share one pattern exactly when no bit is in both, and one is
+// signalling when the quiet bit is among the clear ones. `zeros` gathers the
+// bits of the zeros, and its sign bit is set when one is negative. The
+// compares are the quiet kind: they raise the invalid-operation flag for a
+// signalling NaN only, whose call is NumPy's. The bits are copied out with
+// memcpy, which the compiler turns into a plain load.
+static bool fmax_accumulate_left_to_numpy(const double *values, size_t n) {
+    // The quiet bit of a NaN, the top bit of the fraction.
+    const uint64_t quiet = 0x0008000000000000ULL;
+    // 64-bit masks, as wide as an element: with bools the compiler leaves the
+    // loop scalar.
+    uint64_t set = 0, clear = 0, zeros = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t bits;
+        memcpy(&bits, &values[i], sizeof bits);
+        const uint64_t nan = values[i] != values[i] ? ~0ULL : 0;
+        const uint64_t zero = values[i] == 0.0 ? ~0ULL : 0;
+        set |= bits & nan;
+        clear |= ~bits & nan;
+        zeros |= bits & zero;
+    }
+    return (clear & quiet) != 0 || (set & clear) != 0 || (zeros >> 63) != 0;
+}
+
+// np.maximum.accumulate(x) or np.fmax.accumulate(x) on a one-dimensional
+// contiguous array with at least one element, `axis` the first, and `dtype`
+// and `out` absent or None. The parameters are NumPy's, which takes all four
+// by position or by keyword. The result is a new array of the input's type
+// and length, so it cannot overlap the input, which both kernels require.
+//
+// A float64 array is read first (fmax_accumulate_left_to_numpy), and one
+// that holds a signalling NaN, a negative zero, or NaNs of several patterns
+// is NumPy's.
+static HK_NOINLINE PyObject *try_accumulate(PyObject *ufunc, PyObject *const *args, Py_ssize_t nargs,
+                                            PyObject *kwnames) {
+    enum { ARRAY, AXIS, DTYPE, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"array", "axis", "dtype", "out"};
+    // The array is nearly always the first positional argument, and its type
+    // decides most calls; it is tested before the arguments are matched.
+    if (nargs >= 1 && accumulate_kernel(ufunc, args[0]) == HK_KERNEL_COUNT) return NULL;
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[ARRAY] == NULL) return NULL;
+    const hk_kernel kernel = accumulate_kernel(ufunc, bound[ARRAY]);
+    if (kernel == HK_KERNEL_COUNT || !accumulate_axis_is_first(bound[AXIS]) || !hk_is_absent(bound[DTYPE]) ||
+        !hk_is_absent(bound[OUT])) {
+        return NULL;
+    }
+    PyArrayObject *x = (PyArrayObject *)bound[ARRAY];
+    npy_intp n = PyArray_SIZE(x);
+    if (n < 1) return NULL;
+    PyObject *result = PyArray_SimpleNew(1, &n, PyArray_TYPE(x));
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    void *out = PyArray_DATA((PyArrayObject *)result);
+    // True when the float64 input is NumPy's and the call is passed on.
+    bool left = false;
+    {
+        HK_BEGIN_NOGIL(n)
+        if (kernel == HK_CUMMAX_I64) {
+            cummax_i64(PyArray_DATA(x), out, (size_t)n);
+        } else {
+            left = fmax_accumulate_left_to_numpy(PyArray_DATA(x), (size_t)n);
+            if (!left) cumfmax_f64(PyArray_DATA(x), out, (size_t)n);
+        }
+        HK_END_NOGIL
+    }
+    if (left) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    hk_take(kernel);
+    return result;
+}
+
+// Every ufunc's accumulate arrives here. Any ufunc but the two with a kernel
+// goes straight on after two pointer comparisons, uncounted: no kernel serves
+// it. A call to one of the two that is not taken is counted.
+static PyObject *method_accumulate(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    if (self == maximum_ufunc || self == fmax_ufunc) {
+        PyObject *result = try_accumulate(self, args, nargs, kwnames);
+        if (result != NULL) return result;
+        hk_pass(HK_OP_ACCUMULATE);
+    }
+    return ((hk_fast_keywords)(void (*)(void))methods[M_ACCUMULATE].original)(self, args, nargs, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
+// Shorthand for one entry of `methods`: the method `name` of type `owner`,
+// called in convention `flags`, served by `wrapper` after `prepare`.
+#define HK_METHOD(name, owner, prepare, flags, wrapper) \
+    {name, owner, prepare, flags, (PyCFunction)(void (*)(void))(wrapper), NULL, NULL}
+
 static hk_method methods[M_COUNT] = {
-    [M_ASTYPE] = {"astype", METH_FASTCALL | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_astype, NULL, NULL},
-    [M_SUM] = {"sum", METH_FASTCALL | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_sum, NULL, NULL},
-    [M_NONZERO] = {"nonzero", METH_VARARGS, method_nonzero, NULL, NULL},
-    [M_CUMSUM] = {"cumsum", METH_VARARGS | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_cumsum, NULL, NULL},
-    [M_SEARCHSORTED] = {"searchsorted", METH_FASTCALL | METH_KEYWORDS,
-                        (PyCFunction)(void (*)(void))method_searchsorted, NULL, NULL},
-    [M_ARGMAX] = {"argmax", METH_FASTCALL | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_argmax, NULL, NULL},
-    [M_ARGMIN] = {"argmin", METH_FASTCALL | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_argmin, NULL, NULL},
-    [M_CLIP] = {"clip", METH_FASTCALL | METH_KEYWORDS, (PyCFunction)(void (*)(void))method_clip, NULL, NULL},
+    [M_ASTYPE] = HK_METHOD("astype", OWNER_NDARRAY, astype_prepare, METH_FASTCALL | METH_KEYWORDS, method_astype),
+    [M_SUM] = HK_METHOD("sum", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_sum),
+    [M_NONZERO] = HK_METHOD("nonzero", OWNER_NDARRAY, NULL, METH_VARARGS, method_nonzero),
+    [M_CUMSUM] = HK_METHOD("cumsum", OWNER_NDARRAY, NULL, METH_VARARGS | METH_KEYWORDS, method_cumsum),
+    [M_SEARCHSORTED] = HK_METHOD("searchsorted", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS,
+                                 method_searchsorted),
+    [M_ARGMAX] = HK_METHOD("argmax", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_argmax),
+    [M_ARGMIN] = HK_METHOD("argmin", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_argmin),
+    [M_CLIP] = HK_METHOD("clip", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_clip),
+    [M_ACCUMULATE] = HK_METHOD("accumulate", OWNER_UFUNC, accumulate_prepare, METH_FASTCALL | METH_KEYWORDS,
+                               method_accumulate),
 };
+
+// The type object of `owner`, and its name for messages.
+static PyTypeObject *owner_type(hk_owner owner) {
+    return owner == OWNER_UFUNC ? &PyUFunc_Type : &PyArray_Type;
+}
+
+static const char *owner_name(hk_owner owner) {
+    return owner == OWNER_UFUNC ? "ufunc" : "ndarray";
+}
 
 // Point the method at the binding. See hk_hook.apply.
 static int method_apply(int index) {
-    if (float32_descr == NULL) {
-        float32_type = (PyObject *)&PyFloatArrType_Type;
-        float32_descr = (PyObject *)PyArray_DescrFromType(NPY_FLOAT);
-    }
-    PyObject *descriptor = PyObject_GetAttrString((PyObject *)&PyArray_Type, methods[index].name);
+    hk_method *method = &methods[index];
+    if (method->prepare != NULL && method->prepare() != 0) return -1;
+    const char *owner = owner_name(method->owner);
+    PyObject *descriptor = PyObject_GetAttrString((PyObject *)owner_type(method->owner), method->name);
     if (descriptor == NULL) return -1;
     if (!Py_IS_TYPE(descriptor, &PyMethodDescr_Type)) {
-        PyErr_Format(PyExc_TypeError, "ndarray.%s is not a built-in method", methods[index].name);
+        PyErr_Format(PyExc_TypeError, "%s.%s is not a built-in method", owner, method->name);
         Py_DECREF(descriptor);
         return -1;
     }
     // The table entry belongs to NumPy and outlives the descriptor object.
     PyMethodDef *definition = ((PyMethodDescrObject *)descriptor)->d_method;
     Py_DECREF(descriptor);
-    if (definition->ml_flags != methods[index].flags) {
-        PyErr_Format(PyExc_TypeError, "ndarray.%s is called with convention %d, and the hook was written for %d",
-                     methods[index].name, definition->ml_flags, methods[index].flags);
+    if (definition->ml_flags != method->flags) {
+        PyErr_Format(PyExc_TypeError, "%s.%s is called with convention %d, and the hook was written for %d",
+                     owner, method->name, definition->ml_flags, method->flags);
         return -1;
     }
-    methods[index].definition = definition;
-    methods[index].original = definition->ml_meth;
-    definition->ml_meth = methods[index].wrapper;
+    method->definition = definition;
+    method->original = definition->ml_meth;
+    definition->ml_meth = method->wrapper;
     return 0;
 }
 
@@ -474,5 +666,6 @@ hk_hook hk_method_hooks[] = {
     {"method.argmax", method_apply, method_remove, M_ARGMAX, false},
     {"method.argmin", method_apply, method_remove, M_ARGMIN, false},
     {"method.clip", method_apply, method_remove, M_CLIP, false},
+    {"ufunc.accumulate", method_apply, method_remove, M_ACCUMULATE, false},
     {NULL, NULL, NULL, 0, false},
 };

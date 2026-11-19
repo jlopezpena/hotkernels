@@ -15,7 +15,7 @@ from __future__ import annotations
 import atexit
 import itertools
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Callable, Iterator
@@ -1890,6 +1890,239 @@ def where_cases() -> Iterator[Case]:
                            partial(_built_each, late, floats, others), _where, None)
 
 
+# ------------------------------------------------------------- accumulate
+
+# Bit patterns of the short float64 cases of the running maximum. NumPy
+# computes an accumulation of two elements with its operands the other way
+# round from a longer one, which shows only where two elements compare equal
+# or are both NaN: two zeros of opposite sign, and two NaNs with different
+# payloads. Each pattern is also run with a third element. Under np.fmax the
+# binding leaves an array with a negative zero or NaNs of two patterns to
+# NumPy, whose answer there depends on its build, so those patterns check
+# that guard and the others the kernel.
+_POS_ZERO = 0x0000000000000000
+_NEG_ZERO = 0x8000000000000000
+_QUIET_NAN = 0x7FF8000000000000
+_PAYLOAD_NAN = 0xFFF8000000000123
+_OTHER_NAN = 0x7FF80000000ABCDE
+_ONE = 0x3FF0000000000000
+_NEG_INF = 0xFFF0000000000000
+# The quiet bit of a float64 NaN, the top bit of the fraction.
+_QUIET_BIT = 0x0008000000000000
+_SHORT_FLOATS: tuple[tuple[int, ...], ...] = (
+    (_POS_ZERO, _NEG_ZERO), (_NEG_ZERO, _POS_ZERO), (_NEG_ZERO, _NEG_ZERO), (_POS_ZERO, _POS_ZERO),
+    (_QUIET_NAN, _PAYLOAD_NAN), (_PAYLOAD_NAN, _QUIET_NAN), (_QUIET_NAN, _ONE), (_ONE, _QUIET_NAN),
+    (_PAYLOAD_NAN, _NEG_ZERO), (_NEG_INF, _QUIET_NAN), (_ONE, _ONE),
+    (_POS_ZERO, _NEG_ZERO, _POS_ZERO), (_NEG_ZERO, _POS_ZERO, _NEG_ZERO), (_NEG_ZERO, _POS_ZERO, _POS_ZERO),
+    (_QUIET_NAN, _PAYLOAD_NAN, _OTHER_NAN), (_PAYLOAD_NAN, _NEG_ZERO, _POS_ZERO), (_QUIET_NAN, _ONE, _OTHER_NAN),
+)
+# The int64 values of the short cases: two or three elements in each order,
+# with the extremes of the type.
+_INT64_MIN, _INT64_MAX = int(np.iinfo(np.int64).min), int(np.iinfo(np.int64).max)
+_SHORT_INTS: tuple[tuple[int, ...], ...] = (
+    (5, 3), (3, 5), (5, 5), (_INT64_MIN, _INT64_MAX), (_INT64_MAX, _INT64_MIN), (-1, 0, -1), (_INT64_MAX, -1, 0),
+)
+# Element count of the case whose only signalling NaN is its last element:
+# above the size from which the binding releases the interpreter lock.
+ACCUMULATE_LATE_N = 20000
+
+
+def _maximum_accumulate(x):
+    """Return `np.maximum.accumulate(x)`."""
+    return np.maximum.accumulate(x)
+
+
+def _fmax_accumulate(x):
+    """Return `np.fmax.accumulate(x)`."""
+    return np.fmax.accumulate(x)
+
+
+def _accumulate_spellings(ufunc: np.ufunc) -> tuple[Spelling, ...]:
+    """Return the ways of writing an accumulation with `ufunc`, np.maximum or np.fmax.
+
+    The kernels take a one-dimensional array with `axis` absent, 0 or -1 and
+    no `dtype` or `out`, however the arguments are passed. A contiguous array
+    of two dimensions is NumPy's, even with the default axis.
+
+    Args:
+        ufunc: `np.maximum` or `np.fmax`.
+
+    Returns:
+        The spellings, the ones that take a kernel first.
+    """
+    name = f"np.{ufunc.__name__}.accumulate"
+    plain = _maximum_accumulate if ufunc is np.maximum else _fmax_accumulate
+    return (
+        Spelling(f"{name}(x)", plain, any_shape=False),
+        Spelling(f"{name}(x, 0)", lambda x: ufunc.accumulate(x, 0), any_shape=False, sweep_values=False),
+        Spelling(f"{name}(x, axis=-1)", lambda x: ufunc.accumulate(x, axis=-1), any_shape=False,
+                 sweep_values=False),
+        Spelling(f"{name}(array=x)", lambda x: ufunc.accumulate(array=x), any_shape=False, sweep_values=False),
+        Spelling(f"{name}(x, 0, None, None)", lambda x: ufunc.accumulate(x, 0, None, None), any_shape=False,
+                 sweep_values=False),
+        Spelling(f"{name}(x, axis=0, dtype=None, out=None)",
+                 lambda x: ufunc.accumulate(x, axis=0, dtype=None, out=None), any_shape=False, sweep_values=False),
+        Spelling(f"{name}(x, axis=None)", lambda x: ufunc.accumulate(x, axis=None), NEVER),
+        Spelling(f"{name}(x, axis=1)", lambda x: ufunc.accumulate(x, axis=1), NEVER),
+        Spelling(f"{name}(x, axis=np.int64(0))", lambda x: ufunc.accumulate(x, axis=np.int64(0)), NEVER),
+        Spelling(f"{name}(x, dtype=x.dtype)", lambda x: ufunc.accumulate(x, dtype=np.asarray(x).dtype), NEVER),
+        Spelling(f"{name}(x, out=o)",
+                 lambda x: ufunc.accumulate(x, out=np.empty(np.shape(x), np.asarray(x).dtype)), NEVER),
+    )
+
+
+# Accumulations through the same hook that no kernel serves.
+_OTHER_ACCUMULATIONS = (
+    Spelling("np.minimum.accumulate(x)", np.minimum.accumulate, NEVER),
+    Spelling("np.add.accumulate(x)", np.add.accumulate, NEVER),
+    Spelling("np.fmin.accumulate(x)", np.fmin.accumulate, NEVER),
+)
+
+
+def _from_bits(patterns: tuple[int, ...]) -> np.ndarray:
+    """Return a float64 array holding exactly the given bit patterns."""
+    return np.array(patterns, np.uint64).view(np.float64)
+
+
+def _quiet_nans_only(n: int) -> np.ndarray:
+    """Return the float64 array of `unusual_nans` with each signalling NaN replaced.
+
+    It is replaced by the negative quiet NaN with a payload that the array
+    already holds, so its NaNs all have that one pattern and the kernel takes
+    it.
+    """
+    x = unusual_nans("f64", n)
+    bits = x.view(np.uint64)
+    bits[::_SIGNALLING_EVERY] = _UNUSUAL_NANS[8][2]
+    return x
+
+
+def _cumfmax_takes(x: np.ndarray) -> bool:
+    """Say whether the binding gives `np.fmax.accumulate(x)` to cumfmax_f64, for a plain float64 x.
+
+    It does not when x holds a signalling NaN, which NumPy answers with a
+    quiet NaN, nor where NumPy's own answer depends on its build: when x
+    holds a negative zero (the sign of a zero running maximum differs between
+    NumPy's x86-64 and ARM64 builds), or NaNs of more than one bit pattern.
+
+    Args:
+        x: A one-dimensional contiguous float64 array.
+
+    Returns:
+        True when the kernel takes the call.
+    """
+    bits = np.asarray(x).view(np.uint64)
+    nans = bits[np.isnan(x)]
+    signalling = bool(np.any((nans & _QUIET_BIT) == 0))
+    return not (signalling or np.any(bits == _NEG_ZERO) or np.unique(nans).size > 1)
+
+
+def _with_cumfmax_expectation(case: Case) -> Case:
+    """Return `case`, expecting NumPy instead of cumfmax_f64 where the binding leaves its array to NumPy.
+
+    Args:
+        case: A case of np.fmax.accumulate; only one that expects cumfmax_f64
+            is changed, and its array is then plain.
+
+    Returns:
+        The case with its expectation worked out from its array.
+    """
+    if case.expect != "cumfmax_f64":
+        return case
+    (x,) = case.make()
+    return case if _cumfmax_takes(x) else replace(case, expect=None)
+
+
+def _with_bits_at(n: int, patterns: tuple[int, ...]) -> np.ndarray:
+    """Return random float64 values whose last elements have the given bit patterns.
+
+    Args:
+        n: Element count, at least len(patterns).
+        patterns: Bit patterns of the last len(patterns) elements.
+
+    Returns:
+        A contiguous float64 array.
+    """
+    x = values("f64", n)
+    x.view(np.uint64)[n - len(patterns):] = patterns
+    return x
+
+
+def _accumulate_guard_cases() -> Iterator[Case]:
+    """Yield the cases of the two guards on np.fmax.accumulate that keep build-dependent answers with NumPy.
+
+    Each guard is shown taken and not taken: a negative zero anywhere sends
+    the call to NumPy and a positive zero does not; NaNs of two patterns send
+    it and NaNs of one pattern do not. The last element alone is the one that
+    decides, at a size from which the binding releases the interpreter lock.
+    """
+    n = ACCUMULATE_LATE_N
+    for text, patterns, expect in (
+        ("negative zero last only", (_NEG_ZERO,), None),
+        ("positive zero last only", (_POS_ZERO,), "cumfmax_f64"),
+        ("zeros of both signs last", (_POS_ZERO, _NEG_ZERO), None),
+        ("NaNs of two patterns last", (_QUIET_NAN, _PAYLOAD_NAN), None),
+        ("NaNs of one pattern last", (_PAYLOAD_NAN, _PAYLOAD_NAN), "cumfmax_f64"),
+    ):
+        yield Case("accumulate", f"np.fmax.accumulate(x) f64 n={n} x={text}",
+                   partial(_made, partial(_with_bits_at, n, patterns)), _fmax_accumulate, expect)
+    for text, patterns, expect in (
+        ("all NaN of one pattern", (_PAYLOAD_NAN,) * 9, "cumfmax_f64"),
+        ("all NaN of two patterns", (_QUIET_NAN,) * 8 + (_OTHER_NAN,), None),
+        ("zeros, all positive", (_POS_ZERO,) * 9, "cumfmax_f64"),
+        ("zeros, one negative", (_POS_ZERO,) * 8 + (_NEG_ZERO,), None),
+    ):
+        yield Case("accumulate", f"np.fmax.accumulate(x) f64 x={text}",
+                   partial(_made, partial(_from_bits, patterns)), _fmax_accumulate, expect)
+
+
+def _late_signalling_nan(n: int) -> np.ndarray:
+    """Return random float64 values whose only signalling NaN is the last element."""
+    x = values("f64", n)
+    x.view(np.uint64)[-1] = _UNUSUAL_NANS[8][1]
+    return x
+
+
+def accumulate_cases() -> Iterator[Case]:
+    """Yield the cases of `np.maximum.accumulate` and `np.fmax.accumulate`.
+
+    Both ufuncs take cummax_i64 on int64. np.fmax takes cumfmax_f64 on
+    float64 unless the array holds a signalling NaN, a negative zero or NaNs
+    of more than one pattern (`_cumfmax_takes`); np.maximum on float64
+    propagates NaN and is NumPy's. Other ufuncs' accumulations pass through
+    the hook uncounted.
+    """
+    yield from unary_cases("accumulate", {"i64": "cummax_i64"}, ("f64", "f32", "i32", "u64"),
+                           (*_accumulate_spellings(np.maximum), *_OTHER_ACCUMULATIONS), empty_takes=False)
+    for case in unary_cases("accumulate", {"i64": "cummax_i64", "f64": "cumfmax_f64"}, ("f32", "i32", "u64"),
+                            _accumulate_spellings(np.fmax), empty_takes=False):
+        yield _with_cumfmax_expectation(case)
+    # np.maximum on float64 over every value class, NaNs included: NumPy's.
+    for n, _, label, maker in value_arrays("f64", FEW_SIZES):
+        yield Case("accumulate", f"np.maximum.accumulate(x) f64 {label}", partial(_made, maker),
+                   _maximum_accumulate, None)
+    for patterns in _SHORT_FLOATS:
+        text = " ".join(f"{p:#x}" for p in patterns)
+        expect = "cumfmax_f64" if _cumfmax_takes(_from_bits(patterns)) else None
+        yield Case("accumulate", f"np.fmax.accumulate(x) f64 x=[{text}]", partial(_made, partial(_from_bits, patterns)),
+                   _fmax_accumulate, expect)
+        yield Case("accumulate", f"np.maximum.accumulate(x) f64 x=[{text}]",
+                   partial(_made, partial(_from_bits, patterns)), _maximum_accumulate, None)
+    for numbers in _SHORT_INTS:
+        for text, call in (("np.maximum.accumulate(x)", _maximum_accumulate), ("np.fmax.accumulate(x)", _fmax_accumulate)):
+            yield Case("accumulate", f"{text} i64 x={list(numbers)}",
+                       partial(_made, partial(np.array, numbers, np.int64)), call, "cummax_i64")
+    # A signalling NaN is NumPy's: it answers with a quiet NaN where the kernel would skip it.
+    for n in VALUE_SIZES:
+        yield Case("accumulate", f"np.fmax.accumulate(x) f64 n={n} x=signalling and negative NaNs",
+                   partial(_made, partial(unusual_nans, "f64", n)), _fmax_accumulate, None)
+        yield Case("accumulate", f"np.fmax.accumulate(x) f64 n={n} x=negative NaNs with a payload",
+                   partial(_made, partial(_quiet_nans_only, n)), _fmax_accumulate, "cumfmax_f64")
+    yield Case("accumulate", f"np.fmax.accumulate(x) f64 n={ACCUMULATE_LATE_N} x=signalling NaN last only",
+               partial(_made, partial(_late_signalling_nan, ACCUMULATE_LATE_N)), _fmax_accumulate, None)
+    yield from _accumulate_guard_cases()
+
+
 # Every operation that has a hook, with its exact cases.
 OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "argmax": partial(argext_cases, "argmax"),
@@ -1908,6 +2141,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "searchsorted": searchsorted_cases,
     "interp": interp_cases,
     "where": where_cases,
+    "accumulate": accumulate_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the
