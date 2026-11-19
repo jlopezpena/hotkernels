@@ -47,6 +47,10 @@ PROBE_BYTE = 7
 # Value the masked-assignment probe writes.
 PROBE_FILL = 2.5
 
+# Length of the runs the reduceat probe cuts its array into: the length the
+# kernel was timed for.
+PROBE_RUN = 16
+
 # Element count of the sorted array the search probes look in. It differs
 # from PROBE_N so that a kernel which confused its two lengths would fail.
 PROBE_TABLE_N = 37
@@ -332,6 +336,26 @@ def _cumfmax() -> bool:
     return result.dtype == np.float64 and result.tolist() == _running_max(values)
 
 
+def _fmax_reduceat() -> bool:
+    """Probe the ufunc method hook: `np.fmax.reduceat(x, starts)` on float64, in runs of PROBE_RUN.
+
+    The values are those of the running-maximum probes, with a NaN at every
+    PROBE_STRIDE-th position; every run holds numbers, so no result is a NaN.
+    The last start is repeated, which gives the first of the two the single
+    element at that start, as NumPy does when a start is not below the next.
+    A kernel that let a NaN through, or reduced the wrong elements, fails.
+    """
+    values = _running_max_probe()
+    for i in range(PROBE_STRIDE, PROBE_N, PROBE_STRIDE):
+        values[i] = float("nan")
+    starts = list(range(0, PROBE_N, PROBE_RUN))
+    starts.insert(-1, starts[-1])
+    ends = [*starts[1:], PROBE_N]
+    expected = [max(v for v in values[start:max(end, start + 1)] if v == v) for start, end in zip(starts, ends)]
+    result = np.fmax.reduceat(np.array(values, np.float64), np.array(starts, np.intp))
+    return result.dtype == np.float64 and result.tolist() == expected
+
+
 def _astype() -> bool:
     """Probe the method hook: `x.astype(np.float32)` on bytes."""
     result = np.full(PROBE_N, PROBE_BYTE, np.uint8).astype(np.float32)
@@ -476,6 +500,7 @@ HOOKS: tuple[Hook, ...] = (
         Probe("cummax_i64", partial(_cummax, np.fmax)),
         Probe("cumfmax_f64", _cumfmax),
     )),
+    Hook("ufunc.reduceat", METHOD, (Probe("fmax_reduce_f64", _fmax_reduceat),)),
     Hook("index.get", INDEXING, (
         Probe("compress_f32", partial(_compress, np.float32)),
         Probe("compress_f64", partial(_compress, np.float64)),
@@ -519,4 +544,5 @@ KERNELS: tuple[KernelInfo, ...] = (
     # np.maximum.accumulate does not fit the report's column of 19 characters.
     KernelInfo("cummax_i64", "maximum.accumulate", "int64", "accumulate", ("ufunc.accumulate",)),
     KernelInfo("cumfmax_f64", "fmax.accumulate", "float64", "accumulate", ("ufunc.accumulate",)),
+    KernelInfo("fmax_reduce_f64", "fmax.reduceat", "float64", "reduceat", ("ufunc.reduceat",)),
 )

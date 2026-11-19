@@ -44,7 +44,7 @@ typedef enum {
     HK_CAST_U8_F32, HK_SUM_U8, HK_COUNT_NONZERO_I64, HK_COUNT_NONZERO_F64,
     HK_HISTOGRAM_F64, HK_BINCOUNT_U8, HK_ISIN_I64,
     HK_SEARCHSORTED_F64, HK_SEARCHSORTED_RIGHT_F64, HK_INTERP_F64,
-    HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64,
+    HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64, HK_FMAX_REDUCE_F64,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -55,7 +55,7 @@ typedef enum {
     HK_OP_ARGMAX, HK_OP_ARGMIN, HK_OP_CLIP, HK_OP_COMPRESS, HK_OP_MASKFILL,
     HK_OP_NONZERO, HK_OP_CUMSUM, HK_OP_ASTYPE, HK_OP_SUM, HK_OP_COUNT_NONZERO,
     HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN, HK_OP_SEARCHSORTED, HK_OP_INTERP,
-    HK_OP_WHERE, HK_OP_ACCUMULATE,
+    HK_OP_WHERE, HK_OP_ACCUMULATE, HK_OP_REDUCEAT,
     HK_OPERATION_COUNT
 } hk_operation;
 
@@ -205,6 +205,61 @@ static inline bool hk_has_signalling_nan(const double *values, size_t n) {
         seen |= ~offset & (offset - size);
     }
     return (seen >> 63) != 0;
+}
+
+// What hk_survey_doubles found in an array of doubles.
+typedef struct {
+    // Some element is a signalling NaN.
+    bool signalling;
+    // Some element is a negative zero.
+    bool negative_zero;
+    // The NaNs do not all have the same bit pattern. False when there is no
+    // NaN or only one pattern of NaN.
+    bool mixed_nans;
+} hk_double_survey;
+
+// One pass over the `n` doubles at `values` for the three things a
+// NaN-ignoring maximum may get differently from NumPy: a signalling NaN (as
+// hk_has_signalling_nan, by the same test), a negative zero, and NaNs of more
+// than one bit pattern. Like that function it has no comparison and no
+// branch, so the compiler makes vector code of it with SSE2.
+//
+// - A NaN is a pattern whose magnitude is above that of infinity. `INF -
+//   magnitude` is then negative, so its top bit is set exactly for a NaN, and
+//   shifted down and negated it is a mask of all ones for a NaN, zeros
+//   otherwise.
+// - The NaNs all have one pattern exactly when the OR of their patterns
+//   equals their AND. The other elements are masked out of both: they add
+//   nothing to the OR and all ones to the AND. A NaN's pattern is never zero,
+//   so an OR of zero means there was no NaN.
+// - `v`, the pattern with its sign bit flipped, is zero exactly for a
+//   negative zero, and the top bit of `(v - 1) & ~v` is set exactly when `v`
+//   is zero: v - 1 has it set only for v = 0 or v above 2^63, and ~v has it
+//   clear for the latter.
+static inline hk_double_survey hk_survey_doubles(const double *values, size_t n) {
+    // Clears the sign bit, and is the sign bit.
+    const uint64_t magnitude = 0x7fffffffffffffffULL, sign = 0x8000000000000000ULL;
+    // The pattern of infinity, below which a magnitude is not a NaN.
+    const uint64_t infinity = 0x7ff0000000000000ULL;
+    // The lowest signalling NaN, and the number of patterns in the range.
+    const uint64_t lowest = 0x7ff0000000000001ULL, size = 0x7ff8000000000000ULL - lowest;
+    uint64_t signalling = 0, negative_zero = 0, nan_or = 0, nan_and = ~0ULL;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t bits;
+        memcpy(&bits, &values[i], sizeof bits);
+        const uint64_t offset = (bits & magnitude) - lowest;
+        signalling |= ~offset & (offset - size);
+        const uint64_t nan = 0 - ((infinity - (bits & magnitude)) >> 63);
+        nan_or |= bits & nan;
+        nan_and &= bits | ~nan;
+        const uint64_t flipped = bits ^ sign;
+        negative_zero |= (flipped - 1) & ~flipped;
+    }
+    return (hk_double_survey){
+        .signalling = (signalling >> 63) != 0,
+        .negative_zero = (negative_zero >> 63) != 0,
+        .mixed_nans = nan_or != 0 && nan_or != nan_and,
+    };
 }
 
 // Convert a Python float or a Python int to a double, as NumPy does when such

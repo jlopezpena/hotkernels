@@ -13,6 +13,8 @@ on. Scalar arguments come from each kernel's own spec.
 from __future__ import annotations
 
 import atexit
+import ctypes
+import ctypes.util
 import itertools
 import tempfile
 from dataclasses import dataclass
@@ -2031,6 +2033,327 @@ def accumulate_cases() -> Iterator[Case]:
                    partial(_made, partial(_quiet_nans_only, n)), _fmax_accumulate, "cumfmax_f64")
     yield Case("accumulate", f"np.fmax.accumulate(x) f64 n={ACCUMULATE_LATE_N} x=signalling NaN last only",
                partial(_made, partial(_late_signalling_nan, ACCUMULATE_LATE_N)), _fmax_accumulate, None)
+    # The kernel's vmaxpd sets the invalid flag for a NaN; NumPy's loop leaves it clear.
+    for n in FEW_SIZES:
+        yield Case("accumulate", f"np.fmax.accumulate(x) f64 n={n} x=nan_some invalid flag after",
+                   partial(_made, partial(values, "f64", n, "nan_some")),
+                   partial(_invalid_flag_after, _fmax_accumulate), "cumfmax_f64")
+
+
+# ------------------------------------------------- floating-point status flags
+
+# The C library, whose fenv functions read and clear the processor's
+# floating-point status flags. Found by name, so that it is glibc's libm on
+# Linux and libSystem's on macOS.
+_LIBM = ctypes.CDLL(ctypes.util.find_library("m"))
+# The invalid-operation flag of fenv.h. Its value is 1 both on x86-64 Linux and
+# on ARM64 macOS.
+_FE_INVALID = 1
+
+
+def _invalid_flag_after(call: Callable[..., object], *arguments: object) -> tuple:
+    """Make a call with the invalid-operation flag cleared, and say whether the call left it set.
+
+    NumPy clears the flag after its own loops, so a caller that reads the
+    flags afterwards, as C code beside NumPy can, finds it clear. A kernel
+    whose instructions set it for a NaN operand must leave it clear too.
+
+    Args:
+        call: Makes the call on the arguments.
+        arguments: The call's arguments.
+
+    Returns:
+        (the call's result, whether the invalid flag was set afterwards).
+    """
+    _LIBM.feclearexcept(_FE_INVALID)
+    result = call(*arguments)
+    return result, bool(_LIBM.fetestexcept(_FE_INVALID))
+
+
+# ---------------------------------------------------------------- reduceat
+
+# Run lengths of the regular starts of np.fmax.reduceat: runs of one element,
+# which the binding copies, the shortest runs the kernel is called for, the
+# length it was timed for, and a long one.
+_REDUCEAT_RUNS = (1, 2, 3, 16, 100)
+# Run length of the starts in the sweep over every value class, the layouts
+# and the spellings.
+_REDUCEAT_RUN = 16
+# One start in this many, on average, in the irregular starts.
+_REDUCEAT_SPARSE = 8
+# Every how many elements the starts with one repeated start are placed.
+_REDUCEAT_REPEAT_STEP = 3
+# Bit patterns of float64 values, for the arrays built to hit the binding's
+# guards: the quiet bit, and the sign bit with the magnitude.
+_QUIET_BIT = 0x0008000000000000
+_MAGNITUDE = 0x7FFFFFFFFFFFFFFF
+# Element count of the arrays built to hit the binding's guards: ten groups
+# of four.
+_REDUCEAT_GUARD_N = 40
+# Expectation of a reduceat case that `_reduceat_expect` works out.
+_WORKED_OUT = "worked out"
+# The two-dimensional layout, whose rows the default axis reduces.
+_ROWS = next(variant for variant in VARIANTS if variant.name == "rows")
+
+
+def _fmax_reduceat(x, starts):
+    """Return `np.fmax.reduceat(x, starts)`."""
+    return np.fmax.reduceat(x, starts)
+
+
+def _regular_starts(run: int, n: int) -> np.ndarray:
+    """Return the int64 starts of runs of `run` elements over `n`, from 0."""
+    return np.arange(0, n, run, dtype=np.int64)
+
+
+def _irregular_starts(n: int) -> np.ndarray:
+    """Return increasing int64 starts at random positions of `n` elements, not always including 0."""
+    rng = np.random.default_rng([SEED, n])
+    return np.unique(rng.integers(0, n, max(1, n // _REDUCEAT_SPARSE))).astype(np.int64)
+
+
+def _repeated_starts(n: int) -> np.ndarray:
+    """Return regular int64 starts with the middle one given twice, so that the first of the two is one element."""
+    starts = _regular_starts(_REDUCEAT_REPEAT_STEP, n)
+    middle = len(starts) // 2
+    return np.insert(starts, middle, starts[middle])
+
+
+def _decreasing_starts(n: int) -> np.ndarray:
+    """Return int64 starts that go back twice, so that two runs are one element each."""
+    return np.array([0, n // 2, n // 4, 3 * n // 4, n - 1], np.int64)
+
+
+def _last_start(n: int) -> np.ndarray:
+    """Return the regular starts with n - 1 added as the last: a last run of one element."""
+    return np.append(_regular_starts(_REDUCEAT_RUN, n), np.int64(n - 1))
+
+
+def _fixed_starts(starts: tuple[int, ...]) -> np.ndarray:
+    """Return the given starts as an int64 array."""
+    return np.array(starts, np.int64)
+
+
+# The starts that are in range for any n of at least one: (text, maker of n).
+_REDUCEAT_STARTS: tuple[tuple[str, Callable[[int], object]], ...] = (
+    *((f"runs of {run}", partial(_regular_starts, run)) for run in _REDUCEAT_RUNS),
+    ("irregular", _irregular_starts),
+    ("[0]", lambda n: _fixed_starts((0,))),
+    ("[n // 2]", lambda n: _fixed_starts((n // 2,))),
+    ("one repeated", _repeated_starts),
+    ("decreasing", _decreasing_starts),
+    ("last n - 1", _last_start),
+)
+
+# Starts that the binding leaves to NumPy whatever the array: out of range
+# (NumPy raises IndexError), empty, indices of another type, which NumPy
+# converts, and a list.
+_REDUCEAT_FOREIGN_STARTS: tuple[tuple[str, Callable[[int], object]], ...] = (
+    ("[0, n]", lambda n: _fixed_starts((0, n))),
+    ("[0, -1]", lambda n: _fixed_starts((0, -1))),
+    ("[n]", lambda n: _fixed_starts((n,))),
+    ("empty", lambda n: np.empty(0, np.int64)),
+    ("int32", lambda n: _regular_starts(_REDUCEAT_RUN, n).astype(np.int32)),
+    ("list", lambda n: _regular_starts(_REDUCEAT_RUN, n).tolist()),
+)
+
+
+def _reduceat_takes(x: np.ndarray, starts: np.ndarray) -> bool:
+    """Say whether the binding takes `np.fmax.reduceat(x, starts)` for a plain float64 x and int64 starts.
+
+    It is the binding's rule written again in NumPy, so that the sweep over
+    the value classes checks both ways of every guard: no index outside
+    [0, n); no signalling NaN; and the call is left to NumPy when the array
+    holds a negative zero and a result is a zero, or holds NaNs of more than
+    one bit pattern and a result is a NaN.
+
+    Args:
+        x: The array, contiguous float64, one-dimensional.
+        starts: The starts, contiguous int64, one-dimensional.
+
+    Returns:
+        True when the kernel must take the call.
+    """
+    n = len(x)
+    if n == 0 or len(starts) == 0 or starts.min() < 0 or starts.max() >= n:
+        return False
+    bits = x.view(np.uint64)
+    nan = (bits & np.uint64(_MAGNITUDE)) > np.uint64(_NEG_INF & _MAGNITUDE)
+    if (nan & ((bits & np.uint64(_QUIET_BIT)) == 0)).any():
+        return False
+    # The values of the results do not depend on which bits a run returns,
+    # so NumPy's own call says which are zeros and NaNs.
+    result = np.fmax.reduceat(x, starts)
+    if (bits == np.uint64(_NEG_ZERO)).any() and (result == 0).any():
+        return False
+    return not (len(np.unique(bits[nan])) > 1 and np.isnan(result).any())
+
+
+def _reduceat_expect(x_maker: Callable[[], np.ndarray], starts_maker: Callable[[], np.ndarray]) -> str | None:
+    """Return the kernel for a plain call built by the two makers, or None when the call is NumPy's."""
+    return "fmax_reduce_f64" if _reduceat_takes(x_maker(), starts_maker()) else None
+
+
+def _reduceat_case(label: str, x_maker: Callable[[], object], starts_maker: Callable[[], object],
+                   call: Callable = _fmax_reduceat, expect: str | None = _WORKED_OUT) -> Case:
+    """Build one reduceat case.
+
+    Args:
+        label: What the case is, after the call's text.
+        x_maker: Builds the array.
+        starts_maker: Builds the starts.
+        call: Makes the call on the array and the starts.
+        expect: The expectation. _WORKED_OUT, the default, has
+            `_reduceat_expect` work it out for a plain call.
+
+    Returns:
+        The case.
+    """
+    if expect == _WORKED_OUT:
+        expect = _reduceat_expect(x_maker, starts_maker)
+    return Case("reduceat", label, partial(_built_each, x_maker, starts_maker), call, expect)
+
+
+def _float_bits(*patterns: int) -> Callable[[], np.ndarray]:
+    """Return a maker of the float64 array holding exactly the given bit patterns."""
+    return partial(_from_bits, tuple(patterns))
+
+
+def _reduceat_guard_cases() -> Iterator[Case]:
+    """Yield the cases built to hit the guards, each with its expectation stated, not worked out.
+
+    The array is ten groups of four: a negative zero, a positive zero and
+    negative values, or NaNs of two patterns, with the runs placed so that a
+    run's result is or is not the ambiguous value.
+    """
+    groups = _REDUCEAT_GUARD_N // 4
+    minus_one, two = 0xBFF0000000000000, 0x4000000000000000
+    both_zeros = _float_bits(*(_NEG_ZERO, _POS_ZERO, minus_one, _NEG_ZERO) * groups)
+    starts_of_four = partial(_regular_starts, 4, _REDUCEAT_GUARD_N)
+    yield _reduceat_case("np.fmax.reduceat(x, s) zeros of both signs, a zero result", both_zeros, starts_of_four,
+                         expect=None)
+    # A negative zero that no result is: every run of four ends at a 2.0.
+    zeros_then_two = _float_bits(*(_NEG_ZERO, _POS_ZERO, minus_one, two) * groups)
+    yield _reduceat_case("np.fmax.reduceat(x, s) a negative zero, no zero result", zeros_then_two, starts_of_four,
+                         expect="fmax_reduce_f64")
+    # Positive zeros only: a zero result with no negative zero stays with the kernel.
+    positive_zeros = _float_bits(*(_POS_ZERO, minus_one, _POS_ZERO, minus_one) * groups)
+    yield _reduceat_case("np.fmax.reduceat(x, s) positive zeros, a zero result", positive_zeros, starts_of_four,
+                         expect="fmax_reduce_f64")
+    two_nans = _float_bits(*(_QUIET_NAN, _PAYLOAD_NAN, _QUIET_NAN, _PAYLOAD_NAN) * groups)
+    yield _reduceat_case("np.fmax.reduceat(x, s) all NaN of two patterns", two_nans, starts_of_four, expect=None)
+    one_nan = _float_bits(*(_PAYLOAD_NAN,) * _REDUCEAT_GUARD_N)
+    yield _reduceat_case("np.fmax.reduceat(x, s) all NaN of one pattern", one_nan, starts_of_four,
+                         expect="fmax_reduce_f64")
+    # NaNs of two patterns, none a result: every run of four holds a number.
+    nans_and_one = _float_bits(*(_QUIET_NAN, _PAYLOAD_NAN, _ONE, _OTHER_NAN) * groups)
+    yield _reduceat_case("np.fmax.reduceat(x, s) NaNs of three patterns, no NaN result", nans_and_one,
+                         starts_of_four, expect="fmax_reduce_f64")
+    # The same array with runs of one element: a result is a NaN.
+    yield _reduceat_case("np.fmax.reduceat(x, s) NaNs of three patterns, runs of 1", nans_and_one,
+                         partial(_regular_starts, 1, _REDUCEAT_GUARD_N), expect=None)
+    for n in VALUE_SIZES:
+        regular = partial(_regular_starts, _REDUCEAT_RUN, n)
+        yield _reduceat_case(f"np.fmax.reduceat(x, s) n={n} x=signalling and negative NaNs s=runs of 16",
+                             partial(unusual_nans, "f64", n), regular, expect=None)
+        yield _reduceat_case(f"np.fmax.reduceat(x, s) n={n} x=negative NaNs with a payload s=runs of 16",
+                             partial(_quiet_nans_only, n), regular)
+    late = partial(_late_signalling_nan, ACCUMULATE_LATE_N)
+    yield _reduceat_case(f"np.fmax.reduceat(x, s) n={ACCUMULATE_LATE_N} x=signalling NaN last only", late,
+                         partial(_regular_starts, _REDUCEAT_RUN, ACCUMULATE_LATE_N), expect=None)
+
+
+# Spellings of np.fmax.reduceat(x, s), and whether the kernel takes them on a
+# plain array: (text, call, taken). `axis` -1 names the one axis as 0 does.
+_REDUCEAT_SPELLINGS: tuple[tuple[str, Callable, bool], ...] = (
+    ("np.fmax.reduceat(x, s)", _fmax_reduceat, True),
+    ("np.fmax.reduceat(x, s, 0)", lambda x, s: np.fmax.reduceat(x, s, 0), True),
+    ("np.fmax.reduceat(x, s, axis=0)", lambda x, s: np.fmax.reduceat(x, s, axis=0), True),
+    ("np.fmax.reduceat(x, s, axis=-1)", lambda x, s: np.fmax.reduceat(x, s, axis=-1), True),
+    ("np.fmax.reduceat(array=x, indices=s)", lambda x, s: np.fmax.reduceat(array=x, indices=s), True),
+    ("np.fmax.reduceat(x, s, 0, None, None)", lambda x, s: np.fmax.reduceat(x, s, 0, None, None), True),
+    ("np.fmax.reduceat(x, s, axis=0, dtype=None, out=None)",
+     lambda x, s: np.fmax.reduceat(x, s, axis=0, dtype=None, out=None), True),
+    ("np.fmax.reduceat(x, s, axis=None)", lambda x, s: np.fmax.reduceat(x, s, axis=None), False),
+    ("np.fmax.reduceat(x, s, axis=np.int64(0))", lambda x, s: np.fmax.reduceat(x, s, axis=np.int64(0)), False),
+    ("np.fmax.reduceat(x, s, dtype=np.float64)", lambda x, s: np.fmax.reduceat(x, s, dtype=np.float64), False),
+    ("np.fmax.reduceat(x, s, out=o)",
+     lambda x, s: np.fmax.reduceat(x, s, out=np.empty(np.shape(s), np.float64)), False),
+    ("np.maximum.reduceat(x, s)", np.maximum.reduceat, False),
+    ("np.add.reduceat(x, s)", np.add.reduceat, False),
+    ("np.fmin.reduceat(x, s)", np.fmin.reduceat, False),
+)
+
+
+def _reduceat_layout_cases() -> Iterator[Case]:
+    """Yield every layout of the array and of the starts, every spelling, and the neighbouring element types.
+
+    Only a plain one-dimensional float64 array and a plain one-dimensional
+    int64 array of starts are taken. The starts of a two-dimensional array
+    are those of its rows, which the default axis reduces.
+    """
+    for n in LAYOUT_SIZES:
+        regular = partial(_regular_starts, _REDUCEAT_RUN, n)
+        for variant in variants_for("f64", n):
+            rows = n // COLUMNS if variant.dims == 2 else n
+            starts = partial(_regular_starts, _REDUCEAT_RUN, rows) if variant.dims == 2 else regular
+            expect = "fmax_reduce_f64" if variant.plain and variant.dims == 1 else None
+            if not variant.predictable:
+                expect = ANY
+            yield _reduceat_case(f"np.fmax.reduceat(x, s) f64 n={n} x layout={variant.name}",
+                                 partial(_variant_of, "f64", n, variant, "x"), starts, expect=expect)
+        # Runs of two, so that even at the smallest size there are several
+        # starts: NumPy flags an array of one element contiguous whatever its
+        # strides, and the kernel may then take it.
+        pairs = _regular_starts(2, n)
+        for variant in variants_for("i64", len(pairs)):
+            expect = "fmax_reduce_f64" if variant.plain and variant.dims == 1 else None
+            if not variant.predictable:
+                expect = ANY
+            yield _reduceat_case(f"np.fmax.reduceat(x, s) f64 n={n} s=runs of 2 layout={variant.name}",
+                                 partial(values, "f64", n), partial(variant.build, pairs), expect=expect)
+        for text, call, taken in _REDUCEAT_SPELLINGS:
+            yield _reduceat_case(f"{text} f64 n={n}", partial(values, "f64", n), regular, call,
+                                 "fmax_reduce_f64" if taken else None)
+        for dtype in ("f32", "i64", "i32"):
+            yield _reduceat_case(f"np.fmax.reduceat(x, s) {dtype} n={n}", partial(values, dtype, n), regular,
+                                 expect=None)
+        rows = partial(_variant_of, "f64", n, _ROWS, "x")
+        yield _reduceat_case(f"np.fmax.reduceat(x, s, axis=1) f64 n={n} x=rows", rows,
+                             partial(_fixed_starts, (0, 1, 1)),
+                             lambda x, s: np.fmax.reduceat(x, s, axis=1), None)
+        for text, starts in _REDUCEAT_FOREIGN_STARTS:
+            yield _reduceat_case(f"np.fmax.reduceat(x, s) f64 n={n} s={text}", partial(values, "f64", n),
+                                 partial(starts, n), expect=None)
+    for text, starts in _REDUCEAT_FOREIGN_STARTS:
+        yield _reduceat_case(f"np.fmax.reduceat(x, s) f64 n=0 s={text}", partial(values, "f64", 0),
+                             partial(starts, 0), expect=None)
+
+
+def reduceat_cases() -> Iterator[Case]:
+    """Yield the cases of `np.fmax.reduceat`.
+
+    The kernel takes a plain one-dimensional float64 array and plain
+    one-dimensional int64 starts in [0, n), and runs once per run; see the
+    binding's try_reduceat. Every value class at every size with runs of 16
+    and irregular starts; a few sizes with every kind of starts; the guards;
+    layouts, spellings and neighbouring types; and whether the call leaves
+    the invalid-operation flag set.
+    """
+    for n, _, label, maker in value_arrays("f64"):
+        for text, starts in (("runs of 16", partial(_regular_starts, _REDUCEAT_RUN, n)),
+                             ("irregular", partial(_irregular_starts, n))):
+            yield _reduceat_case(f"np.fmax.reduceat(x, s) f64 {label} s={text}", maker, starts)
+    for n, _, label, maker in value_arrays("f64", FEW_SIZES):
+        for text, starts in _REDUCEAT_STARTS:
+            yield _reduceat_case(f"np.fmax.reduceat(x, s) f64 {label} s={text}", maker, partial(starts, n))
+    yield from _reduceat_guard_cases()
+    yield from _reduceat_layout_cases()
+    for n in FEW_SIZES:
+        nan_some = partial(values, "f64", n, "nan_some")
+        yield _reduceat_case(f"np.fmax.reduceat(x, s) f64 n={n} x=nan_some invalid flag after",
+                             nan_some, partial(_regular_starts, _REDUCEAT_RUN, n),
+                             partial(_invalid_flag_after, _fmax_reduceat))
 
 
 # Every operation that has a hook, with its exact cases.
@@ -2052,6 +2375,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "interp": interp_cases,
     "where": where_cases,
     "accumulate": accumulate_cases,
+    "reduceat": reduceat_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the
