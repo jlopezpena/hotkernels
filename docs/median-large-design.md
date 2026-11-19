@@ -1,6 +1,6 @@
 # `np.median` of a large `float64` array
 
-This is a proposal, written before the code. It answers the `np.median` part of [issue 220](https://github.com/sofeikov/hotkernels/issues/220), found by the second applications study ([applications-second-findings.md](applications-second-findings.md)): in `astropy_timeseries`, NumPy's `introselect` under `np.median` is 17.6% of the program on the large size, and bottleneck's `nanmedian` another 15.9%.
+This began as a proposal, written before the code, and is now built. Where the building departed from it, [What changed in the building](#what-changed-in-the-building) says so, and [Status](#status) holds the result against the exit criterion. It answers the `np.median` part of [issue 220](https://github.com/sofeikov/hotkernels/issues/220), found by the second applications study ([applications-second-findings.md](applications-second-findings.md)): in `astropy_timeseries`, NumPy's `introselect` under `np.median` is 17.6% of the program on the large size, and bottleneck's `nanmedian` another 15.9%.
 
 Every figure here is ARM64's, measured on an Apple M1 Pro with NumPy 2.5.5, from Python. The machine also hosts the project's CI runners, so the load average is given with each table; the ratios are what to read.
 
@@ -153,6 +153,42 @@ Not a kernel in `kernels/`: like the short-array loop it extends, the selection 
 - `delivery apps --only astropy_timeseries` gives identical results and is faster on the large size.
 - `docsite build` succeeds.
 
+## Status
+
+Against the [exit criterion](#exit-criterion), on the Apple M1 Pro with NumPy 2.5.5, at load averages of 1.7 to 3.2:
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | `delivery check` passes with the new cases | Met: 236,240 cases in all, 7,137 for `median`, 1,708 of them taken by the loop |
+| 2 | Several times faster than NumPy at a million normal elements, and faster at 1,000 | Met. `uv run delivery time --only median`: 50.8x at 16 elements, 2.50x at 4,096, 7.81x at 1,048,576 (9.22 ms to 1.18 ms). Through the same timing code at other sizes, below |
+| 3 | `astropy_timeseries` faster on the large size, identical results | Met: 1.14x and 1.17x in two runs (1,512 ms to 1,322 ms, 1,526 ms to 1,305 ms), and 1.07x on the small size (198 ms to 184 ms); every `np.median` call taken |
+| 4 | `docsite build` succeeds | Met |
+
+`np.median(x)` from Python on the built code, plain NumPy and `install()` alternating, the minimum of each (`delivery/timing.py`'s `measure`):
+
+| Data | 1,000 | 100,000 | 1,048,576 |
+|---|---|---|---|
+| normal | 3.96x | 8.24x | 8.91x (10.6 ms to 1.19 ms) |
+| sky: `normal(100, 5)`, 2% stars | 3.63x | 7.50x | 6.74x (9.18 ms to 1.36 ms) |
+| the sky as 1,024 × 1,024, `np.median(x, axis=None)` | | | 7.14x (9.11 ms to 1.34 ms) |
+| ten whole numbers | 2.37x | 4.96x | 5.13x |
+| ascending | 9.56x | 1.78x | 1.68x |
+| ascending whole numbers 0 to 999 | 9.56x | 1.52x | 1.69x |
+| `sin(0.001 i)` | 9.53x | 1.37x | 1.21x |
+| ascending plus `normal(0, 0.01)` | 2.18x | 4.28x | **0.74x** (0.90 ms to 1.22 ms) |
+
+And on short arrays, where the sort and the selection meet: normal values 11.1x at 64 elements (sorted), 10.3x at 65, 9.0x at 96, 5.5x at 128 and 5.6x at 256 (selected); ten whole numbers 9.6x, 6.7x, 5.4x, 5.0x and 3.6x; descending values 5.5x at 64 and 67x at 65, which is in order. The one call slower than NumPy is the last row of the table: an array nearly in order but not quite, where NumPy's partition is quick and the selection costs its three reads.
+
+## What changed in the building
+
+| Proposed | Built | Why |
+|---|---|---|
+| The range found by one read for the smallest and largest key | The same read also compares each element with the one before it, until it has seen a fall and a rise; an array in order, either way, has its two middle elements at its two middle places, which are read directly | Timed on the built code, data in order lost to NumPy: 0.98x on a million ascending elements and 0.57x to 0.65x on ascending whole numbers, whose first digit is only the exponent. With the test they are 1.68x and 1.69x. On data in no order the test stops within the first block, and the normal case went from 1.12 to 1.19 ms. Ascending and descending need no separate rule: for a median, the two middle places of a descending array hold the same two elements |
+| The range by keys (the design), or by comparing doubles (the probe) | By keys | Comparing doubles needs a zero at either end widened to both zeros, which on non-negative data with a zero, as an absolute deviation has, costs the first digit its resolution; and it needs a separate NaN test. The keys give the exact range and the NaN test at once, for about 0.04 ms more at a million elements |
+| The sort up to 128 elements, the limit to be timed again | Up to 64 | On the built code the selection takes about 0.6 µs at any short size; the sort took 0.46 µs at 64 elements, 1.4 µs at 96 and 2.2 µs at 128 |
+| The `median_f64` probe on PROBE_N and PROBE_N - 1 halves | The same values, shuffled by PROBE_SORT_STEP | Halves in descending order are in order, and would have proved the shortcut rather than the selection. A selection that dropped one from a rank fails the shuffled probe and `install()` leaves the hook off |
+| — | Two more spellings stay NumPy's and are checked: `np.median(x, None, None)` and `axis=None` with `keepdims=False` | Only `axis` may accompany the array |
+
 ## x86-64
 
 There is no x86-64 machine here. The selection is portable C: the vector loops use the compiler's vector types (four 64-bit lanes on x86-64, compiled for the kernels' AVX2 level, two on ARM64), and the rest is scalar. Correctness on x86-64 is checked by `delivery check` in CI. No x86-64 speed figure is claimed.
@@ -162,4 +198,4 @@ There is no x86-64 machine here. The selection is portable C: the vector loops u
 - **bottleneck's `nanmedian`** (15.9% of `astropy_timeseries`): the same selection after leaving out the NaNs, reached through the bottleneck hooks. Its result and its handling of an all-NaN array are bottleneck's, not NumPy's.
 - **`np.quantile` and `np.percentile`** (6.5% of `pandas_sales`): several ranks at once, and NumPy's interpolation between neighbours (`_lerp`) after them.
 - **`np.median` along an axis**, and with `overwrite_input=True`.
-- **Data in order**, where NumPy is as fast.
+- **Data nearly in order**, where NumPy's partition is quick and the selection is not: 0.74x on a sorted million with a little noise. A test of the order from a sample, sending such arrays to NumPy as the argsort hook sends nearly sorted ones, would need a rule that does not also send away the smooth curves the selection wins on (1.2x).
