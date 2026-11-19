@@ -269,6 +269,7 @@ The tag starts the release workflow, which builds and tests the wheels and waits
 - [docs/survey-design.md](docs/survey-design.md): where NumPy is slow, and which kernels to build in what order
 - [docs/kernel-findings.md](docs/kernel-findings.md): what each kernel achieves, how, and where assembly could not win
 - [docs/delivery-design.md](docs/delivery-design.md): how the kernels reach unmodified NumPy code: the binding, `install()` and `report()`, and how they are tested
+- [docs/applications-findings.md](docs/applications-findings.md): what five whole NumPy programs gain from `install()`, where their time goes, and the gaps that follow; designed in [docs/applications-design.md](docs/applications-design.md)
 - [docs/two-sizes-design.md](docs/two-sizes-design.md): a second length for `np.searchsorted` and `np.interp`, so their kernels can serve real calls
 - [docs/release-design.md](docs/release-design.md): how a release is made and published, and who can publish
 - [docs/x86-64-design.md](docs/x86-64-design.md): the second architecture: what to target, what changes, and how the kernels are carried over
