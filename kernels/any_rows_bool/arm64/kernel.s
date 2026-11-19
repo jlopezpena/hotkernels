@@ -5,8 +5,26 @@
 // number of rows and writes exactly that many bytes. cols >= 1. Every byte of
 // m is 0 or 1.
 //
-// One row at a time. Rows of 16 or more: 16-byte chunks or'ed together, the
-// last ending at the row's end, then `umaxv`. Shorter rows: a byte at a time.
+// Every path relies on the bytes being 0 or 1: the result byte is the
+// maximum of the row's bytes, stored as it is. A byte above 1 would be
+// stored as itself (rows of 4 to 64) or or'ed with the row's other bytes.
+//
+// Paths, by cols, chosen once at entry:
+//   4        a row is four bytes: three `umaxp` turn 64 bytes into sixteen
+//            results, 32 rows per step. Rows left under a block: one more
+//            block ending at the last row (stores some rows twice); under 16
+//            rows in all, four rows per 16-byte load; under 4, one by one.
+//   16..32   each row reduced to 16 bytes, its first 16 or'ed with its last
+//            16 (overlapping); sixteen rows by fifteen `umaxp` to one 16-byte
+//            store. Rows addressed from four positions and fixed offsets, so
+//            no chain of adds runs through a block.
+//   33..64   the same with the row's first 32 bytes or'ed with its last 32.
+//   1..15 other than 4, and 65 and up: one row at a time, a byte at a time
+//            (under 16) or 16-byte chunks or'ed with the last ending at the
+//            row's end, then `umaxv` (no early exit).
+// The 16..64 paths take the rows left under a block as one more block that
+// ends at the last row, and matrices of under 16 rows in groups of 1, 2, 4
+// and 8 rows. From 8 MB (HUGE_N) the main loops use non-temporal loads.
 
 // Row \i of a block of sixteen to the 16 bytes of v\d, whose maximum is the
 // row's result. Rows of 16 to 32: the first 16 bytes or'ed with the last 16,
