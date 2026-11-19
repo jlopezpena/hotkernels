@@ -17,6 +17,17 @@
 // summing the tables is repaid.
 .set TABLES_MIN_PER_BIN, 8
 
+// The pair path is for at most this many counters: codes of six bits.
+.set PAIR_CODES, 64
+// It is taken from this many elements, where clearing and adding up the
+// pair table is repaid.
+.set PAIRS_MIN_N, 8192
+// The pair table: PAIR_CODES rows of PAIR_CODES 32-bit counters, 16 KB.
+// Row a1, column a0 counts the pairs (a0, a1). Above it, PAIR_CODES 32-bit
+// row totals.
+.set PAIR_TABLE, PAIR_CODES * PAIR_CODES * 4
+.set ROW_TOTALS, PAIR_CODES * 4
+
 // Count the sign-extended element in \reg into the 32-bit table at \base, if
 // it is below bins.
 .macro COUNTT reg, base, tmp
@@ -42,13 +53,24 @@
 .globl _bincount_i16
 .p2align 2
 _bincount_i16:
-    // The four tables: 4 <= bins <= 1024, n >= 8 * bins and n < 2^32.
+    // Every path but the single table needs n < 2^32.
+    mov     x15, #0                 // 1 for the pair path
+    lsr     x4, x2, #32
+    cbnz    x4, Lsingle
+    // The pair table: bins <= 64 and n >= PAIRS_MIN_N. It counts the
+    // elements it cannot pair into counts, so counts is cleared first.
+    cmp     x3, #PAIR_CODES
+    b.hi    Lnotpairs
+    cmp     x2, #PAIRS_MIN_N
+    b.lo    Lnotpairs
+    mov     x15, #1
+    b       Lsingle
+Lnotpairs:
+    // The four tables: 4 <= bins <= 1024 and n >= 8 * bins.
     cmp     x3, #TABLES_MIN_BINS
     b.lo    Lsingle
     cmp     x3, #TABLES_MAX_BINS
     b.hi    Lsingle
-    lsr     x4, x2, #32
-    cbnz    x4, Lsingle
     cmp     x2, x3, lsl #3
     b.hs    Ltables
 Lsingle:
@@ -77,6 +99,7 @@ Lclearone:
     b.ne    Lclearone
 
 Lcount:
+    cbnz    x15, Lpairs
     subs    x2, x2, #8
     b.lo    Ltail
     // Eight elements per step: two 8-byte loads, each element taken out of
@@ -183,3 +206,162 @@ Lsum:
     b.lo    Lsum
     add     sp, sp, x17, lsl #2
     b       Ltail                   // 0 to 7 elements left, into counts
+
+    // ---- The pair table ---------------------------------------------------
+    // Four elements are read in one 8-byte word. If each is in 0..63, which
+    // one test of the word against 0xffc0 in every element shows, the two
+    // pairs (a0, a1) and (a2, a3) are counted in the table at a0 | a1 << 6
+    // and a2 | a3 << 6; otherwise the four go one at a time into counts,
+    // each tested against bins. A pair code at or above bins is counted in
+    // the table and left out when the totals are added to counts. The table's
+    // counters cannot overflow: n < 2^32, so there are fewer than 2^31 pairs.
+Lpairs:
+    sub     sp, sp, #(PAIR_TABLE >> 12), lsl #12
+    sub     sp, sp, #ROW_TOTALS
+    movi    v0.2d, #0
+    mov     x6, sp
+    add     x7, sp, #(PAIR_TABLE >> 12), lsl #12
+Lclearpairs:
+    stp     q0, q0, [x6]
+    stp     q0, q0, [x6, #32]
+    add     x6, x6, #64
+    cmp     x6, x7
+    b.lo    Lclearpairs
+
+    subs    x2, x2, #8              // at least eight elements
+Lpairs8:
+    ldp     x6, x7, [x0], #16
+    tst     x6, #0xffc0ffc0ffc0ffc0
+    b.ne    Lslow6
+    orr     x8, x6, x6, lsr #10     // a0 | a1 << 6 in bits 0..11, a2 | a3 << 6 in 32..43
+    and     x9, x8, #0xfff
+    ubfx    x10, x8, #32, #12
+    ldr     w12, [sp, x9, lsl #2]
+    add     w12, w12, #1
+    str     w12, [sp, x9, lsl #2]
+    ldr     w13, [sp, x10, lsl #2]
+    add     w13, w13, #1
+    str     w13, [sp, x10, lsl #2]
+Lback6:
+    tst     x7, #0xffc0ffc0ffc0ffc0
+    b.ne    Lslow7
+    orr     x8, x7, x7, lsr #10
+    and     x9, x8, #0xfff
+    ubfx    x10, x8, #32, #12
+    ldr     w12, [sp, x9, lsl #2]
+    add     w12, w12, #1
+    str     w12, [sp, x9, lsl #2]
+    ldr     w13, [sp, x10, lsl #2]
+    add     w13, w13, #1
+    str     w13, [sp, x10, lsl #2]
+Lback7:
+    subs    x2, x2, #8
+    b.hs    Lpairs8
+
+    // Column totals in v16..v31, four columns each, and row totals stored
+    // above the table, one row of 64 counters per step.
+    movi    v16.2d, #0
+    movi    v17.2d, #0
+    movi    v18.2d, #0
+    movi    v19.2d, #0
+    movi    v20.2d, #0
+    movi    v21.2d, #0
+    movi    v22.2d, #0
+    movi    v23.2d, #0
+    movi    v24.2d, #0
+    movi    v25.2d, #0
+    movi    v26.2d, #0
+    movi    v27.2d, #0
+    movi    v28.2d, #0
+    movi    v29.2d, #0
+    movi    v30.2d, #0
+    movi    v31.2d, #0
+    mov     x6, sp                  // row cursor
+    add     x11, sp, #(PAIR_TABLE >> 12), lsl #12   // the row totals
+    mov     x9, #0                  // row
+Lrow:
+    ld1     {v0.4s, v1.4s, v2.4s, v3.4s}, [x6], #64
+    ld1     {v4.4s, v5.4s, v6.4s, v7.4s}, [x6], #64
+    add     v16.4s, v16.4s, v0.4s
+    add     v17.4s, v17.4s, v1.4s
+    add     v18.4s, v18.4s, v2.4s
+    add     v19.4s, v19.4s, v3.4s
+    add     v20.4s, v20.4s, v4.4s
+    add     v21.4s, v21.4s, v5.4s
+    add     v22.4s, v22.4s, v6.4s
+    add     v23.4s, v23.4s, v7.4s
+    add     v0.4s, v0.4s, v1.4s
+    add     v2.4s, v2.4s, v3.4s
+    add     v4.4s, v4.4s, v5.4s
+    add     v6.4s, v6.4s, v7.4s
+    add     v0.4s, v0.4s, v2.4s
+    add     v4.4s, v4.4s, v6.4s
+    add     v0.4s, v0.4s, v4.4s
+    addv    s0, v0.4s
+    fmov    w12, s0
+    ld1     {v0.4s, v1.4s, v2.4s, v3.4s}, [x6], #64
+    ld1     {v4.4s, v5.4s, v6.4s, v7.4s}, [x6], #64
+    add     v24.4s, v24.4s, v0.4s
+    add     v25.4s, v25.4s, v1.4s
+    add     v26.4s, v26.4s, v2.4s
+    add     v27.4s, v27.4s, v3.4s
+    add     v28.4s, v28.4s, v4.4s
+    add     v29.4s, v29.4s, v5.4s
+    add     v30.4s, v30.4s, v6.4s
+    add     v31.4s, v31.4s, v7.4s
+    add     v0.4s, v0.4s, v1.4s
+    add     v2.4s, v2.4s, v3.4s
+    add     v4.4s, v4.4s, v5.4s
+    add     v6.4s, v6.4s, v7.4s
+    add     v0.4s, v0.4s, v2.4s
+    add     v4.4s, v4.4s, v6.4s
+    add     v0.4s, v0.4s, v4.4s
+    addv    s0, v0.4s
+    fmov    w13, s0
+    add     w12, w12, w13
+    str     w12, [x11, x9, lsl #2]
+    add     x9, x9, #1
+    cmp     x9, #PAIR_CODES
+    b.lo    Lrow
+    // The column totals over the first row of the table, which is done with.
+    mov     x6, sp
+    st1     {v16.4s, v17.4s, v18.4s, v19.4s}, [x6], #64
+    st1     {v20.4s, v21.4s, v22.4s, v23.4s}, [x6], #64
+    st1     {v24.4s, v25.4s, v26.4s, v27.4s}, [x6], #64
+    st1     {v28.4s, v29.4s, v30.4s, v31.4s}, [x6], #64
+    // counts[v] += column total v + row total v, for v < bins.
+    mov     x9, #0
+Laddpairs:
+    ldr     w12, [sp, x9, lsl #2]
+    ldr     w13, [x11, x9, lsl #2]
+    ldr     x14, [x1, x9, lsl #3]
+    add     x12, x12, x13
+    add     x14, x14, x12
+    str     x14, [x1, x9, lsl #3]
+    add     x9, x9, #1
+    cmp     x9, x3
+    b.lo    Laddpairs
+    add     sp, sp, #ROW_TOTALS
+    add     sp, sp, #(PAIR_TABLE >> 12), lsl #12
+    b       Ltail                   // 0 to 7 elements left, into counts
+
+Lslow6:                             // one of the four is not a pair code
+    sxth    x8, w6
+    sbfx    x9, x6, #16, #16
+    sbfx    x10, x6, #32, #16
+    asr     x11, x6, #48
+    COUNT   x8, x12
+    COUNT   x9, x13
+    COUNT   x10, x14
+    COUNT   x11, x12
+    b       Lback6
+Lslow7:
+    sxth    x8, w7
+    sbfx    x9, x7, #16, #16
+    sbfx    x10, x7, #32, #16
+    asr     x11, x7, #48
+    COUNT   x8, x12
+    COUNT   x9, x13
+    COUNT   x10, x14
+    COUNT   x11, x12
+    b       Lback7
