@@ -67,6 +67,16 @@
     umaxp   v0.16b, v0.16b, v16.16b     // rows 0-15, 1 byte each
 .endm
 
+// Sixteen rows of four at x0 to the sixteen bytes of v0; x0 moves past them.
+.macro FOUR16
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    add     x0, x0, #64
+    umaxp   v0.16b, v0.16b, v1.16b
+    umaxp   v2.16b, v2.16b, v3.16b
+    umaxp   v0.16b, v0.16b, v2.16b
+.endm
+
 .text
 .globl _any_rows_bool
 .p2align 2
@@ -74,6 +84,8 @@ _any_rows_bool:
     udiv    x4, x2, x3                  // rows
     mov     x5, x4
     cbz     x4, Ldone
+    cmp     x3, #4
+    b.eq    Lfour
     cmp     x3, #16
     b.lo    Lshort
     cmp     x3, #64
@@ -142,3 +154,53 @@ Lbyte:
 Ldone:
     mov     x0, x5
     ret
+
+// Rows of four. A row is four bytes, so 64 bytes are sixteen rows and three
+// `umaxp` reduce them to one byte per row, in order.
+Lfour:
+    subs    x4, x4, #32
+    b.lo    Lfour_tail
+Lfour32:
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ldp     q4, q5, [x0, #64]
+    ldp     q6, q7, [x0, #96]
+    add     x0, x0, #128
+    umaxp   v0.16b, v0.16b, v1.16b
+    umaxp   v2.16b, v2.16b, v3.16b
+    umaxp   v4.16b, v4.16b, v5.16b
+    umaxp   v6.16b, v6.16b, v7.16b
+    umaxp   v0.16b, v0.16b, v2.16b
+    umaxp   v4.16b, v4.16b, v6.16b
+    stp     q0, q4, [x1], #32
+    subs    x4, x4, #32
+    b.hs    Lfour32
+Lfour_tail:
+    adds    x4, x4, #32                 // 0 to 31 rows left
+    b.eq    Ldone
+    cmp     x4, #16
+    b.lo    Lfour_last
+    FOUR16
+    str     q0, [x1], #16
+    subs    x4, x4, #16
+    b.eq    Ldone
+Lfour_last:
+    // 1 to 15 rows left. With 16 rows or more in all, one more block that
+    // ends at the last row and stores some rows a second time.
+    cmp     x5, #16
+    b.lo    Lfour_one
+    mov     x6, #16
+    sub     x6, x6, x4                  // rows to step back
+    sub     x0, x0, x6, lsl #2
+    sub     x1, x1, x6
+    FOUR16
+    str     q0, [x1]
+    b       Ldone
+Lfour_one:
+    ldr     w6, [x0], #4
+    cmp     w6, #0
+    cset    w6, ne
+    strb    w6, [x1], #1
+    subs    x4, x4, #1
+    b.ne    Lfour_one
+    b       Ldone

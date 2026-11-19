@@ -31,3 +31,15 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
 - **Kept:** yes
 - **Notes:** rows of 64 at 64 and 256 elements (one and four rows) are slower, 0.77x and 0.92x:
   they never fill a block and pay for the extra tests at entry.
+
+## 3. Rows of four: three `umaxp` per sixteen rows
+
+- **Idea:** a path of its own for `cols` = 4. A row is four bytes, so 64 bytes are sixteen rows,
+  and three `umaxp` (pairs, then pairs of pairs) leave one byte per row, in order, still 0 or 1:
+  no compare and no narrowing. 32 rows per step (four `ldp`, six `umaxp`, one `stp`), then a
+  block of sixteen, then one block that ends at the last row and stores some rows a second time;
+  under sixteen rows in all, `ldr w`, `cmp`, `cset` and `strb` per row.
+- **check:** pass
+- **compare:** significantly faster, 3.20x [3.19 – 3.21] over all tables; the other widths
+  unchanged.
+- **Kept:** yes
