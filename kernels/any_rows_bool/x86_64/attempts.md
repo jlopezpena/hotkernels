@@ -63,3 +63,11 @@ The kernel does the same work whatever the elements are, so the two timing distr
 - **compare:** significantly faster, 1.041x [1.040 – 1.042]
 - **Kept:** yes
 - **Notes:** rows of 64: 1.13x in both distributions. 1.46x at 256, 1.14x at 1,024, 1.16x at 4,096, 1.30x at 16,384, 1.18x at 65,536, 1.05x at 16,777,216. 0.80x at 64 elements, which are one row: 1.5 ns to 1.9, the price of setting the loop up before a row that does not use it. In the micro-benchmark at 4,096 elements, with `m` at a multiple of 64: 26.7 ns to 19.6, 0.31 ns per row or 1.6 cycles; with `m` five bytes off, where one of the two loads of every row straddles two cache lines: 32.7 ns to 30.2, 2.5 cycles per row.
+
+## 8. Rows of 33 to 64: the loop of single rows on the straight path
+
+- **Idea:** attempt 7 cost 64 elements in one row of 64 a fifth of their time. The loop of single rows now follows the test for four rows directly, so fewer than four rows reach it without a taken branch, and the loop of four is entered by a jump.
+- **check:** pass
+- **compare:** significantly faster, 1.006x [1.005 – 1.007]
+- **Kept:** yes
+- **Notes:** rows of 64: 1.02x, all of it at 64 elements, 1.9 ns back to 1.5 (1.25x); every other size 1.00x.

@@ -233,7 +233,18 @@ any_rows_bool:
     sub     r9, r11                     # the last place four rows can start
     jb      .Lpair_row
     cmp     rdi, r9
-    ja      .Lpair_row
+    jbe     .Lpair_rows
+.Lpair_row:
+    vmovdqu ymm0, [rdi]
+    vpor    ymm0, ymm0, [rdi + r10]
+    vptest  ymm0, ymm0
+    setnz   byte ptr [rsi]
+    add     rdi, rcx
+    inc     rsi
+    cmp     rdi, rdx
+    jbe     .Lpair_row
+    jmp     .Ldone
+.Lpair_rows:
     lea     rax, [rcx * 4]
 .p2align 4
 .Lpair_row4:
@@ -257,15 +268,6 @@ any_rows_bool:
     add     rsi, 4
     cmp     rdi, r9
     jbe     .Lpair_row4
-    cmp     rdi, rdx
-    ja      .Ldone
-.Lpair_row:
-    vmovdqu ymm0, [rdi]
-    vpor    ymm0, ymm0, [rdi + r10]
-    vptest  ymm0, ymm0
-    setnz   byte ptr [rsi]
-    add     rdi, rcx
-    inc     rsi
     cmp     rdi, rdx
     jbe     .Lpair_row
     jmp     .Ldone
