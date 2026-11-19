@@ -54,3 +54,18 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
 - **compare:** significantly faster, 1.13x [1.13 – 1.13]; rows of 22 1.21x and rows of 64
   1.20x over each table, 2.2x to 3.3x at 64 and 256 elements.
 - **Kept:** yes
+
+## 5. Rows of 16 to 32: no chain of adds through the block
+
+- **Idea:** in attempt 4 every row moved the position by `cols`, so the 32 loads of a block
+  waited on a chain of sixteen dependent adds: one cycle a row. Now four positions four rows
+  apart and three offsets (one, two and three `cols`, and the same plus `cols - 16` for each
+  row's last 16 bytes) address all sixteen rows with register-offset loads; the four positions
+  move once per block.
+- **check:** pass
+- **compare:** significantly faster, 1.047x [1.046 – 1.048] over all tables; rows of 22 1.15x,
+  1.46x to 1.55x from 4,096 to 65,536 elements, about 1.04x beyond.
+- **Kept:** yes
+- **Notes:** rows of 22 now take 0.23 ns a row in the first-level cache, 0.74 cycles: the two
+  loads a row on three load units. Rows of 64 (four loads a row) and rows of 4 (eight loads per
+  32 rows) are at the same limit.
