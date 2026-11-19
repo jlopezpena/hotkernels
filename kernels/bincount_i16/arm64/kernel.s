@@ -32,7 +32,11 @@
 // data; the sample only picks the faster one.
 //
 // Stack: the pair path takes 32,768 + 256 bytes below the stack pointer,
-// the eight tables up to 32 KB (bins 1,024), the four up to 16 KB.
+// the eight tables up to 32 KB (bins 1,024), the four up to 16 KB. The
+// stack pointer is moved down by the whole frame at once and the tables
+// are cleared from the bottom up, so the first store lands at the bottom
+// of the frame, up to 32,768 + 256 bytes below the caller's stack pointer;
+// the pages in between are not touched first.
 
 // The table paths are for at least this many counters (their sums work four
 // at a time) and at most this many: eight tables of 32-bit counters, 32 KB
