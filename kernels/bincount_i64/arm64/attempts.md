@@ -45,3 +45,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.027x [1.026 – 1.028]
 - **Kept:** yes
 - **Notes:** four values with 1,000 counters 1.13x at 16,384, 1.22x–1.24x from 65,536 up (0.29 ns per element at 1,048,576 against 0.36). Every other point 1.00x.
+
+## 6. The tables from 2 elements per counter where the data repeats
+
+- **Idea:** attempt 9 of `bincount_i16`: with 2 to 8 elements per counter, take the sample (from 40 elements) and use the four tables if the data repeats; the sample is taken only where its answer is used.
+- **check:** pass
+- **compare:** significantly faster, 1.030x [1.029 – 1.031]
+- **Kept:** yes
+- **Notes:** four values with 64 counters 1.68x at 256 (139 ns against 234); with 1,000 counters 2.12x at 4,096 (1.8 us against 3.8). Every other point 0.99x–1.04x.

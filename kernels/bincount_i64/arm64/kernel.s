@@ -14,6 +14,8 @@
 .set TABLES_MIN_BINS, 4
 .set TABLES_MAX_BINS, 1024
 .set TABLES_SHIFT, 3
+// On data that repeats, from 2^REPEAT_SHIFT elements per counter.
+.set REPEAT_SHIFT, 1
 
 // The pair path is for at most this many counters: codes of six bits.
 .set PAIR_CODES, 64
@@ -188,19 +190,31 @@ _bincount_i64:
     mov     x15, #1
     b       Lsingle
 Lnotpairs:
-    // The four tables: 4 <= bins <= 1024 and n >= 8 * bins.
+    // The tables: 4 <= bins <= 1024, and either n >= 8 * bins, or n >= 2 *
+    // bins and a sample of the data repeats. From 8 elements per counter:
+    // four tables, or eight from EIGHT_MIN_N elements if the data repeats.
     cmp     x3, #TABLES_MIN_BINS
     b.lo    Lsingle
     cmp     x3, #TABLES_MAX_BINS
     b.hi    Lsingle
-    cmp     x2, x3, lsl #TABLES_SHIFT
+    cmp     x2, x3, lsl #REPEAT_SHIFT
     b.lo    Lsingle
+    cmp     x2, x3, lsl #TABLES_SHIFT
+    b.lo    Lfew
     cmp     x2, #EIGHT_MIN_N
     b.lo    Ltables
+Lfew:
+    cmp     x2, #SAMPLE + 8
+    b.lo    Lsampled
     REPEATS
     cmp     x11, #SAMPLE_REPEATS
+    b.lo    Lsampled                // the data does not repeat
+    cmp     x2, x3, lsl #TABLES_SHIFT
     b.lo    Ltables
     b       Leight
+Lsampled:                           // data that does not repeat, or too few to tell
+    cmp     x2, x3, lsl #TABLES_SHIFT
+    b.hs    Ltables
 Lsingle:
     // Clear the bins counters: 64 bytes per step, the last 64 bytes ending
     // exactly at the end of counts and overlapping the step before.
