@@ -23,8 +23,11 @@ from delivery import apps, cli
 # small, in a Docker container on ARM64 Linux: three samples or fewer of each
 # file found at the top of a stack.
 CAPTURE = Path(__file__).resolve().parent / "data" / "perf-script-aarch64.txt"
-# The first record of `delivery apps`, written before applications had two sizes.
-FIRST_RECORD = Path(cli.RESULTS) / "apple-m1-pro-apps.json"
+# A copy of the first record of `delivery apps`, delivery/results/apple-m1-pro-apps.json
+# as written before applications had two sizes, with its report rewritten by
+# `delivery apps-report` in the layout of two sizes. A copy, so a new record
+# can replace the committed one.
+FIRST_RECORD = Path(__file__).resolve().parent / "data" / "apps-record-one-size.json"
 # The compiled files of the capture that belong to packages, as `package_images` maps them.
 CAPTURE_PACKAGES = {
     "_multiarray_umath.cpython-312-aarch64-linux-gnu.so": "numpy",
