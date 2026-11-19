@@ -38,9 +38,14 @@ ROUNDS = 5
 REPEATS = 40
 # Calls timed per point of `accumulations`.
 ACCUMULATION_REPEATS = 2000
+# The size of each application the study runs: the one it was first recorded
+# at (docs/applications-findings.md), where the gradient step was found.
+STUDIED_SIZE = {"mlp_train": "large", "min_char_rnn": "small"}
+# Inputs and hidden units of mlp_train at that size: 784 and 256.
+INPUTS, HIDDEN = mlp_train.NETWORKS[STUDIED_SIZE["mlp_train"]]
 # Shapes `after_reader` times: the weights of mlp_train, and a square matrix
 # small enough that Accelerate multiplies it on one thread.
-READER_SHAPES = ((mlp_train.INPUTS, mlp_train.HIDDEN), (256, 256))
+READER_SHAPES = ((INPUTS, HIDDEN), (256, 256))
 # Rows of the batch the matrix product of `after_reader` multiplies `w` by.
 READER_BATCH = mlp_train.BATCH
 # The parameter of mlp_train whose update is measured.
@@ -172,9 +177,9 @@ class WayResult:
 def _initial_parameters(rng: np.random.Generator) -> dict[str, np.ndarray]:
     """Return mlp_train's initial parameters, drawn as mlp_train.run draws them."""
     return {
-        "w1": rng.standard_normal((mlp_train.INPUTS, mlp_train.HIDDEN)) * np.sqrt(2.0 / mlp_train.INPUTS),
-        "b1": np.zeros(mlp_train.HIDDEN),
-        "w2": rng.standard_normal((mlp_train.HIDDEN, mlp_train.CLASSES)) * np.sqrt(2.0 / mlp_train.HIDDEN),
+        "w1": rng.standard_normal((INPUTS, HIDDEN)) * np.sqrt(2.0 / INPUTS),
+        "b1": np.zeros(HIDDEN),
+        "w2": rng.standard_normal((HIDDEN, mlp_train.CLASSES)) * np.sqrt(2.0 / HIDDEN),
         "b2": np.zeros(mlp_train.CLASSES),
     }
 
@@ -191,14 +196,15 @@ def _train(update: Callable[[np.ndarray, np.ndarray, np.ndarray], None] | None,
     Args:
         update: The way to update MEASURED, or None to time the statement as
             written in its four parts (see Split).
-        data: mlp_train.make_data()'s result.
+        data: mlp_train.make_data()'s result at STUDIED_SIZE.
 
     Returns:
         (the trained parameters, the time of each update in nanoseconds, the
         page faults of each, the four parts of each when `update` is None,
         the time of the whole training in nanoseconds).
     """
-    x, y, _, _ = data
+    # The held-out data and the hidden units, which INPUTS and HIDDEN already give, are not used.
+    x, y, *_ = data
     rng = np.random.default_rng(mlp_train.SEED + 1)
     params = _initial_parameters(rng)
     buffer = np.empty_like(params[MEASURED])
@@ -253,7 +259,7 @@ def in_loop(rounds: int = ROUNDS) -> tuple[list[WayResult], Split]:
     Returns:
         (one result per way, in WAYS order; the statement as written in parts).
     """
-    data = mlp_train.make_data()
+    data = mlp_train.make_data(STUDIED_SIZE["mlp_train"])
     native.loops()
     runs: dict[str, list] = {way.name: [] for way in WAYS}
     split_parts = []
@@ -414,7 +420,7 @@ def allocator(rounds: int = ROUNDS) -> tuple[list[AllocatorResult], tuple[int, i
     cache = native.allocator()
     results = []
     for app in (mlp_train, min_char_rnn):
-        data = app.make_data()
+        data = app.make_data(STUDIED_SIZE[app.__name__.rsplit(".", 1)[-1]])
         plain, cached = [], []
         for _ in range(rounds):
             plain.append(_timed_run(app, data))
