@@ -3174,6 +3174,9 @@ _ROWS_OUT_CALLS: tuple[tuple[str, str, Callable[..., object], str], ...] = (
      "cummax_rows_f64"),
     ("accumulate", "np.fmax.accumulate(x, out=o)", lambda x, o: np.fmax.accumulate(x, out=o), "cumfmax_rows_f64"),
 )
+# A float32 signalling NaN: the contents of an `out` NumPy casts, which makes
+# it warn "invalid value encountered in cast" on every platform.
+_SIGNALLING_F32 = 0x7FA00000
 # Calls on a C-ordered float64 matrix that the row loops leave to NumPy, with
 # the operation each is counted under.
 _ROWS_LEFT_CALLS: tuple[tuple[str, str, Callable[[np.ndarray], object]], ...] = (
@@ -3183,10 +3186,16 @@ _ROWS_LEFT_CALLS: tuple[tuple[str, str, Callable[[np.ndarray], object]], ...] = 
     ("accumulate", "np.fmax.accumulate(x, dtype=np.float64)", lambda x: np.fmax.accumulate(x, dtype=np.float64)),
     ("accumulate", "np.minimum.accumulate(x)", np.minimum.accumulate),
     ("accumulate", "np.subtract.accumulate(x)", np.subtract.accumulate),
-    ("accumulate", "x.cumprod(axis=0, out=(o,))", lambda x: x.cumprod(axis=0, out=(np.empty_like(x),))),
-    ("accumulate", "x.cumprod(axis=0, out=float32)", lambda x: x.cumprod(axis=0, out=np.empty(x.shape, np.float32))),
+    # Each `out` is zeros, not np.empty: with an `out` of another element
+    # type NumPy casts what `out` held, and leftover memory that reads as a
+    # signalling NaN makes it warn "invalid value encountered in cast", or
+    # not, depending on what the allocator hands back.
+    ("accumulate", "x.cumprod(axis=0, out=(o,))", lambda x: x.cumprod(axis=0, out=(np.zeros_like(x),))),
+    ("accumulate", "x.cumprod(axis=0, out=float32)", lambda x: x.cumprod(axis=0, out=np.zeros(x.shape, np.float32))),
+    ("accumulate", "x.cumprod(axis=0, out=float32 of signalling NaNs)",
+     lambda x: x.cumprod(axis=0, out=np.full(x.shape, _SIGNALLING_F32, np.uint32).view(np.float32))),
     ("accumulate", "x.cumprod(axis=0, out=fortran)",
-     lambda x: x.cumprod(axis=0, out=np.empty(x.shape, order="F"))),
+     lambda x: x.cumprod(axis=0, out=np.zeros(x.shape, order="F"))),
     ("cumsum", "x.cumsum()", lambda x: x.cumsum()),
     ("cumsum", "x.cumsum(axis=1)", lambda x: x.cumsum(axis=1)),
     ("cumsum", "x.cumsum(axis=0, dtype=np.float64)", lambda x: x.cumsum(axis=0, dtype=np.float64)),
