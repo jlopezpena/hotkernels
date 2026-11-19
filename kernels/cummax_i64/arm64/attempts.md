@@ -205,3 +205,21 @@ two cycles, at every size from 1,024 up, on both distributions. NumPy takes
 - **Notes:** `random` 1.07x at 16, 1.12x at 64, 1.04x at 256; `rising` 1.07x
   at 16, 1.05x at 64, 1.03x at 256, 1.02x at 1,024. At 16 the first block
   no longer saves M for a comparison afterwards.
+
+## 14. `stnp` in the flat and rising loops
+
+- **Idea:** store the flat and rising blocks with `stnp` in place of `stp`
+  (the general blocks keep `stp`). `cumsum_i64` found no difference; tried
+  here because the flat loop is bound by its stores more than by its
+  arithmetic (outside the judge, at 1,024 to 4,096 constant elements,
+  dropping half its compares gained under 5% and dropping half its stores
+  15%).
+- **check:** pass
+- **compare:** significantly faster, 1.007x [1.003 – 1.011]; rerun 1.007x
+  [1.004 – 1.010]
+- **Kept:** yes
+- **Notes:** the whole gain is 16,384 `random`: 1.14x [1.04 – 1.25] and
+  1.17x [1.11 – 1.23]; every other size 1.00x. Outside the judge the same:
+  16,384 random elements 0.126 to 0.099 ns per element, rising 0.126 to
+  0.119, constant 0.126 to 0.123, and nothing from 65,536 up (0.17 ns per
+  element in the second-level cache, 0.23 at 4,000,000).

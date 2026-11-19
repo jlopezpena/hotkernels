@@ -76,10 +76,10 @@
 
 // A flat block: M sixteen times.
 .macro FLAT_STORE
-    stp     q31, q31, [x1]
-    stp     q31, q31, [x1, #32]
-    stp     q31, q31, [x1, #64]
-    stp     q31, q31, [x1, #96]
+    stnp    q31, q31, [x1]
+    stnp    q31, q31, [x1, #32]
+    stnp    q31, q31, [x1, #64]
+    stnp    q31, q31, [x1, #96]
     add     x0, x0, #128
     add     x1, x1, #128
     subs    x2, x2, #16
@@ -256,10 +256,10 @@ Lrising:
     umaxv   s16, v16.4s
     fmov    w9, s16
     cbnz    w9, Lrising_fail
-    stp     q0, q1, [x1]
-    stp     q2, q3, [x1, #32]
-    stp     q4, q5, [x1, #64]
-    stp     q6, q7, [x1, #96]
+    stnp    q0, q1, [x1]
+    stnp    q2, q3, [x1, #32]
+    stnp    q4, q5, [x1, #64]
+    stnp    q6, q7, [x1, #96]
     add     x0, x0, #128
     add     x1, x1, #128
     subs    x2, x2, #16
