@@ -18,7 +18,7 @@ It adds a third level of timing, above the judge and above `delivery time`: whol
 - **Step 3 is in progress.** Five more workloads are added: NPBench's `azimint_hist`, `mandelbrot1` and `mandelbrot2`, numpy-benchmarks' `make_decision`, and a fractal flame renderer written here. They were chosen by a probe of both suites in full; [Probed and not added](#probed-and-not-added) lists the rest and what would make each worth adding. The issues for calls left to NumPy are not filed yet.
 - **Step 4 is not started.** The README table and the site.
 
-A run of the nine on an Apple M4 Max at a load average of 2.0 is in [delivery/results/apple-m4-max-workloads.md](../delivery/results/apple-m4-max-workloads.md). At size `M`, with identical results: the pandas filter 5.86x faster, `azimint_hist` 1.70x, the flame renderer 1.56x, `make_decision` 1.51x, `azimint_naive` 1.15x, `mandelbrot2` 1.12x, `equalize_hist` 1.10x and `mandelbrot1` 1.00x.
+A run of the nine on an Apple M4 Max at a load average of 2.1 is in [delivery/results/apple-m4-max-workloads.md](../delivery/results/apple-m4-max-workloads.md). At size `M`, with identical results: the pandas filter 5.76x faster, `azimint_hist` 1.70x, the flame renderer 1.57x, `make_decision` 1.54x, `azimint_naive` 1.14x, `mandelbrot2` 1.12x, `equalize_hist` 1.10x and `mandelbrot1` 1.01x.
 
 ## What changed in the building
 

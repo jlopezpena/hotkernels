@@ -5,8 +5,8 @@
     "os": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
     "numpy": "2.5.5",
     "python": "3.14.8",
-    "git": "7902be1",
-    "load_average": 2.02,
+    "git": "db85d9c",
+    "load_average": 2.12,
     "libraries": {
       "numpy": "2.5.5",
       "pandas": "3.1.1",
@@ -21,9 +21,9 @@
       "ours": true,
       "size": "S",
       "identical": true,
-      "numpy_ns": 31016375,
-      "hotkernels_ns": 5316500,
-      "rounds": 28,
+      "numpy_ns": 31022542,
+      "hotkernels_ns": 5167250,
+      "rounds": 29,
       "counts": [
         {
           "numpy_call": "np.argmax",
@@ -104,7 +104,7 @@
           "left_to_numpy": 0
         }
       ],
-      "speedup": 5.833983823944324
+      "speedup": 6.00368513232377
     },
     {
       "workload": "flame",
@@ -112,9 +112,9 @@
       "ours": true,
       "size": "S",
       "identical": true,
-      "numpy_ns": 11626000,
-      "hotkernels_ns": 6874375,
-      "rounds": 83,
+      "numpy_ns": 11070917,
+      "hotkernels_ns": 6724250,
+      "rounds": 82,
       "counts": [
         {
           "numpy_call": "np.clip",
@@ -177,7 +177,7 @@
           "left_to_numpy": 0
         }
       ],
-      "speedup": 1.6912082916628783
+      "speedup": 1.64641662638956
     },
     {
       "workload": "flame",
@@ -185,8 +185,8 @@
       "ours": true,
       "size": "M",
       "identical": true,
-      "numpy_ns": 99003458,
-      "hotkernels_ns": 63535833,
+      "numpy_ns": 98957625,
+      "hotkernels_ns": 63225250,
       "rounds": 10,
       "counts": [
         {
@@ -244,7 +244,7 @@
           "left_to_numpy": 0
         }
       ],
-      "speedup": 1.5582302666906092
+      "speedup": 1.5651598846979649
     },
     {
       "workload": "azimint_naive",
@@ -252,9 +252,9 @@
       "ours": false,
       "size": "S",
       "identical": true,
-      "numpy_ns": 11641042,
-      "hotkernels_ns": 10425291,
-      "rounds": 85,
+      "numpy_ns": 11722792,
+      "hotkernels_ns": 10473875,
+      "rounds": 78,
       "counts": [
         {
           "numpy_call": "x[mask]",
@@ -263,7 +263,7 @@
           "left_to_numpy": 0
         }
       ],
-      "speedup": 1.1166155457914795
+      "speedup": 1.1192411595517417
     },
     {
       "workload": "azimint_naive",
@@ -271,9 +271,9 @@
       "ours": false,
       "size": "M",
       "identical": true,
-      "numpy_ns": 96738833,
-      "hotkernels_ns": 83932042,
-      "rounds": 10,
+      "numpy_ns": 94604125,
+      "hotkernels_ns": 82739417,
+      "rounds": 11,
       "counts": [
         {
           "numpy_call": "x[mask]",
@@ -282,7 +282,7 @@
           "left_to_numpy": 0
         }
       ],
-      "speedup": 1.1525852427133847
+      "speedup": 1.1433984965110402
     },
     {
       "workload": "azimint_hist",
@@ -290,9 +290,9 @@
       "ours": false,
       "size": "S",
       "identical": true,
-      "numpy_ns": 7927958,
-      "hotkernels_ns": 4791041,
-      "rounds": 120,
+      "numpy_ns": 8078750,
+      "hotkernels_ns": 4722792,
+      "rounds": 118,
       "counts": [
         {
           "numpy_call": "x[mask]",
@@ -325,7 +325,7 @@
           "left_to_numpy": 16
         }
       ],
-      "speedup": 1.6547464319341036
+      "speedup": 1.7105877201452022
     },
     {
       "workload": "azimint_hist",
@@ -333,8 +333,8 @@
       "ours": false,
       "size": "M",
       "identical": true,
-      "numpy_ns": 82161792,
-      "hotkernels_ns": 48280709,
+      "numpy_ns": 81886917,
+      "hotkernels_ns": 48265625,
       "rounds": 12,
       "counts": [
         {
@@ -368,7 +368,7 @@
           "left_to_numpy": 153
         }
       ],
-      "speedup": 1.7017519771716692
+      "speedup": 1.6965887627063774
     },
     {
       "workload": "mandelbrot1",
@@ -376,9 +376,9 @@
       "ours": false,
       "size": "S",
       "identical": true,
-      "numpy_ns": 11016041,
-      "hotkernels_ns": 10997458,
-      "rounds": 81,
+      "numpy_ns": 10882542,
+      "hotkernels_ns": 10844666,
+      "rounds": 87,
       "counts": [
         {
           "numpy_call": "x[mask]",
@@ -399,7 +399,7 @@
           "left_to_numpy": 2
         }
       ],
-      "speedup": 1.0016897541231802
+      "speedup": 1.0034925925796148
     },
     {
       "workload": "mandelbrot1",
@@ -407,45 +407,76 @@
       "ours": false,
       "size": "M",
       "identical": true,
-      "numpy_ns": 106490375,
-      "hotkernels_ns": 106870250,
+      "numpy_ns": 105917458,
+      "hotkernels_ns": 105008875,
+      "rounds": 10,
+      "counts": [
+        {
+          "numpy_call": "x[mask]",
+          "elements": "float32",
+          "calls": 0,
+          "left_to_numpy": 300
+        },
+        {
+          "numpy_call": "x[mask] = v",
+          "elements": "float64",
+          "calls": 0,
+          "left_to_numpy": 301
+        },
+        {
+          "numpy_call": "x.astype(float32)",
+          "elements": "uint8",
+          "calls": 0,
+          "left_to_numpy": 2
+        }
+      ],
+      "speedup": 1.0086524400913732
+    },
+    {
+      "workload": "mandelbrot2",
+      "title": "NPBench mandelbrot2: escape-time Mandelbrot set, escaped points dropped",
+      "ours": false,
+      "size": "S",
+      "identical": true,
+      "numpy_ns": 11515042,
+      "hotkernels_ns": 10069708,
+      "rounds": 83,
+      "counts": [
+        {
+          "numpy_call": "x[mask]",
+          "elements": "float32",
+          "calls": 0,
+          "left_to_numpy": 240
+        },
+        {
+          "numpy_call": "x[mask]",
+          "elements": "float64",
+          "calls": 480,
+          "left_to_numpy": 0
+        },
+        {
+          "numpy_call": "x.astype(float32)",
+          "elements": "uint8",
+          "calls": 0,
+          "left_to_numpy": 2
+        }
+      ],
+      "speedup": 1.1435328611316238
+    },
+    {
+      "workload": "mandelbrot2",
+      "title": "NPBench mandelbrot2: escape-time Mandelbrot set, escaped points dropped",
+      "ours": false,
+      "size": "M",
+      "identical": true,
+      "numpy_ns": 114636000,
+      "hotkernels_ns": 102166875,
       "rounds": 9,
       "counts": [
         {
           "numpy_call": "x[mask]",
           "elements": "float32",
           "calls": 0,
-          "left_to_numpy": 300
-        },
-        {
-          "numpy_call": "x[mask] = v",
-          "elements": "float64",
-          "calls": 0,
-          "left_to_numpy": 301
-        },
-        {
-          "numpy_call": "x.astype(float32)",
-          "elements": "uint8",
-          "calls": 0,
-          "left_to_numpy": 2
-        }
-      ],
-      "speedup": 0.9964454560553568
-    },
-    {
-      "workload": "mandelbrot2",
-      "title": "NPBench mandelbrot2: escape-time Mandelbrot set, escaped points dropped",
-      "ours": false,
-      "size": "S",
-      "identical": true,
-      "numpy_ns": 11514834,
-      "hotkernels_ns": 10198083,
-      "rounds": 73,
-      "counts": [
-        {
-          "numpy_call": "x[mask]",
-          "elements": "float32",
-          "calls": 0,
           "left_to_numpy": 240
         },
         {
@@ -461,38 +492,7 @@
           "left_to_numpy": 2
         }
       ],
-      "speedup": 1.129117501789307
-    },
-    {
-      "workload": "mandelbrot2",
-      "title": "NPBench mandelbrot2: escape-time Mandelbrot set, escaped points dropped",
-      "ours": false,
-      "size": "M",
-      "identical": true,
-      "numpy_ns": 115325417,
-      "hotkernels_ns": 102827125,
-      "rounds": 8,
-      "counts": [
-        {
-          "numpy_call": "x[mask]",
-          "elements": "float32",
-          "calls": 0,
-          "left_to_numpy": 240
-        },
-        {
-          "numpy_call": "x[mask]",
-          "elements": "float64",
-          "calls": 480,
-          "left_to_numpy": 0
-        },
-        {
-          "numpy_call": "x.astype(float32)",
-          "elements": "uint8",
-          "calls": 0,
-          "left_to_numpy": 2
-        }
-      ],
-      "speedup": 1.1215466444286952
+      "speedup": 1.1220466516177576
     },
     {
       "workload": "make_decision",
@@ -500,9 +500,9 @@
       "ours": false,
       "size": "S",
       "identical": true,
-      "numpy_ns": 9077333,
-      "hotkernels_ns": 6044542,
-      "rounds": 96,
+      "numpy_ns": 9086333,
+      "hotkernels_ns": 5904583,
+      "rounds": 107,
       "counts": [
         {
           "numpy_call": "np.argmin",
@@ -511,7 +511,7 @@
           "left_to_numpy": 0
         }
       ],
-      "speedup": 1.5017404130867154
+      "speedup": 1.5388610846862514
     },
     {
       "workload": "make_decision",
@@ -519,8 +519,8 @@
       "ours": false,
       "size": "M",
       "identical": true,
-      "numpy_ns": 89670042,
-      "hotkernels_ns": 59506334,
+      "numpy_ns": 90615417,
+      "hotkernels_ns": 58696333,
       "rounds": 11,
       "counts": [
         {
@@ -530,7 +530,7 @@
           "left_to_numpy": 0
         }
       ],
-      "speedup": 1.506899114302689
+      "speedup": 1.5438003086155314
     },
     {
       "workload": "pandas_filter",
@@ -538,9 +538,9 @@
       "ours": false,
       "size": "S",
       "identical": true,
-      "numpy_ns": 11580542,
-      "hotkernels_ns": 1948375,
-      "rounds": 77,
+      "numpy_ns": 11424625,
+      "hotkernels_ns": 1945166,
+      "rounds": 80,
       "counts": [
         {
           "numpy_call": "x[mask]",
@@ -561,7 +561,7 @@
           "left_to_numpy": 1
         }
       ],
-      "speedup": 5.943692564316417
+      "speedup": 5.873341915291548
     },
     {
       "workload": "pandas_filter",
@@ -569,8 +569,8 @@
       "ours": false,
       "size": "M",
       "identical": true,
-      "numpy_ns": 119671584,
-      "hotkernels_ns": 20431042,
+      "numpy_ns": 117355459,
+      "hotkernels_ns": 20391709,
       "rounds": 8,
       "counts": [
         {
@@ -592,7 +592,7 @@
           "left_to_numpy": 1
         }
       ],
-      "speedup": 5.857341196792606
+      "speedup": 5.755057557951616
     },
     {
       "workload": "equalize_hist",
@@ -600,9 +600,9 @@
       "ours": false,
       "size": "S",
       "identical": true,
-      "numpy_ns": 9411583,
-      "hotkernels_ns": 8480417,
-      "rounds": 51,
+      "numpy_ns": 9181875,
+      "hotkernels_ns": 8186167,
+      "rounds": 68,
       "counts": [
         {
           "numpy_call": "np.cumsum",
@@ -629,7 +629,7 @@
           "left_to_numpy": 1
         }
       ],
-      "speedup": 1.1098019118635323
+      "speedup": 1.1216329938052816
     },
     {
       "workload": "equalize_hist",
@@ -637,9 +637,9 @@
       "ours": false,
       "size": "M",
       "identical": true,
-      "numpy_ns": 104598625,
-      "hotkernels_ns": 94931875,
-      "rounds": 9,
+      "numpy_ns": 102893625,
+      "hotkernels_ns": 93294958,
+      "rounds": 10,
       "counts": [
         {
           "numpy_call": "np.cumsum",
@@ -666,7 +666,7 @@
           "left_to_numpy": 1
         }
       ],
-      "speedup": 1.1018282847568321
+      "speedup": 1.1028851634190135
     }
   ]
 }
