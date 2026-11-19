@@ -105,7 +105,7 @@ NumPy's `binsearch<double>` was 10.6% of the run, the largest single function. W
 | 5.1% | `blake2b` | trimesh hashing its arrays for its cache |
 | 7.6% | `mapiter_get`, `npyiter_buffered_iternext` | indexing by integer arrays, `vertices[faces]` |
 
-**Why it does not gain more.** A quarter of the program is sorting integer keys, and there is no sort kernel ([#188](https://github.com/sofeikov/hotkernels/issues/188)). Another eighth is gathering rows by index, `vertices[faces]`, which no kernel serves. Of the 61 calls left to NumPy, 19 are `x[mask]` on arrays no kernel covers, 19 are casts other than `uint8` to `float32`, and 11 are sums of types other than `uint8`; none is a large share.
+**Why it does not gain more.** A quarter of the program is sorting integer keys, and there was no sort kernel when this was recorded ([#188](https://github.com/sofeikov/hotkernels/issues/188)). There is one now for the stable kind, which takes three of the nine `argsort` calls; the application then ran at 1.25x in a later, separate run ([sort-design.md](sort-design.md#status)). Four of the others ask for the default kind, which is not served ([#207](https://github.com/sofeikov/hotkernels/issues/207)). Another eighth is gathering rows by index, `vertices[faces]`, which no kernel serves. Of the 61 calls left to NumPy, 19 are `x[mask]` on arrays no kernel covers, 19 are casts other than `uint8` to `float32`, and 11 are sums of types other than `uint8`; none is a large share.
 
 ## `sklearn_metrics`: 1.03x
 
@@ -122,7 +122,7 @@ scikit-learn 1.9.1: ROC and precision-recall curves, AUC, average precision, a c
 | 3.2% | 20 | `np.searchsorted` on `int64`, in the label encoder |
 | 3.2% | 183 | reductions |
 
-**Why it does not gain more.** Neither of the two has a kernel. A stable `argsort` of a million `float64` takes 117 ms; one twice as fast would make this application 1.33x faster ([#188](https://github.com/sofeikov/hotkernels/issues/188)). `np.unique` on a million labels with two distinct values takes 5.9 ms and hashes every element; done as the bincount kernels do it, the application would be about 1.25x faster ([#189](https://github.com/sofeikov/hotkernels/issues/189)).
+**Why it does not gain more.** Neither of the two has a kernel. A stable `argsort` of a million `float64` takes 117 ms; one twice as fast would make this application 1.33x faster ([#188](https://github.com/sofeikov/hotkernels/issues/188)). Since this was recorded the stable `argsort` has kernels, thirteen times faster from Python at that size, and the application ran at 1.87x with them: 998 ms to 533 ms ([sort-design.md](sort-design.md#status)). `np.unique` on a million labels with two distinct values takes 5.9 ms and hashes every element; done as the bincount kernels do it, the application would be about 1.25x faster ([#189](https://github.com/sofeikov/hotkernels/issues/189)).
 
 **What was left to NumPy.** 300,161 calls, of which 300,000 are one statement, `np.argmax(proba, axis=1)`, counted once per row. It takes 2.5 ms, 0.25% of the run ([#190](https://github.com/sofeikov/hotkernels/issues/190)). It is now served, in 0.7 ms, and counted as one call. The rest are casts, `searchsorted` on `int64`, `np.bincount` with weights and `np.cumsum` on `float64`.
 
@@ -174,7 +174,7 @@ empyrical-reloaded 0.7.3: twelve statistics, alpha and beta, cumulative returns,
 |---|---|---|
 | [#186](https://github.com/sofeikov/hotkernels/issues/186) | `np.clip(x, lo, hi, out=x)` is left to NumPy | 9.1 µs against 1.4 µs on 100 × 100 |
 | [#187](https://github.com/sofeikov/hotkernels/issues/187) | Accumulation along axis 0 of a 2-D array | 38% of `empyrical_stats`; 6x a row at a time |
-| [#188](https://github.com/sofeikov/hotkernels/issues/188) | No kernel sorts | 49.6% of `sklearn_metrics`, 26.3% of `trimesh_mesh` |
+| [#188](https://github.com/sofeikov/hotkernels/issues/188) | No kernel sorts. Since built for the stable kind: [sort-design.md](sort-design.md) | 49.6% of `sklearn_metrics`, 26.3% of `trimesh_mesh` |
 | [#189](https://github.com/sofeikov/hotkernels/issues/189) | `np.unique` on labels | 24.9% of `sklearn_metrics` |
 | [#190](https://github.com/sofeikov/hotkernels/issues/190) | `argmax(axis=1)` over short rows, and how it is counted | 300,000 calls counted for 2.5 ms |
 | [#191](https://github.com/sofeikov/hotkernels/issues/191) | Fusion: `w -= lr * g` | the largest cost of `mlp_train` after the matrix products |

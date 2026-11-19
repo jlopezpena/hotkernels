@@ -24,7 +24,7 @@
 
 // The methods that are hooked, as indices into `methods`.
 enum { M_ASTYPE, M_SUM, M_NONZERO, M_CUMSUM, M_SEARCHSORTED, M_ARGMAX, M_ARGMIN, M_CLIP, M_ACCUMULATE, M_REDUCEAT,
-       M_ANY, M_ROUND, M_COUNT };
+       M_ANY, M_ROUND, M_ARGSORT, M_COUNT };
 
 // The type whose method table holds a hooked method. The ufunc type is reached
 // through NumPy's table of pointers, which is filled only when the module is
@@ -1590,6 +1590,319 @@ static PyObject *method_round(PyObject *self, PyObject *args, PyObject *kwargs) 
     return ((PyCFunctionWithKeywords)(void (*)(void))methods[M_ROUND].original)(self, args, kwargs);
 }
 
+// ------------------------------------------------------------------ argsort
+
+// Below this many elements a stable argsort is left to NumPy. Its timsort
+// sorts short arrays by insertion, and from Python (Apple M1 Pro) the kernel
+// was level with it at 128 elements (0.95x to 1.30x by element type), 1.2x to
+// 1.6x faster at 192 and 1.6x to 1.95x at 256; at 64 and 96 it took up to
+// 1.6 times as long on keys that differ in all 64 bits.
+#define ARGSORT_MIN_N 256
+
+// The argsort kernels are defined below this many elements (their header
+// comments say why).
+#define ARGSORT_MAX_N ((npy_intp)1 << 26)
+
+// Words of memory a call needs per element: a copy of the keys, and the
+// kernel's output of three words, of which the first is the result.
+#define ARGSORT_WORDS_PER_ELEMENT 4
+
+// NumPy sorts stably with timsort, which takes time in proportion to the
+// disorder of its input and is far quicker than the kernel on input that is
+// nearly in order: a million sorted float64 take it 1 ms where the kernel
+// takes 7. Merging is what it is slow at: two sorted halves of a million
+// already take it as long as the kernel takes on random elements. So the
+// call is looked at before the kernel gets it (argsort_order_*), in terms of
+// falls: places where an element is less than the one before it.
+//
+// - No fall at all: the array is sorted and the answer is 0, 1, 2, ..., which
+//   the hook writes itself.
+// - At most ARGSORT_FALL_LIMIT falls: sorted but for a few elements. NumPy's.
+// - One run, from one fall to the next, that leaves out fewer than one
+//   element in ARGSORT_RUN_REMAINDER: a sorted array with a few new elements
+//   appended, for example. NumPy's. Such a run starts in the first
+//   n / ARGSORT_RUN_REMAINDER elements, so only the run that begins at the
+//   last fall in that stretch is measured.
+//
+// The same three, mirrored, for an array in strictly descending order, which
+// timsort reverses: no element that is not a fall gives n-1, ..., 1, 0.
+//
+// On shuffled data the count passes the limit within a few dozen elements
+// and the run that is measured ends at once, so the look costs a few hundred
+// comparisons. On ordered data it is one pass over the array a block at a
+// time, which the compiler turns into vector compares.
+#define ARGSORT_FALL_LIMIT 8
+#define ARGSORT_RUN_REMAINDER 32
+
+// Elements compared at a time when looking for the next fall.
+#define ARGSORT_SCAN_BLOCK 64
+
+// What a look at the order of an array found.
+typedef enum {
+    // Not in any order worth leaving to NumPy: the kernel's.
+    ARGSORT_SHUFFLED,
+    // No fall at all: the answer is known.
+    ARGSORT_IN_ORDER,
+    // Nearly in order: NumPy's.
+    ARGSORT_NEARLY_IN_ORDER,
+} argsort_order;
+
+// NumPy's order of two elements: true when `a` sorts before `b`. For floats
+// a NaN sorts after every number and is not before another NaN.
+#define ARGSORT_LESS_INT(a, b) ((a) < (b))
+#define ARGSORT_LESS_FLOAT(a, b) (((a) < (b)) | (((b) != (b)) & ((a) == (a))))
+
+// Defines `next_function`, the first index from `k` up to `n` whose element
+// breaks the run after the one before it (or `n`), and `order_function`, the
+// look described above. `BREAKS(a, b)` says whether `b`, coming right after
+// `a`, breaks a run: `b` sorts before `a` for ascending runs, and does not
+// for strictly descending ones. `KEEPS(a, b)` is one comparison that is true
+// only when `b` does not break the run; a block is passed over when it holds
+// for every pair in it. For floats it is false whenever a NaN is involved,
+// so a block with a NaN gets the exact test: on the Apple M1 Pro a million
+// sorted float64 are passed over in 0.16 ms this way and in 0.25 ms by the
+// exact test alone.
+#define ARGSORT_ORDER_TEST(next_function, order_function, c_type, BREAKS, KEEPS)                \
+    static npy_intp next_function(const c_type *x, npy_intp k, npy_intp n) {                    \
+        while (k + ARGSORT_SCAN_BLOCK <= n) {                                                   \
+            unsigned kept = 1;                                                                  \
+            for (int j = 0; j < ARGSORT_SCAN_BLOCK; j++) kept &= (unsigned)KEEPS(x[k + j - 1], x[k + j]); \
+            if (!kept) {                                                                        \
+                unsigned any = 0;                                                               \
+                for (int j = 0; j < ARGSORT_SCAN_BLOCK; j++) any |= (unsigned)BREAKS(x[k + j - 1], x[k + j]); \
+                if (any) break;                                                                 \
+            }                                                                                   \
+            k += ARGSORT_SCAN_BLOCK;                                                            \
+        }                                                                                       \
+        while (k < n && !BREAKS(x[k - 1], x[k])) k++;                                           \
+        return k;                                                                               \
+    }                                                                                           \
+    static argsort_order order_function(const c_type *x, npy_intp n) {                          \
+        const npy_intp enough = n - n / ARGSORT_RUN_REMAINDER, head = n - enough;               \
+        npy_intp falls = 0, start = 0, longest = 0;                                             \
+        for (;;) {                                                                              \
+            const npy_intp fall = next_function(x, start + 1, n);                               \
+            if (fall - start > longest) longest = fall - start;                                 \
+            if (fall == n) return falls == 0 ? ARGSORT_IN_ORDER : ARGSORT_NEARLY_IN_ORDER;      \
+            start = fall;                                                                       \
+            if (++falls > ARGSORT_FALL_LIMIT) break;                                            \
+        }                                                                                       \
+        if (longest >= enough) return ARGSORT_NEARLY_IN_ORDER;                                  \
+        if (start > head) return ARGSORT_SHUFFLED;                                              \
+        /* The last fall at or before `head`, found from `head` downwards. */                   \
+        npy_intp last = head;                                                                   \
+        while (last > start && !BREAKS(x[last - 1], x[last])) last--;                           \
+        const npy_intp end = next_function(x, head + 1, n);                                     \
+        return end - last >= enough ? ARGSORT_NEARLY_IN_ORDER : ARGSORT_SHUFFLED;               \
+    }
+
+#define ARGSORT_FALLS_INT(a, b) ARGSORT_LESS_INT(b, a)
+#define ARGSORT_FALLS_FLOAT(a, b) ARGSORT_LESS_FLOAT(b, a)
+#define ARGSORT_RISES_INT(a, b) (!ARGSORT_LESS_INT(b, a))
+#define ARGSORT_RISES_FLOAT(a, b) (!ARGSORT_LESS_FLOAT(b, a))
+#define ARGSORT_NOT_BELOW(a, b) ((b) >= (a))
+#define ARGSORT_BELOW(a, b) ((b) < (a))
+
+ARGSORT_ORDER_TEST(argsort_next_fall_f64, argsort_ascending_f64, double, ARGSORT_FALLS_FLOAT, ARGSORT_NOT_BELOW)
+ARGSORT_ORDER_TEST(argsort_next_rise_f64, argsort_descending_f64, double, ARGSORT_RISES_FLOAT, ARGSORT_BELOW)
+ARGSORT_ORDER_TEST(argsort_next_fall_i64, argsort_ascending_i64, int64_t, ARGSORT_FALLS_INT, ARGSORT_NOT_BELOW)
+ARGSORT_ORDER_TEST(argsort_next_rise_i64, argsort_descending_i64, int64_t, ARGSORT_RISES_INT, ARGSORT_BELOW)
+ARGSORT_ORDER_TEST(argsort_next_fall_u64, argsort_ascending_u64, uint64_t, ARGSORT_FALLS_INT, ARGSORT_NOT_BELOW)
+ARGSORT_ORDER_TEST(argsort_next_rise_u64, argsort_descending_u64, uint64_t, ARGSORT_RISES_INT, ARGSORT_BELOW)
+
+// The element types with an argsort kernel.
+typedef enum { ARGSORT_F64, ARGSORT_I64, ARGSORT_U64, ARGSORT_NONE } argsort_keys;
+
+// Which kernel sorts the elements of `self`: float64, or a 64-bit integer
+// type. C's `long` and `long long` are two NumPy types and both are 64 bits
+// on the platforms the kernels are built for. Everything else, datetimes
+// with their NaT included, is ARGSORT_NONE.
+static inline argsort_keys argsort_key_type(PyArrayObject *self) {
+    switch (PyArray_TYPE(self)) {
+    case NPY_DOUBLE: return ARGSORT_F64;
+#if NPY_SIZEOF_LONG == 8
+    case NPY_LONG: return ARGSORT_I64;
+    case NPY_ULONG: return ARGSORT_U64;
+#endif
+#if NPY_SIZEOF_LONGLONG == 8
+    case NPY_LONGLONG: return ARGSORT_I64;
+    case NPY_ULONGLONG: return ARGSORT_U64;
+#endif
+    default: return ARGSORT_NONE;
+    }
+}
+
+// True when the arguments of an argsort call ask for a stable sort along the
+// only axis of a one-dimensional array and for nothing else:
+//
+// - `axis` absent, or the Python int -1 or 0;
+// - `order` absent or None;
+// - `kind` the string 'stable' or 'mergesort', NumPy's two names for its
+//   stable sort, with `stable` absent or None; or `kind` absent or None and
+//   `stable` True;
+// - `descending`, which NumPy 2.4 added, absent.
+//
+// NumPy reads only the first letter of `kind`, so 'Stable' and 'm' are
+// stable sorts too; they are rare spellings and are left to it, as is every
+// combination it rejects (`kind` and `stable` together).
+static HK_NOINLINE bool argsort_arguments_are_stable(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { AXIS, KIND, ORDER, STABLE, DESCENDING, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"axis", "kind", "order", "stable", "descending"};
+    // `stable` and `descending` are keyword-only.
+    enum { POSITIONAL = 3 };
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, POSITIONAL, bound)) return false;
+    if (bound[DESCENDING] != NULL || !hk_is_absent(bound[ORDER])) return false;
+    if (bound[AXIS] != NULL) {
+        if (!PyLong_CheckExact(bound[AXIS])) return false;
+        int overflow = 0;
+        const long axis = PyLong_AsLongAndOverflow(bound[AXIS], &overflow);
+        if (overflow != 0 || (axis != -1 && axis != 0)) return false;
+    }
+    PyObject *kind = bound[KIND], *stable = bound[STABLE];
+    if (hk_is_absent(kind)) return stable == Py_True;
+    if (!hk_is_absent(stable) || !PyUnicode_CheckExact(kind)) return false;
+    return hk_text_is(kind, "stable") || hk_text_is(kind, "mergesort");
+}
+
+// What the look at an array's order means for the call.
+typedef enum {
+    // The kernel sorts it.
+    ARGSORT_SORT,
+    // In ascending order: the answer is 0, 1, 2, ...
+    ARGSORT_ASCENDING,
+    // In strictly descending order: the answer is n-1, ..., 1, 0.
+    ARGSORT_DESCENDING,
+    // Nearly in order one way or the other: NumPy's.
+    ARGSORT_LEAVE,
+} argsort_plan;
+
+// Look at the order of the `n` contiguous elements at `data`; see
+// ARGSORT_FALL_LIMIT. An array is tested for descending order only when it
+// is not in ascending order, so one whose elements are all equal is ascending.
+static argsort_plan argsort_look(argsort_keys keys, const void *data, npy_intp n) {
+    const argsort_order ascending = keys == ARGSORT_F64   ? argsort_ascending_f64(data, n)
+                                    : keys == ARGSORT_I64 ? argsort_ascending_i64(data, n)
+                                                          : argsort_ascending_u64(data, n);
+    if (ascending == ARGSORT_IN_ORDER) return ARGSORT_ASCENDING;
+    if (ascending == ARGSORT_NEARLY_IN_ORDER) return ARGSORT_LEAVE;
+    const argsort_order descending = keys == ARGSORT_F64   ? argsort_descending_f64(data, n)
+                                     : keys == ARGSORT_I64 ? argsort_descending_i64(data, n)
+                                                           : argsort_descending_u64(data, n);
+    if (descending == ARGSORT_IN_ORDER) return ARGSORT_DESCENDING;
+    return descending == ARGSORT_NEARLY_IN_ORDER ? ARGSORT_LEAVE : ARGSORT_SORT;
+}
+
+// The memory of one call: ARGSORT_WORDS_PER_ELEMENT words per element, or
+// NULL when it cannot be had.
+static uint64_t *argsort_memory(npy_intp n) {
+    return malloc((size_t)n * ARGSORT_WORDS_PER_ELEMENT * sizeof(uint64_t));
+}
+
+// Copy the `n` elements of a one-dimensional array of 8-byte elements, which
+// lie `stride` bytes apart from `data`, to `copy`. An element may sit at an
+// address that is not a multiple of 8, so each is moved as bytes.
+static void argsort_copy(uint64_t *copy, const char *data, npy_intp stride, npy_intp n) {
+    if (stride == (npy_intp)sizeof(uint64_t)) {
+        memcpy(copy, data, (size_t)n * sizeof(uint64_t));
+        return;
+    }
+    for (npy_intp i = 0; i < n; i++) memcpy(&copy[i], data + i * stride, sizeof(uint64_t));
+}
+
+// x.argsort(kind='stable') for a one-dimensional float64, int64 or uint64
+// array: the argsort kernels. np.argsort(x, kind=...) calls the method, as do
+// np.unique(x, return_index=True) and scikit-learn's ranking metrics.
+//
+// The kernel reads its input three times and sizes its buckets from the first
+// reading, so it must not see the array change in between: it would write
+// outside its buffers. It is therefore given a copy, made here with the
+// interpreter lock held, and sorts the copy with the lock released. The copy
+// costs about a fiftieth of the sort.
+//
+// Because the kernel sorts a copy, the array need not be contiguous: a view
+// with a step, or a reversed one, is copied element by element. NumPy copies
+// such an array before it sorts it too. scikit-learn's metrics sort
+// `np.flip(scores)`, a reversed view, so this is the call that matters there.
+// A contiguous array is looked at for order where it lies, before any memory
+// is asked for; any other is copied first and the copy looked at.
+//
+// The kernel's output is scratch: three words per element, of which the first
+// n are the result. It is a buffer of the binding's own, and the result is
+// copied out of it.
+static HK_NOINLINE PyObject *try_argsort(PyObject *self, argsort_keys keys, PyObject *const *args, Py_ssize_t nargs,
+                                         PyObject *kwnames) {
+    PyArrayObject *x = (PyArrayObject *)self;
+    npy_intp n = PyArray_SIZE(x);
+    if (n < ARGSORT_MIN_N || n >= ARGSORT_MAX_N) return NULL;
+    if (!argsort_arguments_are_stable(args, nargs, kwnames)) return NULL;
+    const char *data = PyArray_BYTES(x);
+    const npy_intp stride = PyArray_STRIDES(x)[0];
+    const bool in_place = stride == (npy_intp)sizeof(uint64_t) && PyArray_ISALIGNED(x);
+    const hk_kernel kernel = keys == ARGSORT_F64 ? HK_ARGSORT_F64 : keys == ARGSORT_I64 ? HK_ARGSORT_I64 : HK_ARGSORT_U64;
+
+    uint64_t *memory = NULL;
+    if (!in_place) {
+        memory = argsort_memory(n);
+        if (memory == NULL) return NULL;
+        argsort_copy(memory, data, stride, n);
+    }
+    const argsort_plan plan = argsort_look(keys, in_place ? (const void *)data : (const void *)memory, n);
+    PyObject *result = plan == ARGSORT_LEAVE ? NULL : PyArray_SimpleNew(1, &n, NPY_INTP);
+    if (result == NULL) {
+        // Left to NumPy, or no memory for the result, which is NumPy's to report.
+        PyErr_Clear();
+        free(memory);
+        return NULL;
+    }
+    npy_intp *indices = PyArray_DATA((PyArrayObject *)result);
+    if (plan == ARGSORT_ASCENDING) {
+        for (npy_intp i = 0; i < n; i++) indices[i] = i;
+    } else if (plan == ARGSORT_DESCENDING) {
+        // No two elements are equal, so the reversed order is the only sorted one.
+        for (npy_intp i = 0; i < n; i++) indices[i] = n - 1 - i;
+    } else {
+        if (memory == NULL) {
+            memory = argsort_memory(n);
+            if (memory == NULL) {
+                Py_DECREF(result);
+                return NULL;
+            }
+            argsort_copy(memory, data, stride, n);
+        }
+        const uint64_t *copy = memory;
+        int64_t *out = (int64_t *)(memory + n);
+        HK_BEGIN_NOGIL(n)
+        if (keys == ARGSORT_F64) argsort_f64((const double *)copy, out, (size_t)n);
+        else if (keys == ARGSORT_I64) argsort_i64((const int64_t *)copy, out, (size_t)n);
+        else argsort_u64(copy, out, (size_t)n);
+        memcpy(indices, out, (size_t)n * sizeof(int64_t));
+        HK_END_NOGIL
+    }
+    free(memory);
+    hk_take(kernel);
+    return result;
+}
+
+// The array's type is tested before the arguments are looked at. A call on
+// an element type without a kernel goes on uncounted; one on a type that has
+// a kernel and is not taken (the default kind, an axis of a matrix, a short
+// or nearly sorted array) is counted.
+static PyObject *method_argsort(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    if (hk_is_plain_array(self)) {
+        PyArrayObject *x = (PyArrayObject *)self;
+        const argsort_keys keys = argsort_key_type(x);
+        if (keys != ARGSORT_NONE) {
+            if (PyArray_NDIM(x) == 1 && PyArray_ISNOTSWAPPED(x)) {
+                PyObject *result = try_argsort(self, keys, args, nargs, kwnames);
+                if (result != NULL) return result;
+            }
+            hk_pass(HK_OP_ARGSORT);
+        }
+    }
+    return ((hk_fast_keywords)(void (*)(void))methods[M_ARGSORT].original)(self, args, nargs, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 // Shorthand for one entry of `methods`: the method `name` of type `owner`,
@@ -1613,6 +1926,7 @@ static hk_method methods[M_COUNT] = {
                              method_reduceat),
     [M_ANY] = HK_METHOD("any", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_any),
     [M_ROUND] = HK_METHOD("round", OWNER_NDARRAY, NULL, METH_VARARGS | METH_KEYWORDS, method_round),
+    [M_ARGSORT] = HK_METHOD("argsort", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_argsort),
 };
 
 // The type object of `owner`, and its name for messages.
@@ -1672,5 +1986,6 @@ hk_hook hk_method_hooks[] = {
     {"ufunc.reduceat", method_apply, method_remove, M_REDUCEAT, false},
     {"method.any", method_apply, method_remove, M_ANY, false},
     {"method.round", method_apply, method_remove, M_ROUND, false},
+    {"method.argsort", method_apply, method_remove, M_ARGSORT, false},
     {NULL, NULL, NULL, 0, false},
 };

@@ -590,3 +590,79 @@ NOINLINE i64 unique_i64(const i64 *x, i64 n, i64 *out, i64 cap) {
     return count;
 }
 BENCH_OUT(unique_i64, i64, (const i64 *x, i64 n, i64 *out0, i64 cap, i64 fresh, i64 reps), (x, n, out, cap))
+
+// ---------------------------------------------------------------- argsort
+// A stable argsort two ways: the merge sort a programmer would write first,
+// and a least-significant-digit radix sort. Both sort keys whose unsigned
+// order is NumPy's order of the elements, and both write the indices to
+// out[0..n) and use the rest of `out`, which has 5n elements, as working
+// memory: the merge sort n of it, the radix sort all of it.
+
+// Keys: NumPy puts NaN last and calls -0.0 and +0.0, and any two NaNs, equal.
+static inline uint64_t sort_key_f64(f64 v) {
+    uint64_t bits;
+    __builtin_memcpy(&bits, &v, sizeof bits);
+    const uint64_t sign = 0x8000000000000000ull;
+    if ((bits & ~sign) > 0x7ff0000000000000ull) return ~0ull;
+    if (bits == sign) bits = 0;
+    return (bits & sign) ? ~bits : (bits | sign);
+}
+static inline uint64_t sort_key_i64(i64 v) { return (uint64_t)v ^ 0x8000000000000000ull; }
+static inline uint64_t sort_key_u64(uint64_t v) { return v; }
+
+// Bottom-up merge sort of the indices, comparing the elements they point at.
+// A merge takes the left element on a tie, which keeps equal elements in
+// their original order.
+#define ARGSORT_MERGE(name, T, KEY)                                            \
+    NOINLINE i64 name(const T *x, i64 *out, i64 n) {                           \
+        i64 *from = out, *to = out + n;                                        \
+        for (i64 i = 0; i < n; i++) from[i] = i;                               \
+        for (i64 width = 1; width < n; width *= 2) {                           \
+            for (i64 lo = 0; lo < n; lo += 2 * width) {                        \
+                i64 mid = lo + width < n ? lo + width : n;                     \
+                i64 hi = lo + 2 * width < n ? lo + 2 * width : n;              \
+                i64 a = lo, b = mid, k = lo;                                   \
+                while (a < mid && b < hi)                                      \
+                    to[k++] = KEY(x[from[b]]) < KEY(x[from[a]]) ? from[b++] : from[a++]; \
+                while (a < mid) to[k++] = from[a++];                           \
+                while (b < hi) to[k++] = from[b++];                            \
+            }                                                                  \
+            i64 *swap = from; from = to; to = swap;                            \
+        }                                                                      \
+        if (from != out) for (i64 i = 0; i < n; i++) out[i] = from[i];         \
+        return 0;                                                              \
+    }                                                                          \
+    BENCH_OUT(name, i64, (const T *x, i64 *out0, i64 n, i64 fresh, i64 reps), (x, out, n))
+
+// Radix sort of (key, index) pairs, eight passes of eight bits, each a
+// counting sort. Nothing is skipped and nothing is packed: the plain form.
+#define RADIX_BITS 8
+#define RADIX_PASSES 8
+#define ARGSORT_RADIX(name, T, KEY)                                            \
+    NOINLINE i64 name(const T *x, i64 *out, i64 n) {                           \
+        uint64_t *from = (uint64_t *)out + n, *to = from + 2 * n;              \
+        for (i64 i = 0; i < n; i++) { from[2 * i] = KEY(x[i]); from[2 * i + 1] = (uint64_t)i; } \
+        for (int pass = 0; pass < RADIX_PASSES; pass++) {                      \
+            i64 start[1 << RADIX_BITS] = {0};                                  \
+            const int shift = pass * RADIX_BITS;                               \
+            for (i64 i = 0; i < n; i++) start[(from[2 * i] >> shift) & ((1 << RADIX_BITS) - 1)]++; \
+            i64 sum = 0;                                                       \
+            for (int v = 0; v < 1 << RADIX_BITS; v++) { i64 c = start[v]; start[v] = sum; sum += c; } \
+            for (i64 i = 0; i < n; i++) {                                      \
+                const i64 k = start[(from[2 * i] >> shift) & ((1 << RADIX_BITS) - 1)]++; \
+                to[2 * k] = from[2 * i];                                       \
+                to[2 * k + 1] = from[2 * i + 1];                               \
+            }                                                                  \
+            uint64_t *swap = from; from = to; to = swap;                       \
+        }                                                                      \
+        for (i64 i = 0; i < n; i++) out[i] = (i64)from[2 * i + 1];             \
+        return 0;                                                              \
+    }                                                                          \
+    BENCH_OUT(name, i64, (const T *x, i64 *out0, i64 n, i64 fresh, i64 reps), (x, out, n))
+
+ARGSORT_MERGE(argsort_merge_f64, f64, sort_key_f64)
+ARGSORT_MERGE(argsort_merge_i64, i64, sort_key_i64)
+ARGSORT_MERGE(argsort_merge_u64, uint64_t, sort_key_u64)
+ARGSORT_RADIX(argsort_radix_f64, f64, sort_key_f64)
+ARGSORT_RADIX(argsort_radix_i64, i64, sort_key_i64)
+ARGSORT_RADIX(argsort_radix_u64, uint64_t, sort_key_u64)

@@ -19,7 +19,7 @@ from .build import ARCH, ARM64, X86_64
 from .cases import TIE_DISTINCT_VALUES, build_inputs, fixed_cases, repeated_class, sizes
 from .check import KERNEL, LINT, NAIVE, CheckResult, build_all, check
 from .render import render
-from .spec import Out, drawn_class, load_spec
+from .spec import USED_RETURN, In, Kernel, Out, Size, Times, drawn_class, element_count, load_spec
 from .worker import CALLING_CONVENTION, MEMORY_SAFETY, WRONG_RESULT
 
 log = logging.getLogger(__name__)
@@ -91,6 +91,13 @@ STABILITY_KERNEL = "argmax_f32"
 
 # The fixture with an argument drawn from another, whose cases are inspected.
 DRAWN_KERNEL = "rank_u8"
+
+# The step for a capacity given as a multiple of n (spec.Times): the factor it
+# is sized with, the element counts it is sized at, and factors the format
+# must refuse.
+_TIMES_FACTOR = 3
+_TIMES_SIZES = [0, 1, 17, 4096]
+_TIMES_BAD_FACTORS = [0, -1, 1.5, True]
 
 
 @dataclass
@@ -255,6 +262,46 @@ def _drawn_outcomes() -> Iterator[Outcome]:
                   found[0] if found else "drawn from repeated values at every size and scalar set")
 
 
+def _times_spec(factor) -> Kernel:
+    """Build a spec whose output has `factor` elements per element of input.
+
+    Args:
+        factor: The factor given to Times, valid or not.
+
+    Returns:
+        The spec, if the format accepts it.
+
+    Raises:
+        ValueError: The format rejects the factor.
+    """
+    return Kernel(
+        name="times_probe",
+        returns="usize",
+        args=[In("x", "f64"), Out("out", "i64", capacity=Times(factor), used=USED_RETURN, scratch=True),
+              Size("n")],
+        oracle=lambda x: x,
+    )
+
+
+def _times_outcomes() -> Iterator[Outcome]:
+    """Check that a capacity given as a multiple of n is sized as one, and a bad factor refused."""
+    k = _times_spec(_TIMES_FACTOR)
+    counts = [element_count(k.out, n, capacity=True) for n in _TIMES_SIZES]
+    wanted = [_TIMES_FACTOR * n for n in _TIMES_SIZES]
+    sized = counts == wanted and [k.largest_buffer(n) for n in _TIMES_SIZES] == wanted
+    yield Outcome("capacity Times(k) (sizes)", sized,
+                  f"{_TIMES_FACTOR} elements per element of n" if sized else f"got {counts}, wanted {wanted}")
+    accepted = []
+    for factor in _TIMES_BAD_FACTORS:
+        try:
+            _times_spec(factor)
+        except ValueError:
+            continue
+        accepted.append(factor)
+    yield Outcome("capacity Times(k) (bad factors)", not accepted,
+                  f"accepted {accepted}" if accepted else "a factor that is not a whole number of at least 1 is refused")
+
+
 def _expected() -> dict[str, dict[str, str]]:
     """Return every broken variant this architecture has.
 
@@ -273,6 +320,7 @@ def _outcomes(speed: bool) -> Iterator[Outcome]:
         for variant, expected in variants.items():
             yield _broken_outcome(name, variant, expected)
     yield from _drawn_outcomes()
+    yield from _times_outcomes()
     yield from _placement_outcomes()
     yield from _slow_outcomes(speed)
 

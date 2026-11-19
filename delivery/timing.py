@@ -104,6 +104,12 @@ ROWS_WINDOW = 256
 # near 1 as daily returns plus one are.
 ROWS_SPREAD = 0.01
 
+# Element count from which the argsort kernels take a stable argsort: the
+# binding's limit (ARGSORT_MIN_N in hook_method.c).
+ARGSORT_MIN_N = 256
+# The share of a sorted array that the "nearly sorted" timing shuffles at its
+# end: few enough that the binding leaves the call to NumPy's timsort.
+ARGSORT_SHUFFLED_SHARE = 100
 # Length of the sorted array in the search statements that hold it fixed while
 # the number of needles grows: the shape of a lookup in a small table.
 SMALL_TABLE = 1000
@@ -184,6 +190,29 @@ def _floats(dtype: type, n: int) -> tuple:
 def _ints(dtype: type, n: int) -> tuple:
     """Build small integers, about a tenth of them zero."""
     return (_rng(n).integers(0, 10, n).astype(dtype),)
+
+
+def _unsigned(n: int) -> tuple:
+    """Build uint64 values drawn from the whole range of the type, as hashes are."""
+    return (_rng(n).integers(0, np.iinfo(np.uint64).max, n, dtype=np.uint64, endpoint=True),)
+
+
+def _sorted_floats(n: int) -> tuple:
+    """Build normally distributed float64 values in ascending order."""
+    return (np.sort(_rng(n).standard_normal(n)),)
+
+
+def _nearly_sorted_floats(n: int) -> tuple:
+    """Build sorted float64 values whose last one in ARGSORT_SHUFFLED_SHARE is in random order."""
+    (x,) = _sorted_floats(n)
+    tail = max(n // ARGSORT_SHUFFLED_SHARE, 2)
+    x[n - tail:] = _rng(n + 1).standard_normal(tail)
+    return (x,)
+
+
+def _stable_argsort(x: np.ndarray) -> np.ndarray:
+    """Call `np.argsort(x, kind='stable')`."""
+    return np.argsort(x, kind="stable")
 
 
 def _spread_ints(n: int) -> tuple:
@@ -539,6 +568,22 @@ TAKEN: tuple[Timed, ...] = (
     Timed("searchsorted", "np.digitize(x, bins)", "float64, 1,000 bin edges", partial(_search, SMALL_TABLE), _digitize, "searchsorted_right_f64"),
     Timed("interp", "np.interp(x, xp, fp)", "float64, as many queries as points", partial(_interp, None), np.interp, "interp_f64"),
     Timed("interp", "np.interp(x, xp, fp)", "float64, 1,000 points", partial(_interp, SMALL_TABLE), np.interp, "interp_f64"),
+    Timed("argsort", "np.argsort(x, kind='stable')", "float64", partial(_floats, np.float64), _stable_argsort,
+          "argsort_f64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "x.argsort(kind='mergesort')", "float64", partial(_floats, np.float64),
+          lambda x: x.argsort(kind="mergesort"), "argsort_f64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "np.argsort(x, kind='stable')", "int64, the whole range", _spread_ints, _stable_argsort,
+          "argsort_i64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "np.argsort(x, kind='stable')", "int64, ten values", partial(_ints, np.int64), _stable_argsort,
+          "argsort_i64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "np.argsort(x, kind='stable')", "uint64, the whole range", _unsigned, _stable_argsort,
+          "argsort_u64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "np.argsort(x, kind='stable')", "float64, already sorted", _sorted_floats, _stable_argsort,
+          "argsort_f64", min_n=ARGSORT_MIN_N),
+    # What scikit-learn's ranking metrics call on their scores.
+    Timed("argsort", "np.argsort(np.flip(x), kind='stable')", "float64, a reversed view",
+          partial(_floats, np.float64), lambda x: np.argsort(np.flip(x), kind="stable"), "argsort_f64",
+          min_n=ARGSORT_MIN_N),
 )
 
 # Statements that reach a hook and are left to NumPy: what a hook costs a
@@ -582,6 +627,10 @@ LEFT: tuple[Timed, ...] = (
     Timed("maskfill", "np.copyto(x, 0.0)", "float64", partial(_floats, np.float64), lambda x: np.copyto(x, 0.0), None),
     Timed("where", "np.where(mask, 1.0, 0.0)", "bool, half selected", partial(_mask, HALF), lambda m: np.where(m, 1.0, 0.0), None),
     Timed("where", "np.where(mask, a, b)", "float32, half true", partial(_selected, np.float32, HALF), np.where, None),
+    Timed("argsort", "np.argsort(x)", "float64, the default kind", partial(_floats, np.float64), np.argsort, None),
+    Timed("argsort", "np.argsort(x, kind='stable')", "float64, nearly sorted",
+          _nearly_sorted_floats, _stable_argsort, None),
+    Timed("argsort", "np.argsort(x, kind='stable')", "float32", partial(_floats, np.float32), _stable_argsort, None),
 )
 
 
