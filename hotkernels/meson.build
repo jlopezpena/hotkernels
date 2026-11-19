@@ -55,7 +55,8 @@ if kernel_arch != ''
   # which is where a checkout's kernel set is.
   read_file = [py, '-c', 'import sys; sys.stdout.write(open(sys.argv[1]).read())']
 
-  # Either list can be empty: on x86-64 every kernel has assembly.
+  # Either list can be empty: a platform where every kernel has assembly has
+  # no C sources.
   kernel_sources = kernel_set / 'sources'
   asm_sources = []
   foreach name : run_command(read_file + [kernel_set / 'assembly-sources.txt'], check: true).stdout().strip().split('\n')
