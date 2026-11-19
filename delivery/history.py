@@ -35,6 +35,9 @@ DATA_BRANCH = "perf-history"
 DEFAULT_REF = f"origin/{DATA_BRANCH}"
 # Load average above which a run is marked as taken on a busy machine.
 BUSY_LOAD = 1.0
+# The sizes, smallest first, as delivery/workloads/ names them. Repeated
+# here so that reading the history imports no workload.
+SIZE_ORDER = ("S", "M", "L")
 # The size the headline is the geometric mean over.
 HEADLINE_SIZE = "M"
 # What started a run: the nightly workflow, a person, or a one-off run of a past commit.
@@ -44,7 +47,7 @@ SOURCES = (NIGHTLY, MANUAL, BACKFILL)
 # Colons are left out, as some file systems do not allow them.
 _STAMP_FORMAT = "%Y-%m-%dT%H%MZ"
 # Characters of the commit hash in a file name.
-_SHORT_COMMIT = 7
+SHORT_COMMIT = 7
 # Where the release notes of the pull requests since the last release are kept,
 # and the name of one: <pull request number>.<type>.md (AGENTS.md, "Release notes").
 UPCOMING_NOTES = "release-notes/upcoming"
@@ -122,7 +125,7 @@ def run_path(directory: Path, machine: str, started: datetime, commit: str) -> P
     Returns:
         DIR/history/<machine>/<UTC date and time>-<short commit>.json.
     """
-    return directory / HISTORY_DIR / machine / f"{started.strftime(_STAMP_FORMAT)}-{commit[:_SHORT_COMMIT]}.json"
+    return directory / HISTORY_DIR / machine / f"{started.strftime(_STAMP_FORMAT)}-{commit[:SHORT_COMMIT]}.json"
 
 
 @dataclass(frozen=True)
@@ -435,7 +438,7 @@ def changes(runs: list[Run], cwd: Path = ROOT) -> list[Change]:
         if _has_commit(commit, cwd):
             present.append(commit)
         else:
-            log.warning("history: commit %s is not in this repository; fetch main with its full history", commit[:_SHORT_COMMIT])
+            log.warning("history: commit %s is not in this repository; fetch main with its full history", commit[:SHORT_COMMIT])
     found: dict[tuple[str, int], Change] = {}
     for earlier, later in pairwise(present):
         for change in _changes_between(earlier, later, cwd):

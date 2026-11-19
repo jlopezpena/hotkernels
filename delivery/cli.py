@@ -283,7 +283,7 @@ def _history_lines(series: H.Series) -> list[dict]:
             row = run.row(series.workload, series.size) if series.workload else None
             marks = [mark for mark, applies in (("break", group.break_before and index == 0), ("busy", run.busy),
                                                 (run.meta["source"], run.meta["source"] != H.NIGHTLY)) if applies]
-            lines.append({"recorded_at": run.recorded_at.strftime("%Y-%m-%d %H:%M"), "commit": run.commit[:7],
+            lines.append({"recorded_at": run.recorded_at.strftime("%Y-%m-%d %H:%M"), "commit": run.commit[:H.SHORT_COMMIT],
                           "numpy": run.meta["numpy"], "numpy_ns": row["numpy_ns"] if row else None,
                           "hotkernels_ns": row["hotkernels_ns"] if row else None, "speedup": speedup, "marks": marks})
     return lines

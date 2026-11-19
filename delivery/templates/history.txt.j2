@@ -9,7 +9,7 @@ busy = load average above {{ busy_load }}; manual or backfill = not a nightly ru
 
 {% if block.workload %}
 {{ block.workload }}
-  {{ "run (UTC)" | ljust(18) }}{{ "commit" | ljust(9) }}{{ "NumPy" | ljust(8) }}{{ "NumPy" | rjust(10) }}{{ "installed" | rjust(11) }}{{ "faster" | rjust(9) }}  marks
+  {{ "run (UTC)" | ljust(18) }}{{ "commit" | ljust(9) }}{{ "NumPy" | ljust(8) }}{{ "plain" | rjust(10) }}{{ "installed" | rjust(11) }}{{ "faster" | rjust(9) }}  marks
 {% else %}
 Headline: geometric mean of the workloads' speedups
   {{ "run (UTC)" | ljust(18) }}{{ "commit" | ljust(9) }}{{ "NumPy" | ljust(8) }}{{ "faster" | rjust(9) }}  marks
