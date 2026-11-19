@@ -88,6 +88,10 @@
     fmaxnm  v5.2d, v5.2d, v3.2d
     fmaxnm  v6.2d, v6.2d, v3.2d
     fmaxnm  v7.2d, v7.2d, v3.2d
+.if \first
+    // Every run already starts at x[0], which is M: step 3 has nothing to do.
+    dup     v31.2d, v7.d[1]         // the next M
+.else
     dup     v30.2d, v7.d[1]         // the block's maximum
     fmaxnm  v0.2d, v0.2d, v31.2d
     fmaxnm  v1.2d, v1.2d, v31.2d
@@ -98,6 +102,7 @@
     fmaxnm  v6.2d, v6.2d, v31.2d
     fmaxnm  v7.2d, v7.2d, v31.2d
     fmaxnm  v31.2d, v31.2d, v30.2d  // the next M
+.endif
     stp     q0, q1, [x1]
     stp     q2, q3, [x1, #32]
     stp     q4, q5, [x1, #64]

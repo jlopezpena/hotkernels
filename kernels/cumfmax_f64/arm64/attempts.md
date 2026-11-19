@@ -64,3 +64,10 @@ Apple M1 Pro, macOS, native.
 - **check:** pass
 - **compare:** significantly faster, 1.015x [1.014 – 1.016]: 1.12x to 1.14x at 64 on `random` and `some_nan`, 1.05x at 64 on `rising`, 1.04x to 1.05x at 256, 1.00x from 4,096 up.
 - **Kept:** yes
+
+## 9. The first block without M
+
+- **Idea:** in the first block x[0] stands in for the element before it, so after the Sklansky steps every lane's run already starts at x[0], which is M: the eight `fmaxnm` against M and the one that makes the next M are skipped, and M is the block's last lane. One step less of latency, which is what a call of 16 elements is.
+- **check:** pass
+- **compare:** significantly faster, 1.027x [1.026 – 1.028]: 1.20x at 16, 1.04x to 1.11x at 64, 1.02x to 1.06x at 256.
+- **Kept:** yes
