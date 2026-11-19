@@ -1,6 +1,6 @@
 # `np.unique` on integer labels
 
-This is a proposal. It answers [issue 189](https://github.com/sofeikov/hotkernels/issues/189), found by the applications study ([applications-findings.md](applications-findings.md)): scikit-learn calls `np.unique` on every array of labels it is given, and in `sklearn_metrics` those calls are a quarter of the run.
+This began as a proposal and is now built. Where the building departed from it, [What changed in the building](#what-changed-in-the-building) says so, and [Status](#status) holds the result against the exit criterion. It answers [issue 189](https://github.com/sofeikov/hotkernels/issues/189), found by the applications study ([applications-findings.md](applications-findings.md)): scikit-learn calls `np.unique` on every array of labels it is given, and in `sklearn_metrics` those calls are a quarter of the run.
 
 The figures here are ARM64's, measured on an Apple M1 Pro with NumPy 2.5.5. No x86-64 hardware was at hand; see [x86-64](#x86-64).
 
@@ -12,6 +12,18 @@ The figures here are ARM64's, measured on an Apple M1 Pro with NumPy 2.5.5. No x
 - **A function hook on `np.unique`.** Every NumPy release the package supports, 2.3 to 2.5, sends this call through the same Python code, which ends in a sorted array of the distinct values. The hook answers it before that code runs.
 - **A wide range costs one read of the array** before the call goes to NumPy: about 0.2 ms at a million elements, where NumPy then takes 99 to 168 ms.
 - **On x86-64 the kernel ships as its naive C**, as the second shortlist's kernels did on ARM64 until they had assembly there. That makes it the first C kernel on x86-64, and the Linux wheels then have to be built with clang, as [release-design.md](release-design.md#more-than-one-platform) says.
+
+## Status
+
+Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with NumPy 2.5.5. Other work was running on the machine throughout (load averages from 3 to 22), so every figure is rough and the ratios are what to read.
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | `judge check unique_i64` passes | Met, with `--unlocked`: 21,573 cases. The spec is new on this branch, and the branch's `pyproject.toml` and `uv.lock` differ from `main` |
+| 2 | `judge run` faster than NumPy at every size | Met. 41.6x over NumPy and 1.44x over the naive C across the four timed cases; 39.5x to 40.0x over NumPy at a million elements of two or ten values (160 µs), 25.4x with a range of 256. Load average 22 |
+| 3 | `delivery check` passes with the new cases | Met: 8,249 cases for `unique`, 981 taken by the kernel |
+| 4 | Several times faster from Python, not slower on small or wide arrays | Met. `uv run delivery time --only unique`, load average 4.3: two values 13.2x at 16 elements, 19.6x at 4,096, 17.7x at 1,048,576 (6.55 ms to 371 µs); ten values 15.0x, 20.6x, 18.2x. A wide range, left to NumPy after the read: +0.4% at 16 elements in an alternating run of its own, -0.3% at a million |
+| 5 | `sklearn_metrics` faster, identical results | Met. `uv run --group apps delivery apps --only sklearn_metrics`: 1,046 ms on NumPy, 790 ms with `install()`, 1.33x, results identical, all 67 `np.unique` calls taken. Alternating seven times with and without the `np.unique` hook at a load average of 20: 1,071 ms without it, 806 ms with it |
 
 ## What is slow today
 
@@ -124,6 +136,16 @@ The Linux wheels are built by `cibuildwheel` in a manylinux image whose compiler
 - **Other element types.** Labels from Python lists are `int64` on both platforms; `int32` and `uint8` labels can follow with kernels of their own.
 - **`sorted=False` and `np.unique_values`.** Their order is NumPy's hash set's.
 - **x86-64 assembly.**
+
+## What changed in the building
+
+| Proposed | Built | Why |
+|---|---|---|
+| The range is tested in unsigned arithmetic, so `lo + span` may pass the largest `int64` | The kernel is defined only for ranges whose last value, `lo + span - 1`, is at most the largest `int64` | A range that wraps past it gives its values in unsigned order, not NumPy's; the judge found it in the reference. The binding never passes one: its range runs from the smallest element to the largest |
+| The naive C, with assembly where it beats it | ARM64 assembly: a 64-bit set built with `ushl` for ranges of up to 64 values, without the subtraction for labels from zero, and a byte table in the top of `out` above that | 1.44x over the naive C overall; `kernels/unique_i64/arm64/attempts.md` |
+| A survey entry | The group `applications` in `survey/candidates.py`, recorded in `survey/results/apple-m1-pro-unique.md` | NumPy is 11.1x behind the naive C from 65,536 elements up |
+
+Decision 2, the limit on the range, is left as recommended. Decision 1 is left for review: the kernel ships as C on x86-64 and the Linux wheels are built with clang. That change to the wheel build has not been run: the `build-linux` job of the release workflow runs it on the pull request, since it touches `kernels/` and `hotkernels/`.
 
 ## Decisions still open
 
