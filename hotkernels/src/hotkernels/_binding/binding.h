@@ -66,6 +66,8 @@ typedef enum {
     HK_SEARCHSORTED_F64, HK_SEARCHSORTED_RIGHT_F64, HK_INTERP_F64,
     HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64, HK_FMAX_REDUCE_F64, HK_ANY_ROWS_BOOL,
     HK_BINCOUNT_I16, HK_BINCOUNT_I64, HK_UNIQUE_I64,
+    // Served through bottleneck's functions, not NumPy's (hook_bottleneck.c).
+    HK_NANMEAN_COLS_F64, HK_NANSTD_COLS_F64, HK_NANMIN_COLS_F64, HK_NANMAX_COLS_F64,
     // Built into the binding.
     HK_CLIP_I64, HK_ROUND_F64, HK_MEDIAN_F64,
     HK_CUMSUM_ROWS_F64, HK_CUMPROD_ROWS_F64, HK_CUMMAX_ROWS_F64, HK_CUMFMAX_ROWS_F64,
@@ -83,6 +85,8 @@ typedef enum {
     HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN, HK_OP_SEARCHSORTED, HK_OP_INTERP,
     HK_OP_WHERE, HK_OP_ACCUMULATE, HK_OP_REDUCEAT, HK_OP_ANY, HK_OP_ROUND, HK_OP_MEDIAN,
     HK_OP_UNIQUE,
+    // bottleneck's functions: a call counted here was left to bottleneck.
+    HK_OP_BN_NANMEAN, HK_OP_BN_NANSTD, HK_OP_BN_NANMIN, HK_OP_BN_NANMAX,
     HK_OPERATION_COUNT
 } hk_operation;
 
@@ -584,5 +588,6 @@ extern hk_hook hk_loop_hooks[];
 extern hk_hook hk_function_hooks[];
 extern hk_hook hk_method_hooks[];
 extern hk_hook hk_index_hooks[];
+extern hk_hook hk_bottleneck_hooks[];
 
 #endif

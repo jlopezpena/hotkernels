@@ -58,6 +58,7 @@ That is the whole interface:
 |---|---|
 | `hotkernels.install()` | Points NumPy at every kernel that returns NumPy's result bit for bit |
 | `hotkernels.install(inexact=True)` | Also installs the two that do not: `np.cumsum` on float32 and float64 |
+| `hotkernels.install(bottleneck=False)` | Leaves bottleneck's functions alone: see [What gets faster](#what-gets-faster) |
 | `hotkernels.uninstall()` | Puts every pointer back |
 | `with hotkernels.enabled():` | Installs for the duration of a block |
 | `hotkernels.report()` | What is installed, and how often each kernel ran |
@@ -73,7 +74,7 @@ Importing the package changes nothing; only `install()` does. Calling it twice i
 `print(hotkernels.report())` after your code has run:
 
 ```text
-hotkernels 0.3.1: installed, 30 of 32 kernels (NumPy 2.5.5)
+hotkernels 0.3.1: installed, 34 of 36 kernels (NumPy 2.5.5)
 
 NumPy call         Elements Kernel    Result            Kernel calls  Left to NumPy
 np.argmax          float32  assembly  exact                        0              0
@@ -126,6 +127,7 @@ A kernel takes a call only when the array is a plain, contiguous `ndarray` of th
 | `np.isin(x, values)` | int64 | At most eight test values; flags at their defaults |
 | `np.searchsorted(a, v)`, `a.searchsorted(v)`, `np.digitize(x, bins)` | float64 | `a` is one-dimensional; `v` is an array of any shape or a Python number; either `side`; no `sorter`. For `np.digitize`, with or without `right=True`, when the bins increase |
 | `np.interp(x, xp, fp)` | float64 | `xp` and `fp` are one-dimensional and the same length; no `left`, `right` or `period`; `xp` holds no NaN; at most 64 sample points per query |
+| `bottleneck.nanmean(a, axis)`, `bottleneck.nanstd(a, axis, ddof)`, `bottleneck.nanmin(a, axis)`, `bottleneck.nanmax(a, axis)`, and pandas and empyrical calling them | float64 | `a` is two-dimensional, and the axis that is kept has its elements next to each other: `axis=0` of a C-ordered array or of a rolling-window view, `axis=1` of a Fortran-ordered one. `axis` and `ddof` are Python ints. The result is bottleneck's own, bit for bit. One-dimensional arrays and `axis=None` stay with bottleneck: see below |
 
 "Contiguous" means any shape for the operations that work element by element or reduce the whole array: a contiguous 40 by 25 array reaches the `clip` kernel as one run of 1,000 elements.
 
@@ -159,6 +161,7 @@ How much faster each one is, from Python and at three sizes, is in [the results]
 - **`np.searchsorted` and `np.interp` trust you that the array is sorted, as NumPy does.** Neither checks. On an array that is not sorted both return a meaningless result, and the kernel's is not the same meaningless result as NumPy's. Sorted data, including NaNs at the end of `a`, gives NumPy's answer bit for bit.
 - **`np.digitize` is served when its bins increase.** It calls `np.searchsorted`, on either side. With decreasing bins it searches them reversed, as a view no kernel takes, and runs at NumPy's speed.
 - **`np.interp` with a few queries against a long table stays with NumPy.** A NaN among the sample points is something the kernel cannot handle, so `xp` is read once before every call. With more than 64 sample points per query that pass would cost more than the kernel saves.
+- **bottleneck's own functions are served too, when bottleneck is installed.** pandas and empyrical, among others, send NaN-aware reductions to [bottleneck](https://github.com/pydata/bottleneck) instead of NumPy, so no NumPy hook sees them. hotkernels serves `nanmean`, `nanstd`, `nanmin` and `nanmax` along one axis of a two-dimensional float64 array, with bottleneck's result bit for bit, however your code or the library got hold of the function. At 252 × 4,789, the rolling windows of a year over twenty years of daily returns, they are about 4x to 7x faster than bottleneck on an Apple M1 Pro. hotkernels never imports bottleneck: if it is not imported when you call `install()`, its functions are served from the moment it is, and `report()` says "waiting" until then. `install(bottleneck=False)` leaves them alone. In `report()` they are the `bn.*` rows, and on those rows "Left to NumPy" counts calls left to bottleneck, such as one-dimensional arrays, `axis=None`, float32 and pandas' `Series.std()`. If your bottleneck was built so that it rounds `nanstd` differently from the kernel, which `install()` checks against bottleneck's own answer, `nanstd` stays with bottleneck and `report()` lists it under the hooks that are not in place.
 - **Free-threaded Python is not supported.** `install()` does nothing there, and `report()` says so.
 - **NumPy 2.0 to 2.2 are not supported.** They answer a few calls differently from later releases (`np.clip` drops the sign of a zero on 2.0, and `np.count_nonzero(x)` gives a Python `int` before 2.3), and the kernels give the later answer. Installing hotkernels brings NumPy 2.3 or later; with an older NumPy in place `install()` does nothing, and `report()` says so.
 - **Subclasses mostly stay with NumPy.** `x[mask]`, the methods and the hooked functions take a kernel only for a plain `ndarray`; masked arrays, memory maps and your own subclasses go to NumPy there. `clip` and `argmax` are also hooked beneath NumPy's own handling of array types, so for a subclass they serve whatever plain buffer NumPy hands them, and NumPy wraps the result as it always did.
@@ -169,7 +172,7 @@ From a clone of the repository:
 
 ```bash
 uv run delivery demo          # run examples/workload.py with and without hotkernels, and compare
-uv run delivery check         # 219,811 NumPy calls, both ways; results, errors and warnings must agree
+uv run delivery check         # 221,347 calls, NumPy's and bottleneck's, both ways; results, errors and warnings must agree
 uv run delivery time          # time each statement from Python on your machine
 uv run delivery numpy-tests   # NumPy's own test suite, both ways; about ten minutes
 ```

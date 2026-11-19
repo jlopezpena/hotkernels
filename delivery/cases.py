@@ -4642,6 +4642,206 @@ def inplace_cases() -> Iterator[Case]:
                    partial(_elided, operation), ANY if ON_ARM64 else None)
 
 
+# --- bottleneck's nanmean, nanstd, nanmin and nanmax -----------------------
+
+# The four functions served through bottleneck, each an operation of its own.
+BN_FUNCTIONS = ("nanmean", "nanstd", "nanmin", "nanmax")
+# Shapes of the C-ordered matrices the value classes fill, rows by columns:
+# one element, one row, one column, either side of a block of 32 columns, and
+# the application's window length with a block's worth of columns.
+BN_SHAPES = ((1, 1), (1, 7), (7, 1), (3, 31), (5, 33), (40, 37), (252, 64))
+# Columns of the rolling windows built over a one-dimensional array of
+# values: rows overlap, as in empyrical's rolling statistics.
+BN_WINDOW_COLS = (1, 3, 33, 64)
+# Element count the windows are built over.
+BN_WINDOW_N = 300
+# Values of ddof the nanstd cases try besides the default: bottleneck takes
+# any int, and a large one gives NaN everywhere.
+BN_DDOFS = (0, 1, 2, -1, 1000)
+# Shape of the matrices of the layout and spelling cases, large enough that
+# the hook releases the interpreter lock (HK_NOGIL_MIN_N).
+BN_LAYOUT_SHAPE = (300, 41)
+# Elements left between the rows of the matrix whose rows have gaps.
+BN_GAP = 5
+
+
+def _bn(function: str):
+    """Return one of bottleneck's functions, looked up at call time."""
+    import bottleneck
+
+    return getattr(bottleneck, function)
+
+
+def _bn_call(function: str, a, *args, **kwargs):
+    """Call bottleneck's `function` on `a` with the given arguments."""
+    return _bn(function)(a, *args, **kwargs)
+
+
+def _bn_keywords(function: str) -> dict:
+    """Return the keywords every case of a function passes: ddof=1 for nanstd, as empyrical does."""
+    return {"ddof": 1} if function == "nanstd" else {}
+
+
+def _bn_case(function: str, label: str, maker: Callable[[], object], call: Callable, takes: bool) -> Case:
+    """Return one case of a bottleneck function.
+
+    Args:
+        function: One of BN_FUNCTIONS.
+        label: What the call is.
+        maker: Builds the array.
+        call: Makes the call on the array.
+        takes: Whether the column kernel must take the call; otherwise it must not.
+
+    Returns:
+        The case, under the operation `bn.<function>`.
+    """
+    return Case(f"bn.{function}", f"bn.{function} {label}", partial(_made, maker), call,
+                f"{function}_cols_f64" if takes else None)
+
+
+def _bn_matrix(maker: Callable[[], np.ndarray], rows: int, cols: int) -> np.ndarray:
+    """Return the values of `maker` as a C-ordered matrix of `rows` by `cols`."""
+    return maker().reshape(rows, cols)
+
+
+def _bn_windows(maker: Callable[[], np.ndarray], cols: int) -> np.ndarray:
+    """Return rolling windows of `cols` elements over the values of `maker`, one window per row.
+
+    The layout of the view empyrical reduces, `rolling_window(x, cols).T`:
+    row i is x[i : i + cols], so consecutive rows overlap and the elements of
+    a row are adjacent. Read-only, as an overlapping view should be.
+    """
+    x = maker()
+    rows = len(x) - cols + 1
+    return np.lib.stride_tricks.as_strided(x, (rows, cols), (8, 8), writeable=False)
+
+
+def _bn_random(rows: int, cols: int) -> np.ndarray:
+    """Return a C-ordered float64 matrix of random values with some NaN."""
+    return values("f64", rows * cols, "nan_some", 0, "bn").reshape(rows, cols)
+
+
+def _bn_value_cases(function: str) -> Iterator[Case]:
+    """Yield every float64 value class as C-ordered matrices and as rolling windows, reduced along axis 0."""
+    keywords = _bn_keywords(function)
+    call = partial(_bn_call, function, axis=0, **keywords)
+    for rows, cols in BN_SHAPES:
+        for _, _, label, maker in value_arrays("f64", (rows * cols,), arg="bn"):
+            yield _bn_case(function, f"{rows}x{cols} {label}", partial(_bn_matrix, maker, rows, cols), call, True)
+    for cols in BN_WINDOW_COLS:
+        for _, _, label, maker in value_arrays("f64", (BN_WINDOW_N,), arg="bn"):
+            yield _bn_case(function, f"windows of {cols} {label}", partial(_bn_windows, maker, cols), call, True)
+
+
+def _bn_positional(ddof: int, a: np.ndarray) -> np.ndarray:
+    """Return `bn.nanstd(a, 0, ddof)`, every argument by position."""
+    return _bn("nanstd")(a, 0, ddof)
+
+
+def _bn_ddof_cases() -> Iterator[Case]:
+    """Yield nanstd with every value of ddof, by keyword and by position."""
+    rows, cols = BN_SHAPES[-2]
+    for ddof in BN_DDOFS:
+        for cls in ("random", "nan_some", "nan_all", "zeros", "inf_mix"):
+            maker = partial(lambda c: values("f64", rows * cols, c, 0, "bn").reshape(rows, cols), cls)
+            yield _bn_case("nanstd", f"{rows}x{cols} x={cls} ddof={ddof}", maker,
+                           partial(_bn_call, "nanstd", axis=0, ddof=ddof), True)
+            yield _bn_case("nanstd", f"{rows}x{cols} x={cls} (a, 0, {ddof})", maker,
+                           partial(_bn_positional, ddof), True)
+
+
+def _bn_fortran(rows: int, cols: int) -> np.ndarray:
+    """Return a Fortran-ordered matrix, whose axis 1 is the one a column kernel reduces."""
+    return np.asfortranarray(_bn_random(rows, cols))
+
+
+def _bn_gapped(rows: int, cols: int) -> np.ndarray:
+    """Return a matrix whose rows are BN_GAP elements apart: the first columns of a wider one."""
+    return _bn_random(rows, cols + BN_GAP)[:, :cols]
+
+
+def _bn_layout_cases(function: str) -> Iterator[Case]:
+    """Yield the spellings and layouts the kernel takes, and the ones it leaves to bottleneck."""
+    rows, cols = BN_LAYOUT_SHAPE
+    keywords = _bn_keywords(function)
+    matrix = partial(_bn_random, rows, cols)
+    taking = (
+        ("(a, 0)", lambda a, f=function, k=keywords: _bn(f)(a, 0, **k)),
+        ("(a, axis=0)", partial(_bn_call, function, axis=0, **keywords)),
+        ("(a, axis=-2)", partial(_bn_call, function, axis=-2, **keywords)),
+        ("(a=a, axis=0)", lambda a, f=function, k=keywords: _bn(f)(a=a, axis=0, **k)),
+    )
+    for text, call in taking:
+        yield _bn_case(function, f"{text} {rows}x{cols}", matrix, call, True)
+    yield _bn_case(function, f"(a, axis=1) {rows}x{cols} Fortran order", partial(_bn_fortran, rows, cols),
+                   partial(_bn_call, function, axis=1, **keywords), True)
+    yield _bn_case(function, f"(a, axis=-1) {rows}x{cols} Fortran order", partial(_bn_fortran, rows, cols),
+                   partial(_bn_call, function, axis=-1, **keywords), True)
+    yield _bn_case(function, f"(a, axis=0) {rows}x{cols} rows with gaps", partial(_bn_gapped, rows, cols),
+                   partial(_bn_call, function, axis=0, **keywords), True)
+    yield _bn_case(function, f"(a, axis=0) {rows}x{cols} misaligned",
+                   lambda r=rows, c=cols: _misaligned(_bn_random(r, c).ravel()).reshape(r, c),
+                   partial(_bn_call, function, axis=0, **keywords), True)
+    yield _bn_case(function, f"(a, axis=0) {rows}x{cols} read-only",
+                   lambda r=rows, c=cols: _readonly(_bn_random(r, c).ravel()).reshape(r, c),
+                   partial(_bn_call, function, axis=0, **keywords), True)
+    never = (
+        ("(a) no axis", matrix, partial(_bn_call, function, **keywords)),
+        ("(a, axis=None)", matrix, partial(_bn_call, function, axis=None, **keywords)),
+        ("(a, axis=1) C order", matrix, partial(_bn_call, function, axis=1, **keywords)),
+        ("(a, axis=np.int64(0))", matrix, partial(_bn_call, function, axis=np.int64(0), **keywords)),
+        ("(a, axis=True)", matrix, partial(_bn_call, function, axis=True, **keywords)),
+        ("(a, axis=2) out of range", matrix, partial(_bn_call, function, axis=2, **keywords)),
+        ("(a, axis=-3) out of range", matrix, partial(_bn_call, function, axis=-3, **keywords)),
+        ("(a, axis=0, out=None) unknown keyword", matrix, partial(_bn_call, function, axis=0, out=None)),
+        ("(a, 0, 1, 2) too many", matrix, lambda a, f=function: _bn(f)(a, 0, 1, 2)),
+        ("1-D", lambda: values("f64", rows, "nan_some", 0, "bn"), partial(_bn_call, function, axis=0, **keywords)),
+        ("3-D", lambda: _bn_random(rows, cols)[:, :40].reshape(rows, 4, 10),
+         partial(_bn_call, function, axis=0, **keywords)),
+        ("float32", lambda: _bn_random(rows, cols).astype(np.float32), partial(_bn_call, function, axis=0, **keywords)),
+        ("int64", lambda: np.arange(rows * cols, dtype=np.int64).reshape(rows, cols),
+         partial(_bn_call, function, axis=0, **keywords)),
+        ("byte-swapped", lambda: _byteswapped(_bn_random(rows, cols)), partial(_bn_call, function, axis=0, **keywords)),
+        ("subclass", lambda: _bn_random(rows, cols).view(_Subclass), partial(_bn_call, function, axis=0, **keywords)),
+        ("list", lambda: _bn_random(4, 3).tolist(), partial(_bn_call, function, axis=0, **keywords)),
+        ("rows reversed", lambda: _bn_random(rows, cols)[::-1], partial(_bn_call, function, axis=0, **keywords)),
+        ("columns strided", lambda: _bn_random(rows, 2 * cols)[:, ::2], partial(_bn_call, function, axis=0, **keywords)),
+        ("row stride 0", lambda: np.broadcast_to(_bn_random(1, cols), (rows, cols)),
+         partial(_bn_call, function, axis=0, **keywords)),
+        ("0 rows", lambda: _bn_random(0, cols), partial(_bn_call, function, axis=0, **keywords)),
+        ("0 columns", lambda: _bn_random(rows, 0), partial(_bn_call, function, axis=0, **keywords)),
+    )
+    for text, maker, call in never:
+        yield _bn_case(function, f"{text} {rows}x{cols}", maker, call, False)
+    if function == "nanstd":
+        for text, ddof in (("np.int64(1)", np.int64(1)), ("1.0", 1.0), ("True", True), ("2**40", 2 ** 40)):
+            yield _bn_case(function, f"(a, axis=0, ddof={text}) {rows}x{cols}", matrix,
+                           partial(_bn_call, function, axis=0, ddof=ddof), False)
+    else:
+        yield _bn_case(function, f"(a, axis=0, ddof=1) {rows}x{cols}", matrix,
+                       partial(_bn_call, function, axis=0, ddof=1), False)
+
+
+def bottleneck_cases(function: str) -> Iterator[Case]:
+    """Yield the cases of one of bottleneck's functions.
+
+    The column kernel takes a plain two-dimensional float64 ndarray in native
+    byte order reduced along the axis given as a Python int, when the other
+    axis has a stride of one element and the reduced one a positive stride
+    that is a whole number of elements; see hook_bottleneck.c. bottleneck
+    must be installed; it is a dependency of the development environment.
+
+    Args:
+        function: One of BN_FUNCTIONS.
+    """
+    import bottleneck  # noqa: F401  Imported before install(), as most programs do.
+
+    yield from _bn_value_cases(function)
+    if function == "nanstd":
+        yield from _bn_ddof_cases()
+    yield from _bn_layout_cases(function)
+
+
 # Every operation that has a hook, with its exact cases.
 OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "argmax": partial(argext_cases, "argmax"),
@@ -4667,6 +4867,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "median": median_cases,
     "unique": unique_cases,
     "inplace": inplace_cases,
+    **{f"bn.{function}": partial(bottleneck_cases, function) for function in BN_FUNCTIONS},
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the

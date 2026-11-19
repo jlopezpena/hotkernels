@@ -13,7 +13,10 @@ delivering nothing.
 from __future__ import annotations
 
 import hashlib
+import logging
 import importlib
+import subprocess
+import sys
 import warnings
 from dataclasses import dataclass
 from typing import Callable, Iterable, Iterator
@@ -22,9 +25,11 @@ import numpy as np
 
 import hotkernels
 from hotkernels.environment import BINDING_MODULE
-from hotkernels.hooks import KERNELS
+from hotkernels.hooks import BOTTLENECK_HOOKS, KERNELS
 
 from .cases import ANY, Case
+
+log = logging.getLogger(__name__)
 
 # Bytes of a digest that stands in for an array's contents.
 DIGEST_BYTES = 16
@@ -269,6 +274,67 @@ _CLIP_LOOP_HOOKS = ("loop.clip.f32", "loop.clip.f64")
 _DIRECT_CLIP_N = 16
 
 
+# bottleneck's functions whose call pointers hotkernels changes.
+_BOTTLENECK_FUNCTIONS = ("nanmean", "nanstd", "nanmin", "nanmax")
+
+# Run in a fresh interpreter: install() must not import bottleneck, and an
+# import after it must be served, with bottleneck's own answer, and stop being
+# served after uninstall(). Prints "ok" when all of that holds.
+_LATE_IMPORT_PROGRAM = """
+import sys, numpy as np, hotkernels
+hotkernels.install()
+assert "bottleneck" not in sys.modules, "install() imported bottleneck"
+import bottleneck
+x = np.random.default_rng(0).standard_normal((300, 41))
+taken = bottleneck.nanstd(x, axis=0, ddof=1)
+calls = {k.name: k.calls for k in hotkernels.report().kernels}["nanstd_cols_f64"]
+assert calls == 1, f"the late import was not served: {calls} calls"
+hotkernels.uninstall()
+assert bottleneck.nanstd(x, axis=0, ddof=1).tobytes() == taken.tobytes(), "results differ"
+assert not any(type(f).__name__ == "_BottleneckFinder" for f in sys.meta_path), "the finder is left behind"
+print("ok")
+"""
+
+# Run in a fresh interpreter: a `bottleneck.reduce` whose functions are not
+# what the hook was written for (here Python functions) must leave the four
+# hooks off, say so in report(), and keep the functions working. Prints "ok".
+_FOREIGN_LAYOUT_PROGRAM = """
+import sys, types, hotkernels
+fake = types.ModuleType("bottleneck.reduce")
+for name in ("nanmean", "nanstd", "nanmin", "nanmax"):
+    setattr(fake, name, lambda a, axis=None, ddof=0: "bottleneck's own")
+sys.modules["bottleneck.reduce"] = fake
+hotkernels.install()
+report = hotkernels.report()
+assert report.installed, "install() did not install the rest"
+assert sum("bottleneck" in p for p in report.problems) == 4, report.problems
+assert fake.nanmean(None, axis=0) == "bottleneck's own"
+print("ok")
+"""
+
+
+def _runs_clean(program: str) -> bool:
+    """Run a check in a fresh interpreter and say whether it printed "ok".
+
+    Args:
+        program: Python source that prints "ok" when its statement holds.
+
+    Returns:
+        Whether it did, exiting without an error.
+    """
+    done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        log.debug("fresh interpreter failed: %s", done.stderr)
+    return done.returncode == 0 and done.stdout.strip() == "ok"
+
+
+def _bottleneck_objects() -> list[object]:
+    """Return bottleneck's functions that hotkernels changes pointers in."""
+    import bottleneck
+
+    return [getattr(bottleneck, name) for name in _BOTTLENECK_FUNCTIONS]
+
+
 def _numpy_objects() -> list[object]:
     """Return the NumPy objects hotkernels changes pointers in."""
     return ([getattr(np, name) for name in _HOOKED_OBJECTS] + [getattr(np.ndarray, name) for name in _HOOKED_METHODS]
@@ -364,9 +430,13 @@ def installation_checks() -> Summary:
     checks: list[tuple[str, bool]] = []
     hotkernels.uninstall()
     before = _numpy_objects()
+    bottleneck_before = _bottleneck_objects()
 
     hotkernels.install()
     checks.append(("NumPy's objects are the same objects after install()", all(a is b for a, b in zip(before, _numpy_objects()))))
+    checks.append(("bottleneck's functions are the same objects after install()",
+                   all(a is b for a, b in zip(bottleneck_before, _bottleneck_objects()))))
+    checks.append(("bottleneck's functions are hooked by install()", all(binding.applied(h) for h in BOTTLENECK_HOOKS)))
     _exercise()
     calls = _kernel_calls(binding)
     checks.append(("kernels take calls after install()", calls >= 6))
@@ -387,6 +457,15 @@ def installation_checks() -> Summary:
         pass
     checks.append(("enabled() leaves an existing installation in place", hotkernels.report().installed))
 
+    hotkernels.uninstall()
+    hotkernels.install(bottleneck=False)
+    checks.append(("install(bottleneck=False) leaves bottleneck alone",
+                   not any(binding.applied(h) for h in BOTTLENECK_HOOKS)
+                   and all("bottleneck=False" in k.note for k in hotkernels.report().kernels if k.numpy_call.startswith("bn."))))
+    hotkernels.install()
+    checks.append(("install() after install(bottleneck=False) hooks bottleneck",
+                   all(binding.applied(h) for h in BOTTLENECK_HOOKS)))
+
     hotkernels.install(inexact=True)
     np.cumsum(np.ones(1000))
     checks.append(("float cumsum is taken under install(inexact=True)", binding.counters()[0]["cumsum_f64"] == 1))
@@ -397,6 +476,11 @@ def installation_checks() -> Summary:
     checks.append(("no hook is applied after uninstall()", not any(binding.applied(name) for name in binding.hooks())))
     checks.append(("no kernel takes a call after uninstall()", _kernel_calls(binding) == 0))
     checks.append(("NumPy's objects are the same objects after uninstall()", all(a is b for a, b in zip(before, _numpy_objects()))))
+    checks.append(("bottleneck's functions are the same objects after uninstall()",
+                   all(a is b for a, b in zip(bottleneck_before, _bottleneck_objects()))))
+    checks.append(("install() does not import bottleneck, and serves it once imported", _runs_clean(_LATE_IMPORT_PROGRAM)))
+    checks.append(("a bottleneck of another layout is left alone, and install() still works",
+                   _runs_clean(_FOREIGN_LAYOUT_PROGRAM)))
     checks.append(("report() renders when not installed", "not installed" in str(hotkernels.report())))
     with hotkernels.enabled():
         checks.append(("enabled() installs for its block", hotkernels.report().installed))

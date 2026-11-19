@@ -60,6 +60,8 @@ The honest reading of the last column: one hook is sanctioned, one is a grey are
 
 The rule for choosing is: **use the deepest hook that exists for an operation**, because it is reached by the most spellings and arrives after NumPy has already validated everything; **add the function or method hook on top where the fixed cost of the call is worth removing**.
 
+One library is reached without NumPy at all. pandas and empyrical send NaN-aware reductions to bottleneck, whose `nanmean`, `nanstd`, `nanmin` and `nanmax` are C function objects of CPython's own type. The function hook works on them unchanged: their call pointer is set, so every holder of the object reaches the binding, and a call no kernel takes goes on to bottleneck as CPython would have sent it. Four kernels, checked against bottleneck rather than NumPy, serve them along one axis of a two-dimensional array ([the design](https://github.com/sofeikov/hotkernels/blob/main/docs/bottleneck-design.md)). hotkernels never imports bottleneck; it hooks it when it is imported.
+
 The syntax and its function forms meet different hooks. `x[mask]` and `x[mask] = v` reach the indexing hook; `np.compress(mask, x)`, `np.extract(mask, x)`, `np.putmask(x, mask, v)` and `np.copyto(x, v, where=mask)` are function objects, and each has a function hook in front of the same kernel. `np.where(mask)` needs one too: it calls NumPy's C code for `nonzero` directly and never reaches the method `np.nonzero` calls. The function forms flatten their arrays, so they take a contiguous `x` of any shape where the syntax takes one dimension.
 
 Try it. The figure below encodes the binding's actual rules.
@@ -221,7 +223,7 @@ The judge proves a kernel right as a native function. It says nothing about the 
 | Spellings | Positional, keyword, `out=`, `axis=`, method and function forms |
 | Values | The judge's value classes: NaN, infinities, signed zeros, ties |
 
-That is **166,029 calls over the 21 hooked operations** (on x86-64 and on the Apple M1 Pro; 96,734 over 15 when the first kernels were bound), and all agree.
+That is **221,347 calls over the 23 hooked NumPy operations and bottleneck's four functions** (on x86-64 and on the Apple M1 Pro; 96,734 over 15 when the first kernels were bound), and all agree.
 
 **Each case also states whether a kernel should have run**, and the counters are checked against it. Without that, a check that quietly stopped matching would pass every comparison, since NumPy's fallback is always right, while delivering nothing.
 
@@ -235,6 +237,6 @@ The binding runs without guard pages. A wrong length passed to a correct kernel 
 
 ## Where that leaves things
 
-Of the 32 kernels, 30 are installed by `install()` and the other 2 with `install(inexact=True)`. `searchsorted` and `interp` were bound late: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. The last kernel added is the right side of the search, which `np.digitize` asks for by default. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
+Of the 36 kernels, 34 are installed by `install()` and the other 2 with `install(inexact=True)`; 4 of the 34 serve bottleneck's functions, and are applied once bottleneck is imported. `searchsorted` and `interp` were bound late: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. The last kernel added is the right side of the search, which `np.digitize` asks for by default. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
 
 The last chapter collects every number, and is candid about which of them mean less than they appear to.

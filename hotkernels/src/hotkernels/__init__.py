@@ -11,13 +11,20 @@ NumPy exactly as it was written. `uninstall()` puts every pointer back, and
 
 Importing this package changes nothing. Only `install()` does, and it covers
 the whole process: every thread and every library that calls NumPy.
+
+It also serves four functions of bottleneck, `nanmean`, `nanstd`, `nanmin` and
+`nanmax`, which libraries such as pandas and empyrical call in place of
+NumPy's. Those hooks are applied only once bottleneck is imported; hotkernels
+never imports it, and `install(bottleneck=False)` leaves them out.
 """
 from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.abc
 import importlib.metadata
 import logging
+import sys
 import threading
 from dataclasses import dataclass, field
 from typing import Iterator
@@ -26,7 +33,7 @@ import numpy as np
 
 from . import report as _report
 from .environment import BINDING_MODULE, unsupported_reason
-from .hooks import HOOKS, Hook, Probe
+from .hooks import BOTTLENECK_HOOKS, BOTTLENECK_MODULE, HOOKS, Hook, Probe
 from .report import Report
 
 __all__ = ["install", "uninstall", "enabled", "report", "Report", "__version__"]
@@ -45,6 +52,8 @@ class _State:
     installed: bool = False
     # Whether kernels that are not bit-identical to NumPy were asked for.
     inexact: bool = False
+    # Whether the hooks in bottleneck were asked for.
+    bottleneck: bool = True
     # Why install() did nothing, when it did nothing.
     unsupported: str | None = None
     # One line per hook that could not be installed or removed cleanly.
@@ -106,6 +115,138 @@ def _apply(binding, hook: Hook, inexact: bool) -> str | None:
     return None
 
 
+class _BottleneckLoader(importlib.abc.Loader):
+    """Loads `bottleneck.reduce` with its own loader, then applies the bottleneck hooks."""
+
+    def __init__(self, loader) -> None:
+        """Wrap the loader the import system found.
+
+        Args:
+            loader: The loader of `bottleneck.reduce`'s spec.
+        """
+        self.loader = loader
+
+    def create_module(self, spec):
+        """Create the module as its own loader does.
+
+        Args:
+            spec: The module's spec.
+
+        Returns:
+            The module, or None for the default.
+        """
+        return self.loader.create_module(spec)
+
+    def exec_module(self, module) -> None:
+        """Run the module as its own loader does, then apply the bottleneck hooks.
+
+        Args:
+            module: The module, already in sys.modules.
+        """
+        self.loader.exec_module(module)
+        _bottleneck_imported()
+
+    def __getattr__(self, name: str):
+        """Answer anything else as the module's own loader does."""
+        return getattr(self.loader, name)
+
+
+class _BottleneckFinder(importlib.abc.MetaPathFinder):
+    """Notices the import of `bottleneck.reduce`, so its hooks can be applied then.
+
+    It finds nothing itself. For `bottleneck.reduce` it asks the finders after
+    it, and wraps the loader of the spec they return.
+    """
+
+    def find_spec(self, fullname: str, path, target=None):
+        """Return the spec the other finders give `bottleneck.reduce`, with a wrapped loader.
+
+        Args:
+            fullname: The module being imported.
+            path: The parent package's search path.
+            target: The module being reloaded, or None.
+
+        Returns:
+            The spec, or None for any other module, which the finders after
+            this one then look for as usual.
+        """
+        if fullname != BOTTLENECK_MODULE:
+            return None
+        for finder in sys.meta_path:
+            find = getattr(finder, "find_spec", None)
+            if finder is self or find is None:
+                continue
+            spec = find(fullname, path, target)
+            if spec is None:
+                continue
+            if spec.loader is not None:
+                spec.loader = _BottleneckLoader(spec.loader)
+            return spec
+        return None
+
+
+# The finder that waits for bottleneck, while it is in sys.meta_path.
+_finder: _BottleneckFinder | None = None
+
+
+def _add_finder() -> None:
+    """Put the finder at the front of sys.meta_path, once."""
+    global _finder
+    if _finder is None:
+        _finder = _BottleneckFinder()
+        sys.meta_path.insert(0, _finder)
+
+
+def _drop_finder() -> None:
+    """Take the finder out of sys.meta_path, if it is there."""
+    global _finder
+    if _finder is not None:
+        with contextlib.suppress(ValueError):
+            sys.meta_path.remove(_finder)
+        _finder = None
+
+
+def _apply_bottleneck(binding) -> list[str]:
+    """Apply the hooks in bottleneck, each proved by its probe.
+
+    bottleneck must be in sys.modules. A hook whose function is not shaped as
+    the binding expects, or whose probe fails, is left off.
+
+    Args:
+        binding: The extension module.
+
+    Returns:
+        One line per hook that is not in place.
+    """
+    hooks = [hook for hook in HOOKS if hook.name in BOTTLENECK_HOOKS]
+    return [problem for problem in (_apply(binding, hook, False) for hook in hooks) if problem]
+
+
+def _bottleneck_imported() -> None:
+    """Apply the bottleneck hooks when bottleneck is imported after install().
+
+    The counters were reset by install(), so the probes' own calls are taken
+    off again. Never raises: an import must not fail because of hotkernels.
+    """
+    with _lock:
+        _drop_finder()
+        if not (_state.installed and _state.bottleneck):
+            return
+        try:
+            binding = _load_binding()
+            before = binding.counters()[0]
+            problems = _apply_bottleneck(binding)
+            after = binding.counters()[0]
+            for kernel, calls in after.items():
+                if calls > before[kernel]:
+                    binding.forget(kernel, calls - before[kernel])
+        except Exception as error:  # Never let the user's import fail.
+            problems = [f"bottleneck hooks: could not be applied ({error})"]
+        _state.problems.extend(problems)
+        for problem in problems:
+            log.warning("hotkernels: %s", problem)
+
+
 def _remove_all(binding) -> list[str]:
     """Remove every hook that is in place, in reverse order.
 
@@ -123,12 +264,12 @@ def _remove_all(binding) -> list[str]:
     return problems
 
 
-def install(inexact: bool = False) -> None:
+def install(inexact: bool = False, bottleneck: bool = True) -> None:
     """Make NumPy use the kernels, for the whole process.
 
     Does nothing on a platform, Python build or NumPy that is not supported,
     and never raises because of one; `report()` then says why. Calling it
-    again with the same argument does nothing.
+    again with the same arguments does nothing.
 
     Args:
         inexact: Also install the kernels whose results are not bit-identical
@@ -136,10 +277,14 @@ def install(inexact: bool = False) -> None:
             kernels, which regroup the additions: their output stays within a
             declared tolerance but, unlike NumPy's, is not monotonic for
             non-negative input.
+        bottleneck: Also serve bottleneck's `nanmean`, `nanstd`, `nanmin` and
+            `nanmax`, bit-identical to bottleneck's own results. If bottleneck
+            is not imported yet, they are served from when it is; hotkernels
+            never imports it.
     """
     global _state
     with _lock:
-        if _state.installed and _state.inexact == inexact:
+        if _state.installed and _state.inexact == inexact and _state.bottleneck == bottleneck:
             return
         reason = unsupported_reason()
         if reason:
@@ -148,10 +293,16 @@ def install(inexact: bool = False) -> None:
             return
         binding = _load_binding()
         _remove_all(binding)
+        _drop_finder()
         binding.set_inexact(inexact)
-        problems = [problem for problem in (_apply(binding, hook, inexact) for hook in HOOKS) if problem]
+        numpy_hooks = [hook for hook in HOOKS if hook.module is None]
+        problems = [problem for problem in (_apply(binding, hook, inexact) for hook in numpy_hooks) if problem]
+        if bottleneck and BOTTLENECK_MODULE in sys.modules:
+            problems += _apply_bottleneck(binding)
+        elif bottleneck:
+            _add_finder()
         binding.reset_counters()
-        _state = _State(installed=True, inexact=inexact, problems=problems)
+        _state = _State(installed=True, inexact=inexact, bottleneck=bottleneck, problems=problems)
         for problem in problems:
             log.warning("hotkernels: %s", problem)
         log.info("hotkernels installed: %d of %d hooks", len(HOOKS) - len(problems), len(HOOKS))
@@ -167,6 +318,7 @@ def uninstall() -> None:
         if not _state.installed:
             return
         binding = _load_binding()
+        _drop_finder()
         problems = _remove_all(binding)
         binding.set_inexact(False)
         _state = _State(problems=problems)
@@ -176,7 +328,7 @@ def uninstall() -> None:
 
 
 @contextlib.contextmanager
-def enabled(inexact: bool = False) -> Iterator[None]:
+def enabled(inexact: bool = False, bottleneck: bool = True) -> Iterator[None]:
     """Install hotkernels for the duration of a `with` block.
 
     The kernels are installed for the whole process while the block runs, not
@@ -185,13 +337,14 @@ def enabled(inexact: bool = False) -> Iterator[None]:
 
     Args:
         inexact: As for `install()`.
+        bottleneck: As for `install()`.
 
     Returns:
         A context manager that yields nothing.
     """
     with _lock:
         was_installed = _state.installed
-        install(inexact)
+        install(inexact, bottleneck)
     try:
         yield
     finally:
@@ -217,4 +370,21 @@ def report() -> Report:
             taken, passed = binding.counters()
             applied = frozenset(hook.name for hook in HOOKS if binding.applied(hook.name))
         return _report.build(__version__, _state.installed, _state.unsupported, _state.inexact, np.__version__,
-                             applied, taken, passed, tuple(_state.problems))
+                             applied, taken, passed, tuple(_state.problems), _pending_hooks())
+
+
+def _pending_hooks() -> dict[str, str]:
+    """Say why each hook in bottleneck that is not applied is not, when that is by design.
+
+    Returns:
+        Hook name -> the reason, for the hooks left out by
+        `install(bottleneck=False)` or waiting for bottleneck to be imported.
+        A hook that failed is not here: install() lists it as a problem.
+    """
+    if not _state.installed:
+        return {}
+    if not _state.bottleneck:
+        return dict.fromkeys(BOTTLENECK_HOOKS, _report.LEFT_OUT)
+    if _finder is not None:
+        return dict.fromkeys(BOTTLENECK_HOOKS, _report.WAITING)
+    return {}

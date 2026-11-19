@@ -145,7 +145,7 @@ empyrical-reloaded 0.7.3: twelve statistics, alpha and beta, cumulative returns,
 
 **Why it does not gain.** Two reasons, each about half the run.
 
-- **46.5% never reaches NumPy.** empyrical calls bottleneck for its NaN-aware reductions. hotkernels hooks NumPy, so these calls reach no hook and `report()` cannot show them ([#192](https://github.com/sofeikov/hotkernels/issues/192)).
+- **46.5% never reaches NumPy.** empyrical calls bottleneck for its NaN-aware reductions. hotkernels hooks NumPy, so these calls reach no hook and `report()` cannot show them ([#192](https://github.com/sofeikov/hotkernels/issues/192)). *Since then:* hotkernels hooks bottleneck's four functions as well, with kernels that give bottleneck's results bit for bit ([bottleneck-design.md](bottleneck-design.md)). With both this and the accumulation below served, `uv run --group apps delivery apps --only empyrical_stats` gave 1,287.8 ms on plain NumPy and 360.5 ms after `install()`, 3.57x, with identical results, at a load average of 9; in alternating runs at the same load, `install(bottleneck=False)` took 860 ms and `install()` 364 ms.
 - **38% is accumulation down the columns of a matrix,** which hotkernels took only on one-dimensional arrays when this was recorded. NumPy walks each column with a stride of a row. The same work done a row at a time is six times faster even from Python: 0.69 ms against 4.29 ms for `fmax`, 0.65 ms against 4.34 ms for the product, on 253 × 4,789. At that speed the application would be about 1.45x faster ([#187](https://github.com/sofeikov/hotkernels/issues/187)). Since served by loops of the binding ([accumulate-rows-design.md](accumulate-rows-design.md)): 1.57x in a run of this application on the same machine at a load average of about 4, against 1.01x before the change in the same conditions.
 
 ## What the five say together
@@ -156,7 +156,7 @@ empyrical-reloaded 0.7.3: twelve statistics, alpha and beta, cumulative returns,
 |---|---|---|
 | Sorting and `np.unique` | 75% of `sklearn_metrics`, 26% of `trimesh_mesh` | Yes, with new kernels: [#188](https://github.com/sofeikov/hotkernels/issues/188), [#189](https://github.com/sofeikov/hotkernels/issues/189) |
 | Whole-array arithmetic NumPy already vectorises, bound by memory | 59% of `mlp_train`, 19% of `min_char_rnn` | Only by fusing statements: [#191](https://github.com/sofeikov/hotkernels/issues/191) |
-| A library that calls something other than NumPy | 46.5% of `empyrical_stats` | Not through NumPy's hooks: [#192](https://github.com/sofeikov/hotkernels/issues/192) |
+| A library that calls something other than NumPy | 46.5% of `empyrical_stats` | Not through NumPy's hooks; since [#192](https://github.com/sofeikov/hotkernels/issues/192), through a hook in bottleneck itself |
 | Accumulation along an axis of a matrix | 38% of `empyrical_stats` | Yes, in the binding: [#187](https://github.com/sofeikov/hotkernels/issues/187) |
 | The BLAS | 31% of `min_char_rnn`, 16% of `mlp_train` | No, and it is not slow |
 | NumPy's call path on short arrays | about 23% of `min_char_rnn` | Partly: [#99](https://github.com/sofeikov/hotkernels/issues/99) |

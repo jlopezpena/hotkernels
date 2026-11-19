@@ -6,6 +6,9 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
+    # bottleneck is the oracle of the kernels that serve its calls, and
+    # `delivery check` runs its calls with and without hotkernels.
+    "bottleneck>=1.4",
     "hotkernels",
     "jinja2>=3.1.6",
     "markdown-it-py>=3.0",
