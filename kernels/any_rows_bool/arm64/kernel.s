@@ -46,6 +46,32 @@
 .endm
 
 // One row at x0 as ROW32 does it; x0 moves to the next row.
+// Row \i of a block of sixteen for matrices larger than the second-level
+// cache: one non-temporal pair of loads of the 32 bytes at the row's start,
+// the second 16 masked to the row's last cols - 16 bytes by v30. Row i is at
+// x0, x9, x10 or x11 by i % 4, each moved four rows (x2 = 4 cols) after use.
+// The pair reads up to 15 bytes past the row's end: the loop stops while a
+// whole block is still left.
+.macro ROW32NT d, i
+.if \i % 4 == 0
+    NTPAIR  x0, \d
+.elseif \i % 4 == 1
+    NTPAIR  x9, \d
+.elseif \i % 4 == 2
+    NTPAIR  x10, \d
+.else
+    NTPAIR  x11, \d
+.endif
+.endm
+
+// The loads of ROW32NT from position \p, which then moves four rows.
+.macro NTPAIR p, d
+    ldnp    q\d, q31, [\p]
+    add     \p, \p, x2
+    and     v31.16b, v31.16b, v30.16b
+    orr     v\d\().16b, v\d\().16b, v31.16b
+.endm
+
 .macro ROW32_ONE d, i
     ldr     q\d, [x0]
     ldr     q31, [x0, x7]
@@ -210,6 +236,8 @@ _any_rows_bool:
     add     x9, x0, x3, lsl #2
     add     x10, x9, x3, lsl #2
     add     x11, x10, x3, lsl #2
+    cmp     x2, #HUGE_N
+    b.hs    Lmid32_huge
 Lmid32:
     TREE16  ROW32
     add     x0, x0, x6
@@ -300,6 +328,28 @@ Ldone:
 
 // The main loops again with non-temporal loads, for matrices larger than the
 // second-level cache.
+Lmid32_huge:                            // x4 = rows left - 16
+    adrp    x8, Lfirst_bytes@PAGE
+    add     x8, x8, Lfirst_bytes@PAGEOFF
+    sub     x8, x8, x7
+    ldr     q30, [x8, #16]              // the first cols - 16 bytes set
+    lsl     x2, x3, #2                  // 4 cols
+    add     x9, x0, x3                  // rows 1, 2 and 3
+    add     x10, x9, x3
+    add     x11, x10, x3
+    cmp     x4, #16
+    b.lo    Lmid32_resume
+Lmid32_huge_loop:
+    TREE16  ROW32NT
+    str     q0, [x1], #16
+    sub     x4, x4, #16
+    cmp     x4, #16
+    b.hs    Lmid32_huge_loop
+Lmid32_resume:                          // at least one whole block left
+    add     x9, x0, x3, lsl #2
+    add     x10, x9, x3, lsl #2
+    add     x11, x10, x3, lsl #2
+    b       Lmid32
 Lmid64_huge:
     TREE16  ROW64NT
     str     q0, [x1], #16
@@ -399,3 +449,11 @@ Lfour_one:
     subs    x4, x4, #1
     b.ne    Lfour_one
     b       Ldone
+
+.section __TEXT,__const
+.p2align 4
+// 16 bytes set and 16 clear: the 16 bytes at Lfirst_bytes + 16 - k have
+// their first k set.
+Lfirst_bytes:
+    .fill 16, 1, 0xff
+    .fill 16, 1, 0

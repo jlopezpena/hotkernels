@@ -116,3 +116,17 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
 - **compare:** significantly faster, 1.010x [1.010 – 1.010]; rows of 4 and of 64 1.15x to 1.19x
   at 16,777,216, every other size unchanged.
 - **Kept:** yes
+
+## 10. Rows of 16 to 32 above 8 MB: non-temporal pairs, masked
+
+- **Idea:** what attempt 9 did for rows of 4 and 64, for the path it could not reach. Each row is
+  one `ldnp` of the 32 bytes at its start, the second 16 and'ed with a mask of the row's last
+  `cols - 16` bytes (from a 32-byte constant). Four positions, one per row of four, each moved
+  four rows after use. The pair reads up to 15 bytes past the row, so the loop stops while a
+  whole block is left, and the ordinary loop does the rest.
+- **check:** pass
+- **compare:** significantly faster, 1.002x [1.001 – 1.003], and again 1.002x [1.002 – 1.003];
+  rows of 22 1.05x and 1.06x at 16,777,216 elements, nothing else moved.
+- **Kept:** yes
+- **Notes:** a smaller gain than attempt 9 at the same size (1.17x there): the row of 22 costs
+  more instructions in this form (`and` and a position add per row).
