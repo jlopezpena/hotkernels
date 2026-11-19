@@ -73,6 +73,12 @@ ISIN_TEST = [1, 50, 999, 0, 7, 500, 501, 2]
 # Number of distinct codes of the timed int16 and int64 bincount arrays: the
 # counter count their kernels were timed for.
 BINCOUNT_CODES = 64
+# Distinct values of the timed np.unique arrays: binary labels and ten
+# classes, the labels of the application it was written for.
+UNIQUE_LABELS = (2, 10)
+# Range of the np.unique array that is left to NumPy after the binding's scan:
+# wider than any array timed, so the range test fails at every size.
+UNIQUE_WIDE = 1 << 40
 # Length of the runs of the timed np.fmax.reduceat, and the share of its
 # elements that are NaN.
 REDUCEAT_RUN = 16
@@ -212,6 +218,19 @@ def _codes(dtype: type, n: int) -> tuple:
         (codes,).
     """
     return (_rng(n).integers(0, BINCOUNT_CODES, n).astype(dtype),)
+
+
+def _labels(classes: int, n: int) -> tuple:
+    """Build int64 labels uniform in [0, classes).
+
+    Args:
+        classes: Number of distinct values.
+        n: Element count.
+
+    Returns:
+        (labels,).
+    """
+    return (_rng(n).integers(0, classes, n),)
 
 
 def _bytes(n: int) -> tuple:
@@ -477,6 +496,8 @@ TAKEN: tuple[Timed, ...] = (
           np.bincount, "bincount_i16"),
     Timed("bincount", "np.bincount(x)", f"int64, codes 0 to {BINCOUNT_CODES - 1}", partial(_codes, np.int64),
           np.bincount, "bincount_i64"),
+    *(Timed("unique", "np.unique(x)", f"int64, {classes} values", partial(_labels, classes), np.unique, "unique_i64")
+      for classes in UNIQUE_LABELS),
     Timed("isin", "np.isin(x, eight_values)", "int64, values close together", _narrow_ints, lambda x: np.isin(x, ISIN_TEST), "isin_i64"),
     Timed("searchsorted", "np.searchsorted(a, v)", "float64, as many needles as elements", partial(_search, None), np.searchsorted, "searchsorted_f64"),
     Timed("searchsorted", "np.searchsorted(a, v)", "float64, 1,000 elements", partial(_search, SMALL_TABLE), np.searchsorted, "searchsorted_f64"),
@@ -511,6 +532,7 @@ LEFT: tuple[Timed, ...] = (
           partial(_runs, nan=0.0), np.add.reduceat, None),
     Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0), density=False)", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE, density=False), None),
     Timed("bincount", "np.bincount(x)", "int32", partial(_ints, np.int32), np.bincount, None),
+    Timed("unique", "np.unique(x)", "int64, wide range", partial(_labels, UNIQUE_WIDE), np.unique, None),
     Timed("isin", "np.isin(x, nine_values)", "int64", _narrow_ints, lambda x: np.isin(x, ISIN_TEST + [3]), None),
     Timed("searchsorted", "np.searchsorted(a, v)", "float64 array, float32 needles", _search_float32_needles, np.searchsorted, None),
     Timed("interp", "np.interp(x, xp, fp, left=0.0)", "float64", partial(_interp, None), lambda x, xp, fp: np.interp(x, xp, fp, left=0.0), None),

@@ -23,6 +23,8 @@ CONTROL = "control"
 EXTRA, WIDER = "extra", "wider"
 # Operations taken from the calls of a program in use: docs/second-shortlist-design.md.
 SECOND = "second shortlist"
+# Operations taken from the applications study: docs/applications-findings.md.
+APPS = "applications"
 
 # Mask densities measured: the worst case for a branch predictor, and a sparse mask.
 DENSITIES = (0.5, 0.05)
@@ -44,6 +46,10 @@ NAN_SHARE = 0.05
 # Share of True in the mask of `np.where(c, a, nan)`, which callers use to
 # blank the few elements that fail a test.
 MOSTLY_TRUE = 0.95
+# Distinct values of the np.unique labels, binary and ten classes, and the
+# table the naive C is given for them.
+UNIQUE_LABELS = (2, 10)
+UNIQUE_TABLE = 64
 # Relative tolerances for kernels whose NumPy counterpart orders floating-point
 # operations differently (pairwise sums, fused multiply-add).
 RTOL_F32_SUM = 1e-2
@@ -483,6 +489,21 @@ def _second_shortlist() -> list[Cand]:
     ]
 
 
+def _applications() -> list[Cand]:
+    """The candidates found by the applications study: `np.unique` on int64 labels.
+
+    Returns:
+        The candidates of this group, in measuring order.
+    """
+    return [
+        Cand(f"unique_i64 {labels} values", APPS, "np.unique(x)", "unique_i64", "pipi",
+             {"x": f"rng.integers(0, {labels}, n)", "out": f"np.empty({UNIQUE_TABLE}, np.int64)"},
+             ("ptr(x)", "n", "ptr(out)", str(UNIQUE_TABLE)),
+             "out[:ret]", "np.unique(x)", out="out", alloc=True)
+        for labels in UNIQUE_LABELS
+    ]
+
+
 def candidates() -> list[Cand]:
     """List every candidate the survey measures.
 
@@ -491,5 +512,5 @@ def candidates() -> list[Cand]:
     """
     groups = (_argmax, _controls, _mask_selection, _counting, _nonzero, _accumulations, _searching,
               _clip, _any_all, _indexing, _membership_and_binning, _elementwise, _stepped_slices,
-              _second_shortlist)
+              _second_shortlist, _applications)
     return [cand for group in groups for cand in group()]

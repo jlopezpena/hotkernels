@@ -62,6 +62,7 @@ uv run survey run
 | x86-64 | Intel Core i5-14600KF, Linux 7.0, NumPy 2.5.5 using its AVX2 loops (it requires X86_V2 and found X86_V3), clang 21.1.8. Pinned to one performance core, no warnings. The reference loop drifted by less than 0.1%. All 65 variants agree with NumPy | [intel-core-i5-14600kf.md](../survey/results/intel-core-i5-14600kf.md) |
 | x86-64, second shortlist | The same machine, NumPy 2.5.5, clang 21.1.8, pinned to one performance core, no warnings. The reference loop drifted by less than 0.1%. The 13 variants of [second-shortlist-design.md](second-shortlist-design.md) and no others; all agree with NumPy | [intel-core-i5-14600kf-second-shortlist.md](../survey/results/intel-core-i5-14600kf-second-shortlist.md) |
 | ARM64, second shortlist | Apple M1 Pro, macOS 27.2.1, NumPy 2.5.5, Apple clang 21, at a load average of about 2.5. The reference loop drifted by 1.6%. The same 13 variants and no others; all agree with NumPy | [apple-m1-pro-second-shortlist.md](../survey/results/apple-m1-pro-second-shortlist.md) |
+| ARM64, applications | Apple M1 Pro, macOS 27.2.1, NumPy 2.5.5, Apple clang 21, at a load average of about 16, so rough. The reference loop drifted by 0.8%. The group `applications`: `np.unique` on int64 labels of two and ten values ([unique-design.md](unique-design.md)), 11.1x behind the naive C from 65,536 elements up; both agree with NumPy | [apple-m1-pro-unique.md](../survey/results/apple-m1-pro-unique.md) |
 
 ## Results on ARM64
 

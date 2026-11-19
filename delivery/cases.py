@@ -4175,6 +4175,214 @@ def argext_rows_cases(name: str) -> Iterator[Case]:
     yield from _argext_rows_layout_cases(name)
 
 
+# ------------------------------------------------------------------ unique
+
+# The widest range of values np.unique's kernel is always given: the
+# binding's UNIQUE_FREE_SPAN. Above it the range may be as wide as the array
+# is long.
+UNIQUE_FREE_SPAN = 256
+# Element counts of the sweep over ranges: either side of the free range, of
+# the size from which the lock is released, and of the kernel's chunk of 64.
+UNIQUE_SIZES = (1, 2, 16, 63, 64, 65, 255, 256, 257, 1000, 8191, 8192, 8193, 100003)
+# Range widths of the sweep, as functions of the element count: name -> width.
+_UNIQUE_WIDTHS: dict[str, Callable[[int], int]] = {
+    "1": lambda n: 1,
+    "2": lambda n: 2,
+    "10": lambda n: 10,
+    "64": lambda n: 64,
+    "65": lambda n: 65,
+    "256": lambda n: UNIQUE_FREE_SPAN,
+    "257": lambda n: UNIQUE_FREE_SPAN + 1,
+    "n": lambda n: n,
+    "n+1": lambda n: n + 1,
+    "1000000": lambda n: 1_000_000,
+}
+# Where each range starts: name -> its first value, given its width.
+_UNIQUE_STARTS: dict[str, Callable[[int], int]] = {
+    "0": lambda width: 0,
+    "-5": lambda width: -5,
+    "1000": lambda width: 1000,
+    "int64 min": lambda width: _INT64_MIN,
+    "int64 max": lambda width: _INT64_MAX - width + 1,
+}
+# Element types next to int64 that np.unique accepts and that have no kernel.
+_UNIQUE_NEIGHBOURS = ("i32", "u64", "u8", "i16", "bool", "f64")
+# Layouts that reach the kernel: plain arrays, and arrays the binding copies
+# in C order first, as NumPy's flatten() does. The others (another byte
+# order, a subclass, a memory map, a list, a 0-d array) are NumPy's; a
+# masked array is NumPy's to route.
+_UNIQUE_COPIED = frozenset({"strided", "reversed", "fortran_rows"})
+
+
+def _unique_takes(x: np.ndarray) -> bool:
+    """Say whether the binding takes `np.unique(x)` for an int64 array of a layout it serves.
+
+    It is the binding's rule written again in NumPy: at least one element,
+    and the largest minus the smallest less than the element count or
+    UNIQUE_FREE_SPAN, whichever is more.
+
+    Args:
+        x: The array's values, of any shape.
+
+    Returns:
+        True when the kernel must take the call.
+    """
+    if x.size == 0:
+        return False
+    return int(x.max()) - int(x.min()) < max(x.size, UNIQUE_FREE_SPAN)
+
+
+def _unique_expect(dtype: str, variant: Variant, x: np.ndarray) -> str | None:
+    """Return the kernel for `np.unique` on `x` laid out as `variant`, or None or ANY.
+
+    Args:
+        dtype: Element type as a spec name.
+        variant: How the array is laid out.
+        x: The array's values, contiguous.
+
+    Returns:
+        "unique_i64", None when NumPy must answer, or ANY for a masked array.
+    """
+    if not variant.predictable:
+        return ANY
+    if dtype != "i64" or not (variant.plain or variant.name in _UNIQUE_COPIED):
+        return None
+    built = variant.build(x)
+    return "unique_i64" if _unique_takes(np.asarray(built)) else None
+
+
+def _labels(n: int, width: int, start: int) -> np.ndarray:
+    """Build n int64 values in [start, start + width), with both ends present when n allows.
+
+    Args:
+        n: Element count.
+        width: Width of the range, at least 1.
+        start: Its first value.
+
+    Returns:
+        A contiguous one-dimensional int64 array.
+    """
+    offsets = np.random.default_rng([SEED, n, width]).integers(0, width, n, dtype=np.uint64)
+    if n >= 2:
+        offsets[0], offsets[-1] = width - 1, 0
+    return (offsets + np.uint64(start % (1 << 64))).view(np.int64)
+
+
+def _unique_range_cases() -> Iterator[Case]:
+    """Yield np.unique(x) on int64 values of each range width and start, at every size of UNIQUE_SIZES.
+
+    Yields:
+        The cases, each taken when its range is narrow enough.
+    """
+    for n, (width_name, width_of), (start_name, start_of) in itertools.product(
+            UNIQUE_SIZES, _UNIQUE_WIDTHS.items(), _UNIQUE_STARTS.items()):
+        width = width_of(n)
+        maker = partial(_labels, n, width, start_of(width))
+        yield Case("unique", f"np.unique(x) i64 n={n} width={width_name} from={start_name}", partial(_made, maker),
+                   np.unique, "unique_i64" if _unique_takes(maker()) else None)
+
+
+def _unique_value_cases() -> Iterator[Case]:
+    """Yield np.unique(x) on every value class of the judge, and of the kernel's spec, at every size.
+
+    Yields:
+        The cases. Most of the judge's integer classes are spread over the
+        whole of int64 and are NumPy's after the scan.
+    """
+    for _, _, label, maker in value_arrays("i64"):
+        yield Case("unique", f"np.unique(x) i64 {label}", partial(_made, maker), np.unique,
+                   "unique_i64" if _unique_takes(maker()) else None)
+    own = spec("unique_i64").args[0].classes
+    for (cls, build), n in itertools.product(own.items(), VALUE_SIZES):
+        maker = partial(_spec_class, build, "i64", n)
+        yield Case("unique", f"np.unique(x) i64 n={n} x={cls}", partial(_made, maker), np.unique,
+                   "unique_i64" if _unique_takes(maker()) else None)
+
+
+def _unique_spellings() -> tuple[Spelling, ...]:
+    """Return the spellings of np.unique: the ones the binding takes, and the ones that are NumPy's.
+
+    Returns:
+        The spellings. TAKES ones are the plain call written in the ways
+        NumPy 2.3 to 2.5 accept it; NEVER ones ask for something else, or
+        give a flag NumPy treats as false that is not False itself.
+    """
+    return (
+        Spelling("np.unique(x)", np.unique),
+        Spelling("np.unique(ar=x)", lambda x: np.unique(ar=x)),
+        Spelling("np.unique(x, False, False, False)", lambda x: np.unique(x, False, False, False)),
+        Spelling("np.unique(x, False, False, False, None)", lambda x: np.unique(x, False, False, False, None)),
+        Spelling("np.unique(x, return_index=False, return_inverse=False, return_counts=False)",
+                 lambda x: np.unique(x, return_index=False, return_inverse=False, return_counts=False)),
+        Spelling("np.unique(x, axis=None)", lambda x: np.unique(x, axis=None)),
+        Spelling("np.unique(x, equal_nan=False)", lambda x: np.unique(x, equal_nan=False)),
+        Spelling("np.unique(x, equal_nan=True)", lambda x: np.unique(x, equal_nan=True)),
+        Spelling("np.unique(x, sorted=True)", lambda x: np.unique(x, sorted=True)),
+        Spelling("np.unique(x, return_counts=True)", lambda x: np.unique(x, return_counts=True), NEVER),
+        Spelling("np.unique(x, return_inverse=True)", lambda x: np.unique(x, return_inverse=True), NEVER),
+        Spelling("np.unique(x, return_index=True)", lambda x: np.unique(x, return_index=True), NEVER),
+        Spelling("np.unique(x, True, True, True)", lambda x: np.unique(x, True, True, True), NEVER),
+        Spelling("np.unique(x, return_counts=0)", lambda x: np.unique(x, return_counts=0), NEVER),
+        Spelling("np.unique(x, return_counts=None)", lambda x: np.unique(x, return_counts=None), NEVER),
+        Spelling("np.unique(x, axis=0)", lambda x: np.unique(x, axis=0), NEVER),
+        Spelling("np.unique(x, axis=-1)", lambda x: np.unique(x, axis=-1), NEVER),
+        Spelling("np.unique(x, sorted=False)", lambda x: np.unique(x, sorted=False), NEVER),
+        Spelling("np.unique(x, equal_nan=0)", lambda x: np.unique(x, equal_nan=0), NEVER),
+        Spelling("np.unique(x, False, False, False, None, True)",
+                 lambda x: np.unique(x, False, False, False, None, True), NEVER),
+        Spelling("np.unique(x, bogus=1)", lambda x: np.unique(x, bogus=1), NEVER),
+        Spelling("np.unique()", lambda x: np.unique(), NEVER),
+        Spelling("np.unique_values(x)", np.unique_values, NEVER),
+        Spelling("np.unique_counts(x)", np.unique_counts, NEVER),
+        Spelling("np.unique_inverse(x)", np.unique_inverse, NEVER),
+    )
+
+
+def _unique_variant(maker: Callable[[], np.ndarray], variant: Variant) -> tuple:
+    """Build the one argument of a unique layout case: values from `maker` in a variant."""
+    return (variant.build(maker()),)
+
+
+def _unique_layout_cases() -> Iterator[Case]:
+    """Yield every spelling of np.unique in every layout, on labels of ten values, for int64 and its neighbours.
+
+    Yields:
+        The cases, at LAYOUT_SIZES and on an empty array, which is NumPy's.
+    """
+    spellings = _unique_spellings()
+    for dtype in ("i64", *_UNIQUE_NEIGHBOURS):
+        for n, spelling in itertools.product(LAYOUT_SIZES, spellings):
+            maker = partial(_ten_labels, dtype, n)
+            for variant in variants_for(dtype, n):
+                expect = _unique_expect(dtype, variant, maker()) if spelling.kind == TAKES else None
+                yield Case("unique", f"{spelling.text} {dtype} n={n} x=0..9 layout={variant.name}",
+                           partial(_unique_variant, maker, variant), spelling.call, expect)
+        for spelling in spellings:
+            yield Case("unique", f"{spelling.text} {dtype} n=0", partial(_built, dtype, 0, CONTIGUOUS),
+                       spelling.call, None)
+    for n in LAYOUT_SIZES:
+        yield Case("unique", f"np.unique(x) longlong n={n} x=0..9",
+                   lambda n=n: (_ten_labels("i64", n).astype(np.longlong),), np.unique, None)
+
+
+def _ten_labels(dtype: str, n: int) -> np.ndarray:
+    """Build n labels from 0 to 9 of an element type: 0 and 1 for bool."""
+    values_ = np.random.default_rng([SEED, n]).integers(0, 10, n)
+    return (values_ % 2).astype(bool) if dtype == "bool" else values_.astype(np_dtype(dtype))
+
+
+def unique_cases() -> Iterator[Case]:
+    """Yield the cases of `np.unique`.
+
+    The function hook takes the plain call on an int64 ndarray of any layout
+    with at least one element and a narrow range; see the binding's
+    try_unique. Everything else is NumPy's.
+    """
+    yield from _unique_value_cases()
+    yield from _unique_range_cases()
+    yield from _unique_layout_cases()
+
+
 # Every operation that has a hook, with its exact cases.
 OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "argmax": partial(argext_cases, "argmax"),
@@ -4198,6 +4406,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "any": any_cases,
     "round": round_cases,
     "median": median_cases,
+    "unique": unique_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the

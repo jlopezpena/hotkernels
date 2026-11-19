@@ -9,7 +9,7 @@ hotkernels.install()
 
 Kernels are written by coding agents iterating against a judge. The judge checks every kernel against NumPy and times it against NumPy and naive `clang -O3` C.
 
-**On an Apple M1 Pro, the 31 kernels measured there are all faster than NumPy at every size measured. At a million elements, 17 of the 22 in the first table below are more than 5x faster and the best is 76x. Twenty-nine return NumPy's result bit for bit.**
+**On an Apple M1 Pro, the 32 kernels measured there are all faster than NumPy at every size measured. At a million elements, 17 of the 22 in the first table below are more than 5x faster and the best is 76x. Thirty return NumPy's result bit for bit.**
 
 The kernels exist for two architectures, written separately against the same specs: ARM64 NEON for Apple Silicon, and x86-64 AVX2 for Linux on processors of the x86-64-v3 level. The tables below are the ARM64 kernels on an Apple M1 Pro. The x86-64 kernels' figures on an Intel Core i5-14600KF are in [docs/kernel-findings.md](docs/kernel-findings.md#x86-64) from the judge, with the reports in [`results/`](results), and in [delivery/results/intel-r-core-tm-i5-14600kf.md](delivery/results/intel-r-core-tm-i5-14600kf.md) from Python; NumPy is a different opponent there, with vector loops of its own for several of these calls, so the two sets of figures are not expected to agree. The plan the x86-64 kernels were written to is [docs/x86-64-design.md](docs/x86-64-design.md).
 
@@ -88,9 +88,18 @@ The eight kernels of the second shortlist, on the Apple M1 Pro at 1,048,576 elem
 
 One `uv run judge run <kernel> --record` per kernel, one after another, at a load average of 1.4 to 2.9; the reports are in [`results/`](results). The first six were run locked; `cumfmax_f64` and `fmax_reduce_f64` were run `--unlocked`, because their narrowed specs ([docs/fmax-references-design.md](docs/fmax-references-design.md)) are not yet on `main`. `np.fmax.reduceat` is timed by the judge as one run over the whole array, where the kernel and NumPy's loop both run at the speed of the caches; from Python, on runs of 16, it is 3.05x faster (below). A range covers the inputs the kernel is timed on: few and many True for `m.any(axis=1)`, codes spread over 64 or 1,000 counters or four values for `np.bincount`, random and rising data for `np.maximum.accumulate`, random, rising and 5% NaN for `np.fmax.accumulate`, random and 5% NaN for `np.fmax.reduceat`, and half or 95% of the condition True for `np.where`. `m.any(axis=1)` is also timed on rows of 4, where it is 141x to 278x faster than NumPy and 36.6x faster than the C, and on rows of 64, 6.44x to 22.0x and 1.48x.
 
+`unique_i64`, for `np.unique(x)` on int64 labels, was added for scikit-learn, which calls it on every array of labels it validates ([docs/unique-design.md](docs/unique-design.md)). It has ARM64 assembly and ships as its C on x86-64. On the Apple M1 Pro at 1,048,576 elements:
+
+| Call | Elements | vs NumPy | vs `clang -O3` |
+|---|---|---|---|
+| `np.unique(x)`, 2 or 10 values | int64 | 39.5x – 40.0x | 1.57x |
+| `np.unique(x)`, a range of 256 values | int64 | 25.4x | 0.98x – 1.00x |
+
+One `uv run judge run unique_i64 --record`, `--unlocked` because its spec is not yet on `main`, at a load average of 22: rough. The report is in [`results/`](results). From Python, where the array is first read for its range, `np.unique(x)` on two values is about 18x faster than NumPy at a million elements and 13x at 16.
+
 What stands behind the numbers:
 
-- **Checked against NumPy, not against a description of it.** Every kernel is compared with NumPy's own output on inputs that include NaN, infinities, signed zeros, ties and denormals. Twenty-nine of the 31 match bit for bit. The two float `cumsum` kernels regroup the additions, which is where their speed comes from, and stay within a declared error bound.
+- **Checked against NumPy, not against a description of it.** Every kernel is compared with NumPy's own output on inputs that include NaN, infinities, signed zeros, ties and denormals. Thirty of the 32 match bit for bit. The two float `cumsum` kernels regroup the additions, which is where their speed comes from, and stay within a declared error bound.
 - **Memory-safe by test.** Each kernel runs with its buffers placed against inaccessible pages, so reading or writing one byte outside them crashes the check.
 - **Assembly only where it wins.** A kernel keeps its assembly only if the judge finds it significantly faster than the compiled C. `astype` from `uint8` to `float32` did not pass that bar and ships as C.
 
@@ -151,8 +160,8 @@ At 16 elements most of the gain is NumPy's own call path being skipped, not the 
 - **The judge** (`judge/`): checks a kernel for correctness and memory safety, and reports how fast it is. It runs on macOS ARM64 and on Linux x86-64.
 - **Fixture kernels** (`judge/fixtures/`): `argmax_f32`, `compress_f32`, `compress_scratch_f32`, `tally_u8` and `rank_u8`, used to test the judge itself, each with an ARM64 and an x86-64 version.
 - **The survey** (`survey/`): measures NumPy against naive C per operation, to decide which kernels are worth writing. It runs on macOS ARM64 and on Linux x86-64. Recorded results for both are in `survey/results/`.
-- **Kernels** (`kernels/`): 31 kernels for 21 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an assembly version per architecture: 30 for ARM64 and 31 for x86-64. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
-- **The package** (`hotkernels/`): what a user installs. A C extension points NumPy at the kernels, and `install()`, `uninstall()`, `enabled()` and `report()` control it. `install()` installs the 29 kernels that return NumPy's result bit for bit, and `install(inexact=True)` the other two.
+- **Kernels** (`kernels/`): 32 kernels for 22 NumPy operations, each with a spec, a naive C reference and, where assembly beats the C, an assembly version per architecture: 31 for ARM64 and 31 for x86-64. Each kernel's `attempts.md` lists every optimisation tried, kept or not.
+- **The package** (`hotkernels/`): what a user installs. A C extension points NumPy at the kernels, and `install()`, `uninstall()`, `enabled()` and `report()` control it. `install()` installs the 30 kernels that return NumPy's result bit for bit, and `install(inexact=True)` the other two.
 - **The delivery tool** (`delivery/`): tests and times the package from Python. Recorded timings are in `delivery/results/`.
 - **An example** (`examples/workload.py`): a NumPy program written without hotkernels in mind, used to show the effect of the one line.
 - **Release tooling** (`release/`, `release-notes/`): the notes each pull request leaves, and the commands that turn them into a release. Publishing to PyPI runs in [`.github/workflows/release.yml`](.github/workflows/release.yml).

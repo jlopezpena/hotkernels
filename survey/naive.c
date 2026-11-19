@@ -568,3 +568,25 @@ NOINLINE i64 where_scalar_f64(const u8 *c, const f64 *a, f64 *out, i64 n, f64 va
     return 0;
 }
 BENCH_OUT(where_scalar_f64, f64, (const u8 *c, const f64 *a, f64 *out0, i64 n, f64 value, i64 fresh, i64 reps), (c, a, out, n, value))
+
+// np.unique on int64 labels: the smallest and largest element, then a table
+// of one flag per value of that range in `out` (`cap` slots), read out in
+// order to its front. Returns the number of distinct values, or -1 when the
+// range is wider than `cap`, which the survey's inputs never are.
+NOINLINE i64 unique_i64(const i64 *x, i64 n, i64 *out, i64 cap) {
+    i64 lo = x[0], hi = x[0];
+    for (i64 i = 1; i < n; i++) {
+        lo = x[i] < lo ? x[i] : lo;
+        hi = x[i] > hi ? x[i] : hi;
+    }
+    const uint64_t span = (uint64_t)hi - (uint64_t)lo + 1;
+    if (span > (uint64_t)cap) return -1;
+    for (uint64_t j = 0; j < span; j++) out[j] = 0;
+    for (i64 i = 0; i < n; i++) out[(uint64_t)x[i] - (uint64_t)lo] = 1;
+    i64 count = 0;
+    for (uint64_t j = 0; j < span; j++) {
+        if (out[j]) out[count++] = (i64)((uint64_t)lo + j);
+    }
+    return count;
+}
+BENCH_OUT(unique_i64, i64, (const i64 *x, i64 n, i64 *out0, i64 cap, i64 fresh, i64 reps), (x, n, out, cap))

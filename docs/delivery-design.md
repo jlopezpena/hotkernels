@@ -246,6 +246,7 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 | `histogram` | 1 | Function | Contiguous float64, an integer bin count, no weights or density |
 | `bincount` | 3 | Function | One-dimensional, contiguous, no weights, `minlength` absent or a Python int >= 0. `uint8` (`bincount_u8`) whatever its values. `int16` (`bincount_i16`) and `int64` (`bincount_i64`) with at least one element: the array is read once for its largest element as an unsigned number, compiled for AVX2 with four running maxima, and a negative element, which reads as too large, sends the call to NumPy, which raises. The result has NumPy's length, the largest element plus one or `minlength`, and the kernel is given exactly that many counters, which it zeroes itself, so every element is inside its range. A result longer than 65,536 counts and longer than the array is NumPy's, whose memory comes zeroed from the system where the kernel would write every count; so is a largest element of the largest int64, whose length overflows. Empty arrays are NumPy's. The lock is released for the scan and for the kernel |
 | `isin` | 1 | Function | Contiguous int64, at most eight test values, flags at their defaults |
+| `unique` | 1 | Function | `np.unique(x)` on an int64 `ndarray` of any shape or layout with at least one element (one that is not C-contiguous is copied in C order first, as NumPy's `flatten` does); `return_index`, `return_inverse` and `return_counts` absent or `False`, `axis` absent or None, `equal_nan` absent or a bool, `sorted` absent or `True`. The array is read once for its smallest and largest elements, and the kernel takes the call when the largest minus the smallest is below 256 or below the element count; it marks the values present in a table of `span` values on the stack (up to 2 KB) or from `malloc`, and the values are copied into a new array of exactly their count. A wider range is NumPy's after the read. The lock is released for the read and the kernel from 8,192 elements. Counted as its own operation, `unique`. See [unique-design.md](unique-design.md) |
 
 "Contiguous" for a kernel that works element by element or reduces the whole array means any shape. NumPy's inner loops already work that way: a contiguous 40 by 25 array arrived at the `clip` loop as one run of 1,000.
 
@@ -411,7 +412,7 @@ hotkernels/                  the installable package, its own distribution
       hook_slot.c            type slot: argmax, argmin
       hook_loop.c            inner loop: clip
       hook_function.c        function objects: argmax, count_nonzero, sum, histogram, bincount, isin,
-                             interp, compress, extract, putmask, copyto, where, clip
+                             interp, compress, extract, putmask, copyto, where, clip, unique
       hook_method.c          methods: astype, sum, nonzero, cumsum, searchsorted, argmax, argmin, clip,
                              any, round, and the ufunc type's accumulate and reduceat
       hook_index.c           indexing: x[mask], x[mask] = v
