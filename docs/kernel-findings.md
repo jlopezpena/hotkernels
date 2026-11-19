@@ -102,14 +102,14 @@ Every figure is how many times faster the kernel is. "vs naive C" and "vs NumPy"
 | `clip_f32` | all six tables | 1.30x [1.30 – 1.30] | 13.1x | 1.05x (bounds -0.5, 0.5, random) |
 | `clip_f64` | all six tables | 1.09x [1.09 – 1.09] | 6.78x | |
 | `cast_u8_f32` | random | 1.21x [1.20 – 1.21] | 6.10x | 1.05x |
-| `cumsum_bool` | random | 1.89x [1.88 – 1.91] | 39.0x | 10.5x |
+| `cumsum_bool` | random | 1.93x [1.92 – 1.94] | 38.8x | 11.9x |
 | `where_f64` | both tables | 1.37x [1.37 – 1.37] | 8.09x | 5.53x (half true), 1.54x (95% true) |
 | `cummax_i64` | random / rising | 1.21x / 1.12x, all 1.16x [1.16 – 1.16] | 12.3x / 11.7x | 5.97x / 5.53x |
 | `cumfmax_f64` | random / rising / 5% NaN | 8.90x / 8.53x / 8.25x, all 8.55x [8.54 – 8.56] | 12.9x / 12.4x / 14.8x | 5.94x / 4.85x / 7.00x |
 | `fmax_reduce_f64` | random / 5% NaN | 6.62x / 6.64x, all 6.63x [6.63 – 6.63] | 6.24x / 6.85x | 1.22x / 1.21x |
 | `any_rows_bool` | sparse, rows of 22 / 4 / 64 | 5.04x / 17.6x / 3.78x, all 6.94x [6.92 – 6.96] | 91.7x / 304x / 75.4x | 57.1x / 288x / 33.5x |
 | `bincount_i16` | uniform, 64 / 1,000 counters; four values, 64 / 1,000 | 1.23x / 1.04x / 1.62x / 1.21x, all 1.26x [1.26 – 1.26] | 8.76x / 5.82x / 7.91x / 5.08x | 5.46x / 3.66x / 6.07x / 3.53x |
-| `bincount_i64` | uniform, 64 / 1,000 counters; four values, 64 / 1,000 | 1.16x / 1.01x / 1.34x / 1.17x, all 1.16x [1.16 – 1.16] | 4.79x / 3.33x / 4.49x / 3.46x | 3.04x / 2.32x / 3.76x / 2.77x |
+| `bincount_i64` | uniform, 64 / 1,000 counters; four values, 64 / 1,000 | 1.13x / 1.01x / 1.33x / 1.18x, all 1.16x [1.16 – 1.16] | 4.26x / 3.49x / 4.46x / 3.39x | 3.04x / 2.32x / 3.75x / 2.80x |
 
 Columns as in the ARM64 table: "vs naive C" and "vs NumPy" are geometric means over the eleven sizes from 16 to 16,777,216 elements. NumPy is timed from Python, where a call costs half a microsecond or more, so its overall column is dominated by the small sizes; the column at 1,048,576 elements is the one that compares loops. The reports the rows are read from are in [`results/`](../results), one per kernel.
 
