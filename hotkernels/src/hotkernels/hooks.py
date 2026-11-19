@@ -358,20 +358,26 @@ def _round_method(x: np.ndarray, decimals: int) -> np.ndarray:
 
 
 def _median() -> bool:
-    """Probe the function hook: `np.median(x)` on SMALL_PROBE_N and SMALL_PROBE_N - 1 halves in descending order.
+    """Probe the function hook: `np.median(x)` on the halves of 1 to n, short and long.
 
-    The even count's median is the mean of its two middle elements and the
-    odd count's its middle element, so a loop that took the wrong element,
-    or did not sort, fails. Halves of small whole numbers and their means are
-    exact.
+    SMALL_PROBE_N and SMALL_PROBE_N - 1 halves, in descending order, reach
+    the loop that sorts a copy. PROBE_N and PROBE_N - 1, shuffled by
+    PROBE_SORT_STEP (which has no factor in common with either), reach the
+    selection by bits that serves longer arrays; an array in order would be
+    answered from its middle places without it. The even counts are asked
+    as `np.median(x, axis=None)`. The even count's median is the mean of its
+    two middle elements and the odd count's its middle element, so a loop
+    that took the wrong element, or did not order them, fails. Halves of
+    small whole numbers and their means are exact.
 
     Returns:
-        Whether both medians are np.float64 and right.
+        Whether all four medians are np.float64 and right.
     """
     answers = []
-    for n in (SMALL_PROBE_N, SMALL_PROBE_N - 1):
-        x = np.arange(n, 0, -1) * 0.5
-        result = np.median(x)
+    for n in (SMALL_PROBE_N, SMALL_PROBE_N - 1, PROBE_N, PROBE_N - 1):
+        order = np.arange(n, 0, -1) if n <= SMALL_PROBE_N else np.arange(n) * PROBE_SORT_STEP % n + 1
+        x = order * 0.5
+        result = np.median(x, axis=None) if n % 2 == 0 else np.median(x)
         answers.append(type(result) is np.float64 and float(result) == (n + 1) * 0.25)
     return all(answers)
 

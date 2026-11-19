@@ -16,6 +16,7 @@ import atexit
 import ctypes
 import ctypes.util
 import itertools
+import math
 import operator
 import tempfile
 from dataclasses import dataclass, replace
@@ -1138,17 +1139,53 @@ def round_cases() -> Iterator[Case]:
 
 # ----------------------------------------------------------------- median
 
-# The largest float64 array the binding's own median loop takes:
-# MEDIAN_F64_MAX_N in hook_function.c. Above it the call is NumPy's.
-MEDIAN_F64_MAX_N = 128
-# Sizes of the sweep over values: every size of the general sweep up to the
-# limit and one beyond it, every size from 1 to 9 for the odd and even
-# cases, and the limit's neighbours. Above the limit nothing is built.
-MEDIAN_SIZES = tuple(sorted({*(n for n in VALUE_SIZES if n <= 2 * MEDIAN_F64_MAX_N), *range(1, 10),
-                             MEDIAN_F64_MAX_N - 1, MEDIAN_F64_MAX_N, MEDIAN_F64_MAX_N + 1}))
-# Sizes of the sweep over layouts and spellings: empty, a short one, the limit
-# and one above it, and the general ones.
-MEDIAN_LAYOUT_SIZES = (0, 16, MEDIAN_F64_MAX_N, MEDIAN_F64_MAX_N + 1, *LAYOUT_SIZES[1:])
+# The largest float64 array whose median the binding finds by sorting a copy:
+# MEDIAN_F64_SORT_MAX_N in hook_function.c. Above it the middle elements are
+# selected by their bits, up to MEDIAN_F64_MAX_N elements (the selection's
+# counters are 32 bits wide), which no case reaches.
+MEDIAN_F64_SORT_MAX_N = 64
+MEDIAN_F64_MAX_N = 2**32 - 1
+# Sizes of the sweep over values: every size of the general sweep, every size
+# from 1 to 9 for the odd and even cases, and the neighbours of the size at
+# which sorting gives way to selection.
+MEDIAN_SIZES = tuple(sorted({*VALUE_SIZES, *range(1, 10),
+                             MEDIAN_F64_SORT_MAX_N - 1, MEDIAN_F64_SORT_MAX_N, MEDIAN_F64_SORT_MAX_N + 1}))
+# Sizes of the sweep over layouts and spellings: empty, a short one, the
+# sorting limit and one above it, and the general ones, of which the largest
+# is above the count from which the binding releases the interpreter lock.
+MEDIAN_LAYOUT_SIZES = (0, 16, MEDIAN_F64_SORT_MAX_N, MEDIAN_F64_SORT_MAX_N + 1, *LAYOUT_SIZES[1:])
+# Element counts of the large arrays built to probe the selection, even and
+# odd: above HK_NOGIL_MIN_N, and large enough that the digit holding the
+# middle needs a second count on most of the data below.
+MEDIAN_LARGE_SIZES = (100_000, 100_001)
+# The sizes of Astropy's images in the second applications study: a 1,024 x
+# 1,024 image, and one element fewer for an odd count.
+MEDIAN_IMAGE_SIZES = (1_048_576, 1_048_575)
+# Columns of the two-dimensional large arrays: whole rows of the even size.
+MEDIAN_LARGE_COLUMNS = 8
+# The smallest positive subnormal, normal and largest float64.
+_DBL_TRUE_MIN, _DBL_MIN, _DBL_MAX = 5e-324, 2.2250738585072014e-308, 1.7976931348623157e308
+# Share of the elements set to a special value by the large makers that mix
+# one in, and of those that mix two.
+MEDIAN_SPECIAL_SHARE = 0.1
+MEDIAN_MAJORITY_SHARE = 0.6
+# How many units in the last place apart the values of the "neighbours of
+# 1e9" array range over: a few hundred, so that the keys differ only in their
+# lowest bits.
+MEDIAN_ULP_SPAN = 300
+# Mean and standard deviation of the background of an astronomical image,
+# share of its pixels that are stars and mean brightness of a star, as in
+# delivery/apps/astropy_timeseries.py.
+MEDIAN_SKY, MEDIAN_SKY_NOISE, MEDIAN_STAR_SHARE, MEDIAN_STAR_FLUX = 100.0, 5.0, 0.02, 500.0
+# Distinct whole numbers of the arrays of many ties, and of those of few.
+MEDIAN_MANY_VALUES, MEDIAN_FEW_VALUES = 1000, 10
+# Scale that turns normal values into subnormals: below the smallest normal.
+MEDIAN_SUBNORMAL_SCALE = 1e-310
+# The arrays of -1, -0.0, 0.0 and 1 in order hold one element in this many
+# of each of the first three, and 1 for the rest: a median of 1.
+MEDIAN_ORDERED_ZEROS_SHARE = 8
+# The bits of +inf: every magnitude below it is a finite number.
+F64_INF_BITS = 0x7FF0000000000000
 # Element types beside float64 that the loop must leave to NumPy.
 MEDIAN_NEIGHBOURS = ("f32", "i64", "i32")
 # Small arrays that probe each guard and the cases on either side of it, as
@@ -1156,7 +1193,6 @@ MEDIAN_NEIGHBOURS = ("f32", "i64", "i32")
 # when a negative zero is present, wherever it is; sums that overflow or
 # meet infinities of both signs, and halves that underflow, go to NumPy,
 # which warns or raises; infinities of one sign are taken.
-_DBL_MAX, _DBL_MIN, _DBL_TRUE_MIN = 1.7976931348623157e308, 2.2250738585072014e-308, 5e-324
 MEDIAN_GUARDS = (
     ("one -0.0", (-0.0,), False),
     ("one 0.0", (0.0,), True),
@@ -1232,15 +1268,244 @@ def _median_out(x):
     return np.median(x, out=np.empty((), np.float64))
 
 
+def _median_axis_none(x):
+    """Call `np.median(x, axis=None)`, Astropy's spelling.
+
+    Args:
+        x: The array.
+
+    Returns:
+        The median.
+    """
+    return np.median(x, axis=None)
+
+
+def _shuffled(rng: np.random.Generator, x: np.ndarray) -> np.ndarray:
+    """Shuffle an array.
+
+    Args:
+        rng: Source of the order.
+        x: The array.
+
+    Returns:
+        A new array of the elements of `x` in an order drawn from `rng`.
+    """
+    return rng.permutation(x)
+
+
+def _mixed(rng: np.random.Generator, n: int, specials: tuple[tuple[float, float], ...]) -> np.ndarray:
+    """Build normally distributed floats with special values mixed in.
+
+    Args:
+        rng: Source of the values and of where the specials go.
+        n: Element count.
+        specials: (value, share of the elements) pairs; the shares add up
+            to at most 1.
+
+    Returns:
+        A float64 array of `n` elements, each special value at about its share.
+    """
+    x = rng.standard_normal(n)
+    draw = rng.random(n)
+    start = 0.0
+    for value, share in specials:
+        x[(draw >= start) & (draw < start + share)] = value
+        start += share
+    return x
+
+
+def _middle_pair(rng: np.random.Generator, n: int, low: float, high: float) -> np.ndarray:
+    """Build an array whose two middle elements are `low` and `high`, shuffled.
+
+    For an odd count there is one more element above them, so the middle
+    element is `high`.
+
+    Args:
+        rng: Source of the order.
+        n: Element count, at least 2.
+        low: The lower middle element; every element below it is -1.
+        high: The upper middle element; every element above it is 1.
+
+    Returns:
+        A float64 array of `n` elements.
+    """
+    below = (n - 2) // 2
+    above = n - 2 - below
+    return _shuffled(rng, np.array([-1.0] * below + [low, high] + [1.0] * above))
+
+
+def _swapped(x: np.ndarray, i: int, j: int) -> np.ndarray:
+    """Exchange two elements of an array, in place: an array in order but for one pair.
+
+    Args:
+        x: The array, changed.
+        i: Index of one element, negative from the end.
+        j: Index of the other.
+
+    Returns:
+        `x`.
+    """
+    x[i], x[j] = x[j], x[i]
+    return x
+
+
+def _ordered_zero_counts(n: int) -> list[int]:
+    """Say how many of -1, -0.0, 0.0 and 1 an ordered array of `n` elements holds.
+
+    Args:
+        n: Element count.
+
+    Returns:
+        The four counts, in that order: a share of MEDIAN_ORDERED_ZEROS_SHARE
+        each for the first three, the rest 1.
+    """
+    share = n // MEDIAN_ORDERED_ZEROS_SHARE
+    return [share, share, share, n - 3 * share]
+
+
+def _sky(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Build an astronomical image's pixels, flattened: a noisy background with a few bright stars.
+
+    Args:
+        rng: Source of the values.
+        n: Element count.
+
+    Returns:
+        A float64 array of `n` elements, normal about MEDIAN_SKY, with
+        MEDIAN_STAR_SHARE of them brighter by an exponential amount.
+    """
+    x = rng.normal(MEDIAN_SKY, MEDIAN_SKY_NOISE, n)
+    stars = rng.random(n) < MEDIAN_STAR_SHARE
+    x[stars] += rng.exponential(MEDIAN_STAR_FLUX, stars.sum())
+    return x
+
+
+def _finite_bits(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Build float64 values from random bit patterns over every finite magnitude, of both signs.
+
+    Args:
+        rng: Source of the bits.
+        n: Element count.
+
+    Returns:
+        A float64 array of `n` elements, none of them infinite or NaN.
+    """
+    magnitudes = rng.integers(0, F64_INF_BITS, n, dtype=np.uint64)
+    signs = rng.integers(0, 2, n, dtype=np.uint64) << np.uint64(63)
+    return (magnitudes | signs).view(np.float64)
+
+
+# The large arrays that probe the selection, as (label, maker). A maker takes
+# a random generator and an element count. Each is built at both of
+# MEDIAN_LARGE_SIZES; whether the binding takes it is _median_expect's to say.
+MEDIAN_LARGE_ARRAYS: tuple[tuple[str, Callable[[np.random.Generator, int], np.ndarray]], ...] = (
+    ("normal", lambda rng, n: rng.standard_normal(n)),
+    ("normal(100, 5): one exponent", lambda rng, n: rng.normal(MEDIAN_SKY, MEDIAN_SKY_NOISE, n)),
+    ("a sky with stars", _sky),
+    ("ascending", lambda rng, n: np.sort(rng.standard_normal(n))),
+    ("descending", lambda rng, n: np.sort(rng.standard_normal(n))[::-1].copy()),
+    ("ascending whole numbers, with ties", lambda rng, n: np.sort(rng.integers(0, MEDIAN_MANY_VALUES, n)).astype(np.float64)),
+    ("descending whole numbers, with ties", lambda rng, n: np.sort(rng.integers(0, MEDIAN_MANY_VALUES, n))[::-1].astype(np.float64)),
+    ("ascending but the last two swapped", lambda rng, n: _swapped(np.sort(rng.standard_normal(n)), -2, -1)),
+    ("ascending but the first element the largest", lambda rng, n: _swapped(np.sort(rng.standard_normal(n)), 0, -1)),
+    ("descending but the middle two swapped", lambda rng, n: _swapped(np.sort(rng.standard_normal(n))[::-1].copy(),
+                                                                      n // 2 - 1, n // 2)),
+    ("-1, -0.0, 0.0 and 1 in that order, a median of 1",
+     lambda rng, n: np.repeat([-1.0, -0.0, 0.0, 1.0], _ordered_zero_counts(n))),
+    ("1, 0.0, -0.0 and -1 in that order, a median of 1",
+     lambda rng, n: np.repeat([1.0, 0.0, -0.0, -1.0], _ordered_zero_counts(n)[::-1])),
+    ("ten whole numbers", lambda rng, n: rng.integers(0, MEDIAN_FEW_VALUES, n).astype(np.float64)),
+    ("1.0 and 2.0, half each: the middle in two digits",
+     lambda rng, n: _shuffled(rng, np.where(np.arange(n) < n // 2, 1.0, 2.0))),
+    ("all equal", lambda rng, n: np.full(n, 3.5)),
+    ("all 0.0", lambda rng, n: np.zeros(n)),
+    ("all -0.0", lambda rng, n: np.full(n, -0.0)),
+    ("-1, -0.0, 0.0 and 1: a zero median beside -0.0",
+     lambda rng, n: rng.choice(np.array([-1.0, -0.0, 0.0, 1.0]), n)),
+    ("-0.0 in a tenth, away from the median", lambda rng, n: _mixed(rng, n, ((-0.0, MEDIAN_SPECIAL_SHARE),)) + 2.0),
+    ("+inf in a tenth", lambda rng, n: _mixed(rng, n, ((np.inf, MEDIAN_SPECIAL_SHARE),))),
+    ("-inf in a tenth", lambda rng, n: _mixed(rng, n, ((-np.inf, MEDIAN_SPECIAL_SHARE),))),
+    ("+inf in most: an infinite median", lambda rng, n: _mixed(rng, n, ((np.inf, MEDIAN_MAJORITY_SHARE),))),
+    ("-inf and +inf in a tenth each", lambda rng, n: _mixed(rng, n, ((-np.inf, MEDIAN_SPECIAL_SHARE),
+                                                                     (np.inf, MEDIAN_SPECIAL_SHARE)))),
+    ("-inf and +inf, half each", lambda rng, n: _shuffled(rng, np.where(np.arange(n) < n // 2, -np.inf, np.inf))),
+    ("the largest in most: a sum that overflows", lambda rng, n: _mixed(rng, n, ((_DBL_MAX, MEDIAN_MAJORITY_SHARE),))),
+    ("subnormals", lambda rng, n: rng.standard_normal(n) * MEDIAN_SUBNORMAL_SCALE),
+    ("0.0 and the smallest subnormal in the middle: a half that underflows",
+     lambda rng, n: _middle_pair(rng, n, 0.0, _DBL_TRUE_MIN)),
+    ("the smallest subnormal twice in the middle: an exact half",
+     lambda rng, n: _middle_pair(rng, n, _DBL_TRUE_MIN, _DBL_TRUE_MIN)),
+    ("the smallest subnormal and the smallest normal in the middle",
+     lambda rng, n: _middle_pair(rng, n, _DBL_TRUE_MIN, _DBL_MIN)),
+    ("neighbours of 1e9: keys that differ in their lowest bits",
+     lambda rng, n: 1e9 + rng.integers(0, MEDIAN_ULP_SPAN, n) * np.spacing(1e9)),
+    ("random bits of every finite magnitude", _finite_bits),
+    ("a NaN at the end", lambda rng, n: np.append(rng.standard_normal(n - 1), np.nan)),
+)
+
+
+def _median_large(maker: Callable[[np.random.Generator, int], np.ndarray], n: int,
+                  shape: tuple[int, ...] | None = None) -> np.ndarray:
+    """Build one of MEDIAN_LARGE_ARRAYS, the same every time.
+
+    Args:
+        maker: The array's maker.
+        n: Element count asked for. The middle-pair makers build the even
+            count below an odd one.
+        shape: Shape to give the array, or None for one dimension.
+
+    Returns:
+        A new contiguous float64 array.
+    """
+    x = np.ascontiguousarray(maker(np.random.default_rng(SEED), n), dtype=np.float64)
+    return x.reshape(shape) if shape is not None else x
+
+
+def median_large_cases() -> Iterator[Case]:
+    """Yield the cases of `np.median` on large arrays, where the binding selects the middle by bits.
+
+    Every array of MEDIAN_LARGE_ARRAYS at both of MEDIAN_LARGE_SIZES, by
+    position and with axis=None by keyword, and in two dimensions at the even
+    size; those whose mean of the middle may raise, also under np.errstate.
+    An image of the size Astropy's are in the applications study, flat and
+    as a square, and a normal array of the same sizes.
+    """
+    for (label, maker), n in itertools.product(MEDIAN_LARGE_ARRAYS, MEDIAN_LARGE_SIZES):
+        make = partial(_median_large, maker, n)
+        expect = _median_expect(make())
+        built = partial(_made, make)
+        yield Case("median", f"np.median(x) f64 n={n} x={label}", built, np.median, expect)
+        yield Case("median", f"np.median(x, axis=None) f64 n={n} x={label}", built, _median_axis_none, expect)
+        if n % MEDIAN_LARGE_COLUMNS == 0:
+            rows = partial(_median_large, maker, n, (-1, MEDIAN_LARGE_COLUMNS))
+            yield Case("median", f"np.median(x) f64 two dimensions n={n} x={label}", partial(_made, rows),
+                       np.median, expect)
+        if expect is None:
+            for setting in ("raise", "warn"):
+                yield Case("median", f"np.errstate(all={setting!r}) np.median(x) f64 n={n} x={label}", built,
+                           partial(_median_errstate, setting), expect)
+    for n in MEDIAN_IMAGE_SIZES:
+        for label, maker in (("normal", MEDIAN_LARGE_ARRAYS[0][1]), ("a sky with stars", _sky)):
+            make = partial(_median_large, maker, n)
+            yield Case("median", f"np.median(x) f64 n={n} x={label}", partial(_made, make), np.median,
+                       _median_expect(make()))
+        side = math.isqrt(n)
+        if side * side == n:
+            square = partial(_median_large, _sky, n, (side, side))
+            yield Case("median", f"np.median(x, axis=None) f64 {side} x {side} x=a sky with stars",
+                       partial(_made, square), _median_axis_none, _median_expect(square()))
+
+
 def median_cases() -> Iterator[Case]:
     """Yield the cases of `np.median`.
 
-    The function hook runs the binding's own loop for `np.median(x)` with the
-    array alone, by position, a plain contiguous float64 array of any shape
-    with 1 to MEDIAN_F64_MAX_N elements and no NaN, when the mean of its
-    middle elements raises nothing NumPy reports and the median is not a
-    zero beside a negative zero. Every other call is NumPy's.
+    The function hook runs the binding's own loop for `np.median(x)` and
+    `np.median(x, axis=None)`, a plain contiguous float64 array of any shape
+    with at least one element and no NaN, when the mean of its middle
+    elements raises nothing NumPy reports and the median is not a zero
+    beside a negative zero. Every other call is NumPy's.
     """
+    yield from median_large_cases()
     for n, _, label, maker in value_arrays("f64", MEDIAN_SIZES):
         yield Case("median", f"np.median(x) f64 {label}", partial(_made, maker), np.median, _median_expect(maker()))
         cube = n % 4 == 0 and n >= 4
@@ -1256,14 +1521,17 @@ def median_cases() -> Iterator[Case]:
         for setting in ("raise", "warn", "ignore"):
             yield Case("median", f"np.errstate(all={setting!r}) np.median(x) f64 {label}", make,
                        partial(_median_errstate, setting), expect)
-    for n in (1, 2, 16, MEDIAN_F64_MAX_N):
+    for n in (1, 2, 16, MEDIAN_F64_SORT_MAX_N, MEDIAN_F64_SORT_MAX_N + 1, *MEDIAN_LARGE_SIZES):
         yield Case("median", f"np.median(x) f64 n={n} x=signalling and negative NaNs",
                    partial(_made, partial(unusual_nans, "f64", n)), np.median, None)
     spellings = (
         Spelling("np.median(x)", np.median),
         Spelling("np.median(a=x)", lambda x: np.median(a=x), NEVER),
-        Spelling("np.median(x, None)", lambda x: np.median(x, None), NEVER),
-        Spelling("np.median(x, axis=None)", lambda x: np.median(x, axis=None), NEVER),
+        Spelling("np.median(x, None)", lambda x: np.median(x, None)),
+        Spelling("np.median(x, axis=None)", _median_axis_none),
+        Spelling("np.median(x, None, None)", lambda x: np.median(x, None, None), NEVER),
+        Spelling("np.median(x, axis=None, keepdims=False)", lambda x: np.median(x, axis=None, keepdims=False), NEVER),
+        Spelling("np.median(x, keepdims=False, axis=None)", lambda x: np.median(x, keepdims=False, axis=None), NEVER),
         Spelling("np.median(x, axis=0)", lambda x: np.median(x, axis=0), NEVER),
         Spelling("np.median(x, axis=-1)", lambda x: np.median(x, axis=-1), NEVER),
         Spelling("np.median(x, out=o)", _median_out, NEVER),
