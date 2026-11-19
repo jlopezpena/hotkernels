@@ -4859,8 +4859,19 @@ ARGSORT_NEIGHBOURS = ("f32", "i32", "u8", "bool")
 # interpreter lock released.
 ARGSORT_ORDER_SIZES = (ARGSORT_MIN_N, 1000, 100003)
 # Distinct values of the arrays built with ties, few enough that every
-# element has several equals.
+# element has several equals; and the float values of the array that mixes
+# zeros of both signs and NaN with numbers, shuffled.
 ARGSORT_TIE_VALUES = 5
+ARGSORT_FLOAT_TIES = np.array([0.0, -0.0, 1.0, -1.0, np.nan])
+# The distance between neighbouring values of the sorted arrays the order
+# cases are built from, which leaves room for no two to be equal.
+ARGSORT_VALUE_STEP = 3
+# In the descending array with ties, each value is held by about this many elements.
+ARGSORT_TIE_RUN = 4
+# One element in this many, at the end, is a NaN in the sorted array that ends in NaNs.
+ARGSORT_NAN_TAIL = 8
+# The step of the view in the case that sorts every third element backwards.
+ARGSORT_VIEW_STEP = 3
 # How the label of a case on the masked-array layout ends.
 _MASKED_LAYOUT = "layout=masked_array"
 # The layouts that are one-dimensional views with a step, as the labels of
@@ -4875,7 +4886,8 @@ def _stable(x):
 
 def _argsort_sorted(dtype: str, n: int) -> np.ndarray:
     """Build `n` distinct elements of `dtype` in ascending order."""
-    return (np.arange(n) * 3 - n).astype(np_dtype(dtype)) if dtype != "u64" else (np.arange(n) * 3).astype(np.uint64)
+    steps = np.arange(n) * ARGSORT_VALUE_STEP
+    return steps.astype(np.uint64) if dtype == "u64" else (steps - n).astype(np_dtype(dtype))
 
 
 def _argsort_with_falls(dtype: str, n: int, falls: int) -> tuple:
@@ -4914,22 +4926,22 @@ def _argsort_with_rises(dtype: str, n: int, rises: int) -> tuple:
 
 def _argsort_descending_ties(dtype: str, n: int) -> tuple:
     """Build `n` elements in descending order in which every value repeats."""
-    return (np.sort(np.arange(n) % (n // 4 + 1))[::-1].astype(np_dtype(dtype)),)
+    return (np.sort(np.arange(n) % (n // ARGSORT_TIE_RUN + 1))[::-1].astype(np_dtype(dtype)),)
 
 
 def _argsort_ties(dtype: str, n: int, zeros: bool) -> tuple:
     """Build shuffled elements of a few values; for floats optionally zeros of both signs among them."""
-    picks = np.random.default_rng(SEED).integers(0, ARGSORT_TIE_VALUES, n)
+    rng = np.random.default_rng(SEED)
     if zeros:
-        return (np.array([0.0, -0.0, 1.0, -1.0, np.nan])[picks],)
-    return (picks.astype(np_dtype(dtype)),)
+        return (ARGSORT_FLOAT_TIES[rng.integers(0, len(ARGSORT_FLOAT_TIES), n)],)
+    return (rng.integers(0, ARGSORT_TIE_VALUES, n).astype(np_dtype(dtype)),)
 
 
 def _argsort_nan_in_order(n: int, where: str) -> tuple:
     """Build ascending float64 with NaNs: at the end, where they sort, or in the middle, out of order."""
     x = np.arange(n, dtype=np.float64)
     if where == "end":
-        x[n - n // 8:] = np.nan
+        x[n - n // ARGSORT_NAN_TAIL:] = np.nan
     else:
         x[n // 2] = np.nan
     return (x,)
@@ -5046,8 +5058,9 @@ def argsort_cases() -> Iterator[Case]:
         yield Case("argsort", f"np.argsort(np.flip(x), axis=-1, kind='stable') f64 n={n}",
                    lambda n=n: (values("f64", n),), lambda x: np.argsort(np.flip(x), axis=-1, kind="stable"),
                    "argsort_f64")
-        yield Case("argsort", f"x[::-3].argsort(kind='stable') i64 n={n}",
-                   lambda n=n: (values("i64", 3 * n),), lambda x: x[::-3].argsort(kind="stable"), "argsort_i64")
+        yield Case("argsort", f"x[::-{ARGSORT_VIEW_STEP}].argsort(kind='stable') i64 n={n}",
+                   lambda n=n: (values("i64", ARGSORT_VIEW_STEP * n),),
+                   lambda x: x[::-ARGSORT_VIEW_STEP].argsort(kind="stable"), "argsort_i64")
         # C's `long long` is a NumPy type of its own, and 64 bits wide like `long`.
         yield Case("argsort", f"x.argsort(kind='stable') longlong n={n}",
                    lambda n=n: (values("i64", n).astype(np.longlong),), _stable, "argsort_i64")

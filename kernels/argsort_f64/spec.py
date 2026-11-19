@@ -19,11 +19,21 @@ from judge.spec import USED_RETURN, In, Kernel, Out, Size, Times
 # Elements of working memory and result together, per element of input.
 OUT_PER_ELEMENT = 3
 
-# Value classes: how many distinct values `few_values` has, the range of the
-# whole numbers of `whole`, and the share of each special value in the mixes.
-FEW_VALUES = 3
+# The value classes pick from tables with the default random array. Scaled by
+# this and cut to whole numbers, its normally distributed elements make
+# integers that are spread evenly over any small modulus.
+PICK_SCALE = 1e6
+# `zero_signs` holds these values, so every element has equals and the zeros
+# of both signs are among them.
+TIED_VALUES = np.array([0.0, -0.0, -1.0, 1.0, 2.0])
+# The whole numbers of `whole` are below this.
 WHOLE_RANGE = 1000
-SPECIAL_SHARE = 0.4
+# In `nan_kinds`, NAN_PICKS of every NAN_CYCLE elements are a NaN; in
+# `specials`, SPECIAL_PICKS of every SPECIAL_CYCLE are a special value.
+NAN_PICKS, NAN_CYCLE = 2, 5
+SPECIAL_PICKS, SPECIAL_CYCLE = 4, 10
+# `nearly_sorted` puts one element in this many out of place, at the end.
+UNSORTED_SHARE = 20
 
 # Bit patterns of NaNs that differ in sign and payload. NumPy calls them all
 # equal, so a sort must leave them in their original order.
@@ -41,22 +51,21 @@ SCORE_SHIFT = 1.5
 
 def _nan_kinds(base):
     """Value class: numbers mixed with NaNs of several signs and payloads."""
-    picks = np.abs(base * 1e6).astype(np.int64)
+    picks = np.abs(base * PICK_SCALE).astype(np.int64)
     nans = NAN_PATTERNS[picks % len(NAN_PATTERNS)].view(np.float64)
-    return np.where(picks % 5 < 2, nans, base)
+    return np.where(picks % NAN_CYCLE < NAN_PICKS, nans, base)
 
 
 def _zero_signs(base):
     """Value class: zeros of both signs among a few other values, so every element has ties."""
-    picks = np.abs(base * 1e6).astype(np.int64) % (FEW_VALUES + 2)
-    return np.array([0.0, -0.0, -1.0, 1.0, 2.0])[picks]
+    return TIED_VALUES[np.abs(base * PICK_SCALE).astype(np.int64) % len(TIED_VALUES)]
 
 
 def _specials(base):
     """Value class: the ends of the order and its ties across signs, mixed with numbers."""
-    picks = np.abs(base * 1e6).astype(np.int64)
+    picks = np.abs(base * PICK_SCALE).astype(np.int64)
     special = SPECIAL_VALUES[picks % len(SPECIAL_VALUES)]
-    return np.where((picks // len(SPECIAL_VALUES)) % 10 < 10 * SPECIAL_SHARE, special, base)
+    return np.where((picks // len(SPECIAL_VALUES)) % SPECIAL_CYCLE < SPECIAL_PICKS, special, base)
 
 
 def _whole(base):
@@ -72,7 +81,7 @@ def _positive(base):
 def _nearly_sorted(base):
     """Value class: ascending, with the last few elements out of place."""
     out = np.sort(base)
-    tail = max(1, len(out) // 20)
+    tail = max(1, len(out) // UNSORTED_SHARE)
     out[len(out) - tail:] = base[:tail]
     return out
 

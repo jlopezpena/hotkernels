@@ -30,6 +30,10 @@ HIGH_SHIFT = 44
 FIELD_SHIFT = 40
 # `around_zero` holds values in [-AROUND, AROUND], on both sides of the sign.
 AROUND = 3
+# `two_fields` gives each of its two fields this many values.
+FIELD_VALUES = 8
+# `nearly_sorted` puts one element in this many out of place, at the end.
+UNSORTED_SHARE = 20
 # Timing: the range of `small_range`.
 SMALL_RANGE = 1000
 
@@ -46,8 +50,8 @@ def _high_window(base):
 
 def _two_fields(base):
     """Value class: two small fields of differing bits FIELD_SHIFT apart."""
-    low = np.mod(base, 8).astype(np.uint64)
-    high = np.mod(base // 8, 8).astype(np.uint64)
+    low = np.mod(base, FIELD_VALUES).astype(np.uint64)
+    high = np.mod(base // FIELD_VALUES, FIELD_VALUES).astype(np.uint64)
     return (low | (high << np.uint64(FIELD_SHIFT))).astype(DTYPE)
 
 
@@ -59,7 +63,7 @@ def _around_zero(base):
 def _nearly_sorted(base):
     """Value class: ascending, with the last few elements out of place."""
     out = np.sort(base)
-    tail = max(1, len(out) // 20)
+    tail = max(1, len(out) // UNSORTED_SHARE)
     out[len(out) - tail:] = base[:tail]
     return out
 
