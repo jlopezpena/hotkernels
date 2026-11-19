@@ -212,11 +212,11 @@
 .globl _any_rows_bool
 .p2align 2
 _any_rows_bool:
+    cmp     x3, #4
+    b.eq    Lfour
     udiv    x4, x2, x3                  // rows
     mov     x5, x4
     cbz     x4, Ldone
-    cmp     x3, #4
-    b.eq    Lfour
     cmp     x3, #16
     b.lo    Lshort
     cmp     x3, #64
@@ -376,6 +376,10 @@ Lfour32_huge:
 // Rows of four. A row is four bytes, so 64 bytes are sixteen rows and three
 // `umaxp` reduce them to one byte per row, in order.
 Lfour:
+    lsr     x4, x2, #2                  // rows, without a division
+    mov     x5, x4
+    cmp     x4, #16
+    b.lo    Lfour_few
     subs    x4, x4, #32
     b.lo    Lfour_tail
     cmp     x2, #HUGE_N
@@ -420,7 +424,7 @@ Lfour_few:
     // Fewer than 16 rows in all. With four or more, four rows per 16-byte
     // load, the last four ending at the last row.
     cmp     x4, #4
-    b.lo    Lfour_one
+    b.lo    Lfour_under4
     add     x6, x0, x4, lsl #2
     sub     x6, x6, #16                 // the last four rows
     add     x7, x1, x4
@@ -441,6 +445,8 @@ Lfour4_more:
     umaxp   v0.16b, v0.16b, v0.16b
     str     s0, [x7]
     b       Ldone
+Lfour_under4:
+    cbz     x4, Ldone
 Lfour_one:
     ldr     w6, [x0], #4
     cmp     w6, #0

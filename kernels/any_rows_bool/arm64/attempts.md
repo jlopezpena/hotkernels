@@ -130,3 +130,12 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
 - **Kept:** yes
 - **Notes:** a smaller gain than attempt 9 at the same size (1.17x there): the row of 22 costs
   more instructions in this form (`and` and a position add per row).
+
+## 11. Rows of four: tested before the division, short matrices first
+
+- **Idea:** `cols` = 4 is tested before the `udiv`, and its row count is `n >> 2`; under sixteen
+  rows the path goes to the 16-byte loads of attempt 6 at once, not through the block tests.
+- **check:** pass
+- **compare:** significantly faster, 1.012x [1.011 – 1.012]; rows of 4 at 16 elements 1.33x
+  (2.6 ns to 1.9 ns), rows of 22 at 64 elements 1.08x (one test fewer before its path).
+- **Kept:** yes
