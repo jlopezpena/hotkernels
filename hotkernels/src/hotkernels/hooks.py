@@ -41,7 +41,7 @@ INPLACE = "inplace"
 INPLACE_ARM64_ONLY = "ARM64 only: see docs/gradient-step-findings.md"
 # Element count of the in-place probes: the fewest the loops take
 # (INPLACE_MIN_N in hook_loop.c).
-PROBE_INPLACE_N = 16384
+PROBE_INPLACE_N = 131072
 # Value the in-place probes add to or subtract from each element.
 PROBE_INPLACE_STEP = 0.375
 

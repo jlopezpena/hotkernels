@@ -4394,7 +4394,7 @@ INPLACE_UFUNCS = {"add": (np.add, operator.iadd), "subtract": (np.subtract, oper
 # Element types beside float64 that the loops must leave to NumPy.
 INPLACE_NEIGHBOURS = ("f32", "i64")
 # The fewest elements the loops take: INPLACE_MIN_N in hook_loop.c.
-INPLACE_MIN_N = 16384
+INPLACE_MIN_N = 131072
 # Sizes of the sweep over values: the general sweep, and the sizes around the
 # limit, which is a multiple of the loops' step of 16 elements, so the sizes
 # above it also end in a part step.

@@ -13,7 +13,7 @@ takes 0.45 to 0.53 ms a step inside the training loop against 0.08 ms timed alon
 - **Two passes are not the problem.** Inside the loop the multiply into a fresh temporary takes 36 µs and the temporary costs 6 µs to take and give back, with no page faults. The subtraction takes 445 µs. Timed alone it takes 49 µs.
 - **The subtraction is slow because Accelerate ran on other cores.** Above a size Accelerate multiplies matrices on several threads, and after `x @ w` has read `w` on other cores, NumPy's loop takes 0.78 ms to subtract in place from `w` instead of 0.05 ms. A read of `w`, or a write to it alone, is not slowed; a read followed by a write to the same line is. With `VECLIB_MAXIMUM_THREADS=1` the effect is gone, and with a 256 × 256 matrix, which Accelerate multiplies on one thread, it never appears.
 - **A loop that prefetches each line for a store removes it.** The same subtraction with a `prfm pstl1keep` 4 KB ahead of its loads takes 57 µs after the product, and costs nothing when `w` is in the cache. It is exact: the same arithmetic in the same order.
-- **That loop can be reached from the hooks hotkernels already has,** as the inner loop of `subtract` and `add` on `float64`, taken when the output is the first input: `w -= b`, `w += b`, and the in-place adds NumPy's temporary elision makes. In `mlp_train` the training went from 286 ms to 220 ms with it, the results bit for bit the same. This document proposes it, for ARM64, as a loop built into the binding ([Design](#design-an-in-place-add-and-subtract-of-the-bindings-own)).
+- **That loop can be reached from the hooks hotkernels already has,** as the inner loop of `subtract` and `add` on `float64`, taken when the output is the first input: `w -= b`, `w += b`, and the in-place adds NumPy's temporary elision makes. In `mlp_train` the training went from 286 ms to 220 ms with it in the study, and with it built into hotkernels the whole application went from 260.5 ms to 152.9 ms (1.70x), the results bit for bit the same. This document proposes it, for ARM64, as a loop built into the binding ([Design](#design-an-in-place-add-and-subtract-of-the-bindings-own)).
 - **Fusion would save little more.** A fused single pass with the same prefetch trains in 212 ms against the two passes' 220 ms, 4%. With Accelerate on one thread, where nothing slows the subtraction, the fused pass saves 35 µs a step, 6.6 ms of a 170 ms training.
 - **A caching allocator gains nothing.** macOS already hands the 1.6 MB temporary back without page faults; a cache installed through NumPy's allocator interface (NEP 49) made both applications neither faster nor slower.
 - **No hook can fuse the statement.** CPython gives an extension no way to see the operand the result of `lr * g` is about to be subtracted from, and a lazy result is unsound for a real `ndarray`. When the subtraction runs, the multiply is done and its temporary is about to be freed: there is nothing left to save ([below](#can-a-hook-fuse-the-statement)).
@@ -157,7 +157,7 @@ On ARM64, the inner loops of the `subtract` and `add` ufuncs for `float64` are h
 - the output is the first input, at the same address: `w -= b`, `w += b`, `np.subtract(w, b, out=w)`, and the in-place operation NumPy's elision substitutes for `t + b` when `t` is a temporary;
 - all three operands step by one element (8 bytes), so a reduction, whose accumulator steps by zero, and every strided or broadcast operand go to NumPy;
 - the second input is the output itself or does not overlap it;
-- there is at least one element.
+- there are at least 131,072 elements (see [What changed in the building](#what-changed-in-the-building)).
 
 It then runs a loop that handles one 128-byte line of the output per step, two elements per NEON instruction, and prefetches the line 4,096 bytes ahead for a store (`prfm pstl1keep`). No prefetch names an address beyond the end of the output: the last 4,096 bytes are handled without. Everything else goes to NumPy's own loop, which the hook keeps.
 
@@ -171,7 +171,7 @@ The judge times a kernel alone, on buffers it has just written, and there the pr
 
 ### What it costs elsewhere
 
-Every `float64` add and subtract in a program reaches the hook. One that is not in place, `a + b`, pays for comparing two pointers and three steps before NumPy's loop runs; that is measured with `delivery time` and must be within the noise at every size. One that is in place on data already in the cache runs the loop of the binding at NumPy's speed.
+Every `float64` add and subtract in a program reaches the hook. One that is not in place, `a + b`, pays for comparing two pointers and three steps before NumPy's loop runs; that is measured with `delivery time` and must be within the noise at every size. One that is in place on data already in the cache runs the loop of the binding at about NumPy's speed; the figures are below.
 
 ### Counting and reporting
 
@@ -186,6 +186,26 @@ The loop is not installed on x86-64. The effect it removes was found on the Appl
 - **Other in-place ufuncs.** `w *= 0.9` or `probs /= s` on an array a threaded product has just read would pay the same cost. The two operations of the gradient step are taken first; the rest wait for a program that needs them.
 - **`float32`.** No application in the study trains in `float32`.
 - **Setting Accelerate's threads.** See above.
+
+## What changed in the building
+
+**A minimum size.** The design took every in-place call of one element or more. `delivery time` found the loop 0.95x to 0.96x of NumPy at 4,096 elements, in the first-level cache, at a load average of about 5; timed in C at a load of about 15, 545 ns against 520 ns for the loop clang makes of `w[i] -= b[i]`. A version that loads a whole line before storing it was slower still (690 ns). From Python, on arrays alone and with no product before them, two alternating runs at a load average of 7 to 13:
+
+| Elements | `w -= b` | `w += b` |
+|---|---|---|
+| 16,384 | 0.98x | 0.99x |
+| 32,768 | 0.99x | 0.99x to 1.00x |
+| 65,536 | 0.99x | 0.98x |
+| 131,072 | 0.99x to 1.01x | 1.00x |
+| 200,704 | 1.02x to 1.07x | 1.01x to 1.03x |
+| 524,288 | 1.04x | 1.03x to 1.06x |
+| 1,048,576 | 1.02x | 1.02x |
+
+The cost the loop removes was not seen below a matrix of 784 × 256 (200,704 elements): a 256 × 256 product (65,536) runs on one thread. So the hooks take 131,072 elements (1 MB) or more, and smaller arrays go to NumPy's loop with nothing but the hook's test added. `delivery time --only inplace` then has no row slower than NumPy: at 16 and 4,096 elements the calls are NumPy's, within 1.3% of plain NumPy, and at 1,048,576 the loop is 1.02x. `a + b`, `w -= 0.5` and `w -= b` on float32 pass the hook within 0.4% at 16 and 4,096 elements and within 2.3% at 1,048,576, which is the noise of that size here.
+
+**Three things the design did not say.** A dimension of one element may reach a loop with steps of zero, since its step means nothing; such a call is now below the minimum anyway. A reduction down the rows of a matrix, `np.add.reduce(m, axis=0)`, adds row after row into its result in place, and the loop takes those rows when they are long enough, with NumPy's result. And the report's line under the table now says why the two rows show no calls left to NumPy.
+
+**In the application.** With the hooks built, `mlp_train`'s update of `w1` as written, with hotkernels installed, is the row "as written, hotkernels installed" of the study: 93 µs a step against 457 µs on plain NumPy, and the whole training 141 ms against 263 ms, at a load average of about 10, the trained weights identical. The training gains more than the update of `w1` alone, because the in-place add NumPy's elision makes in `x.T @ dhidden + PENALTY * w1`, into the product a threaded `x.T @ dhidden` has just written, is taken too. `uv run --group apps delivery apps --only mlp_train`, at a load average of about 17: 260.5 ms on plain NumPy, 152.9 ms after `install()`, 1.70x, results identical, where the applications study recorded 1.08x; the hooks took 188 calls each of `x += y` and `x -= y`. `min_char_rnn`, whose arrays are under the minimum, took no call and did not change (301.5 ms and 293.7 ms, within the noise of that load).
 
 ## Running it
 

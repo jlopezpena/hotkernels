@@ -110,13 +110,14 @@ HK_CLIP_LOOP(loop_clip_f64, LOOP_CLIP_F64, clip_f64, HK_CLIP_F64, double)
 // doubles: 4,096 bytes. Chosen from 0 to 8,192 bytes after a threaded matrix
 // product had read the output; 4,096 and 8,192 were the fastest.
 #define INPLACE_AHEAD 512
-// The fewest elements the hook takes: 128 KB of doubles, the size of the
-// M1's first-level data cache. On an array that small the cost the loop
-// removes does not arise (Accelerate does not thread a product whose matrix
-// is that small), and in the first-level cache NumPy's loop is up to 5%
-// faster than this one: 520 ns against 545 ns at 4,096 elements. From
-// 20,000 elements the two take the same time.
-#define INPLACE_MIN_N 16384
+// The fewest elements the hook takes: 1 MB of doubles. Below it the cost the
+// loop removes was not seen (Accelerate multiplied a 256 x 256 matrix, 65,536
+// elements, on one thread), and with the arrays in the cache NumPy's loop is
+// as fast or a little faster: 520 ns against 545 ns at 4,096 elements, and
+// 0.98x to 0.99x of NumPy from 16,384 to 65,536 elements, measured from
+// Python on the Apple M1 Pro. At 131,072 the two were level (0.99x to
+// 1.01x), and above it this loop was 1.01x to 1.07x faster.
+#define INPLACE_MIN_N 131072
 
 // Defines `function(w, b, n)`, which sets w[i] = w[i] OP b[i] for i < n.
 // `vector` is the NEON operation on two lanes, `scalar` the same on one,

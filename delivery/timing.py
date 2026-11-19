@@ -440,7 +440,7 @@ def _subtract_scalar(w: np.ndarray) -> None:
 # The loops of the binding that take float64 adds and subtracts in place,
 # where they are built: ARM64 only. Elsewhere the statements are timed as
 # calls left to NumPy, and so they are below INPLACE_MIN_N elements.
-INPLACE_MIN_N = 16384
+INPLACE_MIN_N = 131072
 SUBTRACT_IN_PLACE = "subtract_inplace_f64" if ON_ARM64 else None
 ADD_IN_PLACE = "add_inplace_f64" if ON_ARM64 else None
 
