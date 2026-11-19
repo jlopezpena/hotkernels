@@ -29,3 +29,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.072x [1.071 – 1.072]
 - **Kept:** yes
 - **Notes:** uniform codes with 64 counters 1.09x at 16,384, 1.25x–1.26x from 1,048,576 up (0.228 ns per element against 0.288); four values 1.23x at 16,384, 1.39x–1.40x from 65,536 up (0.304 ns against 0.423). Less than `bincount_i16` gets (0.139 ns per element there): twice the loads of input and three `orr` for the test.
+
+## 4. Four-table path: one test per four elements
+
+- **Idea:** the counterpart of `bincount_i16` attempt 6. A vector test buys less with 8-byte elements (two per vector, and `umaxv` has no 64-bit form), so the four elements of each two `ldp` are tested with one `cmp` and three `ccmp` (each against `bins`, unsigned, the carry kept set once one fails) and one branch; four that pass are counted with no test of their own, four that do not go one at a time, out of line.
+- **check:** pass
+- **compare:** significantly faster, 1.003x [1.003 – 1.004]
+- **Kept:** yes
+- **Notes:** uniform codes with 64 counters 1.05x at 1,024 and 4,096; with 1,000 counters 1.01x from 16,384 up (0.287 ns per element at 1,048,576); four values unchanged. The `bincount_i16` loop gained 12% with 1,000 counters from its vector test, which also replaced a sign extension per element; here the compare per element was already the only test.

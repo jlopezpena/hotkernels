@@ -38,6 +38,39 @@
 1:
 .endm
 
+// Flags: lo if each of x6 to x9 is below bins, hs if any is not.
+.macro INSIDE4
+    cmp     x6, x3
+    ccmp    x7, x3, #2, lo          // 2: carry set, hs, once one is outside
+    ccmp    x8, x3, #2, lo
+    ccmp    x9, x3, #2, lo
+.endm
+
+// Count x6 to x9, each known to be below bins, in the four tables sp, x4,
+// x5 and x16.
+.macro TABLE4
+    ldr     w12, [sp, x6, lsl #2]
+    add     w12, w12, #1
+    str     w12, [sp, x6, lsl #2]
+    ldr     w13, [x4, x7, lsl #2]
+    add     w13, w13, #1
+    str     w13, [x4, x7, lsl #2]
+    ldr     w14, [x5, x8, lsl #2]
+    add     w14, w14, #1
+    str     w14, [x5, x8, lsl #2]
+    ldr     w15, [x16, x9, lsl #2]
+    add     w15, w15, #1
+    str     w15, [x16, x9, lsl #2]
+.endm
+
+// The same for four that are not all below bins: each is tested.
+.macro TABLE4S
+    COUNTT  x6, sp, w12
+    COUNTT  x7, x4, w13
+    COUNTT  x8, x5, w14
+    COUNTT  x9, x16, w15
+.endm
+
 // Count the element in \reg into counts, if it is below bins.
 .macro COUNT reg, tmp
     cmp     \reg, x3
@@ -158,17 +191,17 @@ Lcleartables:
 Ltables8:
     ldp     x6, x7, [x0]
     ldp     x8, x9, [x0, #16]
-    COUNTT  x6, sp, w12
-    COUNTT  x7, x4, w13
-    COUNTT  x8, x5, w14
-    COUNTT  x9, x16, w15
+    INSIDE4
+    b.hs    Lslowt0
+    TABLE4
+Lbackt0:
     ldp     x6, x7, [x0, #32]
     ldp     x8, x9, [x0, #48]
+    INSIDE4
+    b.hs    Lslowt1
+    TABLE4
+Lbackt1:
     add     x0, x0, #64
-    COUNTT  x6, sp, w12
-    COUNTT  x7, x4, w13
-    COUNTT  x8, x5, w14
-    COUNTT  x9, x16, w15
     subs    x2, x2, #8
     b.hs    Ltables8
 
@@ -196,6 +229,13 @@ Lsum:
     b.lo    Lsum
     add     sp, sp, x17, lsl #2
     b       Ltail                   // 0 to 7 elements left, into counts
+
+Lslowt0:                            // one of the four is not below bins
+    TABLE4S
+    b       Lbackt0
+Lslowt1:
+    TABLE4S
+    b       Lbackt1
 
     // ---- The pair table ---------------------------------------------------
     // Four elements per step. If each is in 0..63, which one test of the
