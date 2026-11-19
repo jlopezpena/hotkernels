@@ -30,7 +30,7 @@
 .set PAIR_CODES, 64
 // It is taken from this many elements, where clearing and adding up the
 // pair table is repaid.
-.set PAIRS_MIN_N, 8192
+.set PAIRS_MIN_N, 4096
 // The pair table: PAIR_CODES rows of PAIR_CODES 32-bit counters, 16 KB.
 // Row a1, column a0 counts the pairs (a0, a1). Above it, PAIR_CODES 32-bit
 // row totals.

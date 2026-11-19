@@ -75,3 +75,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.036x [1.034 – 1.037]
 - **Kept:** yes
 - **Notes:** four values with 64 counters 1.96x at 256 (121 ns against 238); with 1,000 counters 2.28x at 4,096 (1.7 us against 4.0). Every other point 0.99x–1.04x.
+
+## 10. The pair table from 4,096 elements instead of 8,192
+
+- **Idea:** at 4,096 elements the pair table's fixed cost (clearing 16 KB and taking the totals, about 0.4 us) may already be repaid against 0.25 ns per element in the four tables.
+- **check:** pass
+- **compare:** significantly faster, 1.003x [1.002 – 1.004]
+- **Kept:** yes
+- **Notes:** only 4,096 elements with 64 counters moves: uniform 1.04x (994 ns against 1.03 us), four values 1.09x [1.05 – 1.14]. Nothing else changes. Not tried lower: at 1,024 the fixed cost is more than the whole call.
