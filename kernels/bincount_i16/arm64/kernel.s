@@ -167,6 +167,39 @@
     fmov    w11, s0
 .endm
 
+// Count the four elements of the word in \w, each known to be below bins,
+// in counts.
+.macro SINGLE4 w
+    and     x10, \w, #0xffff
+    ubfx    x11, \w, #16, #16
+    ubfx    x12, \w, #32, #16
+    lsr     x13, \w, #48
+    ldr     x14, [x1, x10, lsl #3]
+    add     x14, x14, #1
+    str     x14, [x1, x10, lsl #3]
+    ldr     x15, [x1, x11, lsl #3]
+    add     x15, x15, #1
+    str     x15, [x1, x11, lsl #3]
+    ldr     x14, [x1, x12, lsl #3]
+    add     x14, x14, #1
+    str     x14, [x1, x12, lsl #3]
+    ldr     x15, [x1, x13, lsl #3]
+    add     x15, x15, #1
+    str     x15, [x1, x13, lsl #3]
+.endm
+
+// The same for four elements that are not all below bins.
+.macro SINGLE4S w
+    sxth    x10, \w
+    sbfx    x11, \w, #16, #16
+    sbfx    x12, \w, #32, #16
+    asr     x13, \w, #48
+    COUNT   x10, x14
+    COUNT   x11, x15
+    COUNT   x12, x14
+    COUNT   x13, x15
+.endm
+
 .text
 .globl _bincount_i16
 .p2align 2
@@ -244,30 +277,48 @@ Lclearone:
 
 Lcount:
     cbnz    x15, Lpairs
-    subs    x2, x2, #8
-    b.lo    Ltail
-    // Eight elements per step: two 8-byte loads, each element taken out of
-    // its word sign-extended.
-Lloop8:
-    ldp     x6, x7, [x0], #16
-    sxth    x8, w6
-    sbfx    x9, x6, #16, #16
-    sbfx    x10, x6, #32, #16
-    asr     x11, x6, #48
-    COUNT   x8, x12
-    COUNT   x9, x13
-    COUNT   x10, x14
-    COUNT   x11, x15
-    sxth    x8, w7
-    sbfx    x9, x7, #16, #16
-    sbfx    x10, x7, #32, #16
-    asr     x11, x7, #48
-    COUNT   x8, x12
-    COUNT   x9, x13
-    COUNT   x10, x14
-    COUNT   x11, x15
-    subs    x2, x2, #8
-    b.hs    Lloop8
+    // Sixteen elements per step, with one vector test of all sixteen against
+    // min(bins, 32768) as unsigned 16-bit numbers: a negative element is at
+    // least 32768, and every other element is below 32768. If all are
+    // inside, each is taken out of its word unsigned and counted with no
+    // test of its own; otherwise each is sign-extended and tested.
+    subs    x2, x2, #16
+    b.lo    Ltail16
+    mov     x4, #32768
+    cmp     x3, x4
+    csel    x4, x3, x4, lo
+    dup     v31.8h, w4
+Lloop16:
+    ldp     q0, q1, [x0]
+    cmhs    v0.8h, v0.8h, v31.8h
+    cmhs    v1.8h, v1.8h, v31.8h
+    orr     v0.16b, v0.16b, v1.16b
+    umaxv   h0, v0.8h
+    fmov    w8, s0
+    cbnz    w8, Lslow1
+    ldp     x6, x7, [x0]
+    ldp     x8, x9, [x0, #16]
+    SINGLE4 x6
+    SINGLE4 x7
+    SINGLE4 x8
+    SINGLE4 x9
+Lnext1:
+    add     x0, x0, #32
+    subs    x2, x2, #16
+    b.hs    Lloop16
+Ltail16:
+    ands    x2, x2, #15             // 0 to 15 elements left
+    b.eq    Ldone
+    b       Lone
+Lslow1:                             // one of the sixteen is outside
+    ldp     x6, x7, [x0]
+    ldp     x8, x9, [x0, #16]
+    SINGLE4S x6
+    SINGLE4S x7
+    SINGLE4S x8
+    SINGLE4S x9
+    b       Lnext1
+
 Ltail:
     ands    x2, x2, #7              // 0 to 7 elements left
     b.eq    Ldone

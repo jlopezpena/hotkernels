@@ -91,3 +91,19 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.016x [1.015 – 1.016]
 - **Kept:** yes
 - **Notes:** four values with 64 counters 1.02x at 16,384, 1.08x at 65,536, 1.15x–1.16x from 262,144 up (0.193 ns per element at 1,048,576 against 0.222). Uniform codes 1.00x at every size: the sample and the alias cost nothing measurable.
+
+## 12. Clear `counts` with `stp xzr, xzr` instead of `stp q0, q0`
+
+- **Idea:** at 16 elements with 64 counters the kernel was 0.92x of the C; perhaps the counter loads wait on the 32-byte stores of the clear before them and would forward from 16-byte ones.
+- **check:** pass
+- **compare:** significantly faster, 1.001x [1.000 – 1.001]
+- **Kept:** no: no point moved by more than 1%, within run-to-run drift
+- **Notes:** 16 elements 19.0 ns against 19.1.
+
+## 13. The single table: one vector test per sixteen elements
+
+- **Idea:** attempt 6 for the path that counts straight into `counts` (below 2 elements per counter, more than 1,024 counters, or data that does not repeat below 8 per counter). The test is against min(bins, 32768) as unsigned 16-bit numbers: every non-negative element is below 32,768, every negative one at or above, so it is right for any `bins`.
+- **check:** pass
+- **compare:** significantly faster, 1.013x [1.012 – 1.015]
+- **Kept:** yes
+- **Notes:** uniform codes with 64 counters 1.08x at 16 and 1.13x at 64; with 1,000 counters 1.03x–1.05x at 1,024 and 4,096; four values with 1,000 counters 1.06x–1.08x at 256 and 1,024. 0.99x at 256 four values with 64 counters (tables path, untouched code).
