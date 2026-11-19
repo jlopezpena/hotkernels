@@ -18,3 +18,11 @@ Apple M1 Pro, macOS, native.
 - **compare:** significantly faster, 2.624x [2.615 – 2.633]; 3.0x to 3.2x from 1,024 to 262,144 on every distribution, 2.6x to 2.8x from 4,194,304 up, 1.5x at 16.
 - **Kept:** yes
 - **Notes:** 0.20 ns per element at 4,096: about ten cycles per block of 16, for 33 vector operations, near the four floating-point pipes' limit. The next gain has to come from doing fewer of them.
+
+## 3. A flat loop: a block that does not change M is M sixteen times
+
+- **Idea:** as in `cummax_i64`, but only the flat way: the block's maximum (a tree of seven `fmaxnm`, an `fmaxnmp`, one `fmaxnm` against M) compared with M; equal, the block is M sixteen times. The blocks start in a general loop and stay there while each block changes M (so the all-NaN prefix, where the compare is unordered, stays general too); after one that does not, flat; a block that fails the flat test goes the general way, and the next is tried flat again. Once M is a number it never becomes NaN again.
+- **check:** pass
+- **compare:** significantly faster, 1.099x [1.083 – 1.115]: `random` 1.16x, `some_nan` 1.14x (1.1x to 1.4x from 256 up), `rising` 1.01x.
+- **Kept:** yes
+- **Notes:** outside the judge (a C loop timing the kernel on 4,096 elements in the first-level cache) a flat block takes 7.6 cycles at 3.228 GHz, a general one 10.2. Without its stores a flat block takes 3.2 cycles, four `stp` of M alone 4.1, and a plain copy of 128 bytes (four `ldp`, four `stp`) 5.1 to 5.6: this core's first-level cache moves about 48 bytes per cycle read and written together, and the stores are the larger part of the flat block's cost.

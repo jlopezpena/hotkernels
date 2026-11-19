@@ -10,8 +10,30 @@
 // NaN until the first number).
 //
 // out[0] = x[0] = M, the running maximum, in both lanes of v31. Then blocks
-// of 16 elements, from x[1] on, so the element before each block exists:
+// of 16 elements, from x[1] on, so the element before each block exists.
+// A block goes one of two ways:
 //
+//   flat      the block's maximum, a tree of seven fmaxnm and a pairwise
+//             one, does not change M: the block is M sixteen times.
+//   general   a prefix maximum (GENERAL).
+//
+// The blocks start general and stay general while each changes M; after
+// one that does not, they are tried flat, and a block that fails the flat
+// test is done the general way with the next tried flat again.
+//
+// Fewer than 16 left: pairs, one vector at a time, then a single element.
+//
+// x2 counts the elements left minus 16 while blocks run.
+
+// The block at x0 into v0 to v7.
+.macro LOAD
+    ldp     q0, q1, [x0]
+    ldp     q2, q3, [x0, #32]
+    ldp     q4, q5, [x0, #64]
+    ldp     q6, q7, [x0, #96]
+.endm
+
+// The block in v0 to v7, the general way; stores it and moves on to the next.
 //   1. each vector against the input one element back: lane j holds the
 //      maximum of a run of two that ends at its own element;
 //   2. Sklansky steps over the eight vectors (the odd ones against the one
@@ -21,25 +43,8 @@
 //      element is already in M, so including it changes nothing;
 //   3. every vector against M, and the next M is M against the block's last
 //      lane: the chain from block to block is one fmaxnm.
-//
-// Fewer than 16 left: pairs, one vector at a time, then a single element.
-//
-// x2 counts the elements left minus 16 while blocks run.
-
-.text
-.globl _cumfmax_f64
-.p2align 2
-_cumfmax_f64:
-    cbz     x2, Ldone
-    ld1r    {v31.2d}, [x0], #8      // M
-    str     d31, [x1], #8
-    subs    x2, x2, #17
-    b.lo    Ltail
-Lblock:
-    ldp     q0, q1, [x0]
-    ldp     q2, q3, [x0, #32]
-    ldp     q4, q5, [x0, #64]
-    ldp     q6, q7, [x0, #96]
+// Leaves the flags of the count: hs if another block follows.
+.macro GENERAL
     ldur    q16, [x0, #-8]
     ldur    q17, [x0, #8]
     ldur    q18, [x0, #24]
@@ -85,7 +90,53 @@ Lblock:
     add     x0, x0, #128
     add     x1, x1, #128
     subs    x2, x2, #16
-    b.hs    Lblock
+.endm
+
+.text
+.globl _cumfmax_f64
+.p2align 2
+_cumfmax_f64:
+    cbz     x2, Ldone
+    ld1r    {v31.2d}, [x0], #8      // M
+    str     d31, [x1], #8
+    subs    x2, x2, #17
+    b.lo    Ltail
+
+    // ---- General, while each block changes M. v29 = M before the block.
+Lgeneral:
+    LOAD
+    mov     v29.16b, v31.16b
+    GENERAL
+    b.lo    Ltail
+    fcmp    d29, d31                // unordered, and so general, while M is NaN
+    b.ne    Lgeneral
+
+    // ---- Flat: the block's maximum against M.
+Lflat:
+    LOAD
+    fmaxnm  v24.2d, v0.2d, v1.2d
+    fmaxnm  v25.2d, v2.2d, v3.2d
+    fmaxnm  v26.2d, v4.2d, v5.2d
+    fmaxnm  v27.2d, v6.2d, v7.2d
+    fmaxnm  v24.2d, v24.2d, v25.2d
+    fmaxnm  v26.2d, v26.2d, v27.2d
+    fmaxnm  v24.2d, v24.2d, v26.2d
+    fmaxnmp d24, v24.2d
+    fmaxnm  d24, d24, d31
+    fcmp    d24, d31
+    b.ne    Lflat_fail
+    stp     q31, q31, [x1]
+    stp     q31, q31, [x1, #32]
+    stp     q31, q31, [x1, #64]
+    stp     q31, q31, [x1, #96]
+    add     x0, x0, #128
+    add     x1, x1, #128
+    subs    x2, x2, #16
+    b.hs    Lflat
+    b       Ltail
+Lflat_fail:
+    GENERAL
+    b.hs    Lflat
 
     // ---- Fewer than 16 elements left: pairs, then one.
 Ltail:
