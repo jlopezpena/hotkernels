@@ -223,3 +223,84 @@ two cycles, at every size from 1,024 up, on both distributions. NumPy takes
   16,384 random elements 0.126 to 0.099 ns per element, rising 0.126 to
   0.119, constant 0.126 to 0.123, and nothing from 65,536 up (0.17 ns per
   element in the second-level cache, 0.23 at 4,000,000).
+
+## 15. Flat test over two blocks at once
+
+- **Idea:** while 32 or more elements are left, the flat loop tests 32
+  elements with one reduction and one branch and stores 32; if the test
+  fails, the first of the two blocks goes through the 16-element test as
+  before. Halves the `umaxv`, `fmov`, `cbnz` and pointer updates per element.
+- **check:** pass
+- **compare:** significantly slower, 0.949x [0.943 – 0.956]
+- **Kept:** no
+- **Notes:** `random` 0.79x to 0.84x from 64 to 4,096 and 0.75x at
+  1,048,576: every new maximum now costs a failed 32-element test, a reload
+  and the 16-element test; nothing faster anywhere (the loop is held by its
+  stores, not by its overhead).
+
+## 16. `addp` in place of `umaxv` to reduce the test masks
+
+- **Idea:** the masks are 0 or all ones per 64-bit lane, so `addp d, v.2d`
+  is zero only when both lanes are; it has a shorter latency than `umaxv`,
+  which would let a mispredicted test resolve sooner.
+- **check:** pass
+- **compare:** no significant difference, 1.000x [0.999 – 1.002]
+- **Kept:** no
+
+## 17. Rising test: every shifted vector from an `ldp` one element back
+
+- **Idea:** `ldp` of q registers cannot take an offset of -8, but from a
+  second pointer `x0 - 8` four `ldp` give all eight shifted vectors, so the
+  rising loop has no `ext` (16 vector operations per block against 20) and
+  eight load instructions instead of eight plus four.
+- **check:** pass
+- **compare:** significantly slower, 0.985x [0.977 – 0.992]
+- **Kept:** no
+- **Notes:** `rising` 0.91x at 64, 0.91x to 0.94x at 256 to 16,384 (wide
+  intervals); half of these loads straddle a cache line, as in attempt 3's
+  eight `ldur`.
+
+## Where it stands
+
+Final `judge run` (another kernel run timing in another worktree): 3.07x
+[3.02 – 3.08] over naive C on `random`, 3.32x [3.27 – 3.33] on `rising`,
+3.19x [3.15 – 3.20] over both; 18.3x [18.09 – 18.37] over NumPy.
+
+- 16: 1.47x on both (4.3 ns): the first block as a vector prefix maximum.
+- 64 to 16,384: 2.1x to 6.1x. The flat loop runs at 0.10 ns per element in
+  the first-level cache, about 5.3 cycles per block of 16, held by its eight
+  16-byte stores; the rising loop at 0.12, about 6 cycles.
+- 65,536 to 16,777,216: 2.1x to 3.3x, at the speed of a copy in the
+  second-level cache (0.17 ns per element outside the judge) and from
+  memory (0.19 to 0.24). The judge's 65,536 and 262,144 moved by up to 1.7x
+  between runs with the other run active (11 µs and 16 µs at 65,536).
+- Output 16 bytes behind its input: no stall; the close placement is as fast
+  as the apart one or faster at every size.
+
+Outside the judge (a loop timer over one array timed again and again, best of
+five; ns per element; the naive C is 0.62 to 0.63 on every kind of data):
+
+| data | 16,384 | 2,000,000 |
+|---|---|---|
+| random | 0.099 | 0.240 |
+| sorted ascending | 0.122 | 0.241 |
+| constant | 0.119 | 0.245 |
+| noise of 1,000 on a rising trend | 0.224 | 0.442 |
+| 1 0 2 1 3 2 ... (every block general) | 0.293 | 0.298 |
+| a new maximum at a random half of the elements | 0.346 | 0.690 |
+
+The last row is the one case found slower than the naive C: at 2,000,000
+elements, too many for the branch predictor to learn, every block is general
+and the choice of trying the rising loop after it (last element equal to M)
+goes either way at random, and the rising test then fails. Attempt 11 fixes
+it (0.33 ns per element) for a cost the judge sees at 64 and 256 `random`.
+
+Not tried:
+
+- **Stores past the caches with `dc zva`:** `cumsum_i64` measured it at 70
+  times slower per line.
+- **Software prefetch:** no gain anywhere for `cumsum_i64`; the hardware
+  prefetcher follows both streams.
+- **The general path in the integer registers alongside the vector one**
+  (two independent halves of a block on separate pipes): the chain between
+  the two halves would cross between register files twice per block.
