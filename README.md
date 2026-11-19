@@ -214,6 +214,7 @@ uv run delivery check         # every hooked call, with and without hotkernels; 
 uv run delivery demo          # run examples/workload.py both ways and compare
 uv run delivery time          # time statements from Python; add --record to keep the result
 uv run delivery numpy-tests   # NumPy's own test suite, both ways; about ten minutes
+uv run --group apps delivery apps --profile   # five whole applications both ways, and where their time goes
 ```
 
 ## Using the documentation site
