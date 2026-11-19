@@ -26,6 +26,7 @@ import numpy as np
 
 import hotkernels
 from hotkernels.environment import BINDING_MODULE
+from hotkernels.hooks import ON_ARM64
 
 from judge import cores
 from judge.cli import machine
@@ -415,6 +416,35 @@ def _clip_method_in_place(x: np.ndarray) -> np.ndarray:
     return x.clip(LO, HI, out=x)
 
 
+def _two_floats(n: int) -> tuple:
+    """Build two arrays of normally distributed float64 values."""
+    rng = _rng(n)
+    return rng.standard_normal(n), rng.standard_normal(n)
+
+
+def _subtract_in_place(w: np.ndarray, b: np.ndarray) -> None:
+    """Run `w -= b`."""
+    w -= b
+
+
+def _add_in_place(w: np.ndarray, b: np.ndarray) -> None:
+    """Run `w += b`."""
+    w += b
+
+
+def _subtract_scalar(w: np.ndarray) -> None:
+    """Run `w -= 0.5`, whose scalar steps by zero."""
+    w -= HI
+
+
+# The loops of the binding that take float64 adds and subtracts in place,
+# where they are built: ARM64 only. Elsewhere the statements are timed as
+# calls left to NumPy, and so they are below INPLACE_MIN_N elements.
+INPLACE_MIN_N = 131072
+SUBTRACT_IN_PLACE = "subtract_inplace_f64" if ON_ARM64 else None
+ADD_IN_PLACE = "add_inplace_f64" if ON_ARM64 else None
+
+
 def _set_element(x: np.ndarray) -> None:
     """Run `x[3] = 1.0`."""
     x[3] = 1.0
@@ -443,6 +473,9 @@ TAKEN: tuple[Timed, ...] = (
           max_n=ROUND_F64_MAX_N),
     Timed("round", "np.round(x)", "float64", partial(_floats, np.float64), np.round, "round_f64",
           max_n=ROUND_F64_MAX_N),
+    Timed("inplace", "w -= b", "float64", _two_floats, _subtract_in_place, SUBTRACT_IN_PLACE,
+          min_n=INPLACE_MIN_N),
+    Timed("inplace", "w += b", "float64", _two_floats, _add_in_place, ADD_IN_PLACE, min_n=INPLACE_MIN_N),
     Timed("median", "np.median(x)", "float64", partial(_floats, np.float64), np.median, "median_f64",
           max_n=MEDIAN_F64_MAX_N),
     Timed("compress", "x[mask]", "float32, half selected", partial(_masked, np.float32, HALF), lambda x, m: x[m], "compress_f32"),
@@ -517,6 +550,10 @@ LEFT: tuple[Timed, ...] = (
     Timed("clip", "np.clip(x, -0.5, None)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, LO, None), None),
     Timed("round", "np.round(x, 2)", "float32", partial(_floats, np.float32), lambda x: np.round(x, DECIMALS), None),
     Timed("median", "np.median(x)", "float32", partial(_floats, np.float32), np.median, None),
+    Timed("inplace", "a + b", "float64", _two_floats, np.add, None),
+    Timed("inplace", "w -= 0.5", "float64", partial(_floats, np.float64), _subtract_scalar, None),
+    Timed("inplace", "w -= b", "float32", lambda n: tuple(a.astype(np.float32) for a in _two_floats(n)),
+          _subtract_in_place, None),
     Timed("astype", "x.astype(np.float64)", "uint8", _bytes, lambda x: x.astype(np.float64), None),
     Timed("sum", "np.sum(x)", "float64", partial(_floats, np.float64), np.sum, None),
     Timed("sum", "x.sum()", "float64", partial(_floats, np.float64), lambda x: x.sum(), None),

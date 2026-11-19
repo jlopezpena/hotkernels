@@ -26,6 +26,7 @@ static const char *const HK_KERNEL_NAMES[HK_KERNEL_COUNT] = {
     "clip_i64", "round_f64", "median_f64",
     "cumsum_rows_f64", "cumprod_rows_f64", "cummax_rows_f64", "cumfmax_rows_f64",
     "argmax_rows_f32", "argmax_rows_f64", "argmin_rows_f32", "argmin_rows_f64",
+    "add_inplace_f64", "subtract_inplace_f64",
 };
 
 // Operation names, in the order of hk_operation.

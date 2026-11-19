@@ -1,7 +1,7 @@
 """What `hotkernels.report()` returns, and how it is printed.
 
 A report is plain data: one row per kernel, one per loop built into the
-binding for short arrays, and a few facts about the installation. Printing it
+binding, and a few facts about the installation. Printing it
 renders a Jinja template into a table.
 """
 from __future__ import annotations
@@ -55,11 +55,15 @@ class KernelReport:
     calls: int
     # Calls of the kernel's operation that reached a hook and went to NumPy,
     # because no kernel's conditions were met. Counted per operation, so it is
-    # set on the first row of an operation and None on the others.
+    # set on the first row of an operation and None on the others, and on an
+    # operation the binding does not count.
     left_to_numpy: int | None
     # True for a loop built into the binding, which is not one of the kernels
     # the report's first line counts.
     builtin: bool = False
+    # True when the binding does not count the calls of the kernel's
+    # operation that it leaves to NumPy.
+    uncounted: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,7 +150,8 @@ def build(version: str, installed: bool, unsupported: str | None, inexact: bool,
         numpy_version: The NumPy version in use.
         applied_hooks: Names of the hooks that are in place.
         taken: Kernel name -> calls the kernel took.
-        passed: Operation name -> calls its hooks passed on to NumPy.
+        passed: Operation name -> calls its hooks passed on to NumPy. An
+            operation the binding does not count is absent.
         problems: One line per hook that failed.
 
     Returns:
@@ -172,8 +177,9 @@ def build(version: str, installed: bool, unsupported: str | None, inexact: bool,
             installed=not note,
             note=note,
             calls=taken.get(info.name, 0),
-            left_to_numpy=passed.get(info.operation, 0) if first_of_operation else None,
+            left_to_numpy=passed.get(info.operation) if first_of_operation else None,
             builtin=info.builtin,
+            uncounted=info.operation is not None and bool(passed) and info.operation not in passed,
         ))
     return Report(version, installed, unsupported, inexact, numpy_version, tuple(rows), problems)
 

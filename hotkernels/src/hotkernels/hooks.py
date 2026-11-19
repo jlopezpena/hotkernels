@@ -12,6 +12,8 @@ NumPy untouched.
 """
 from __future__ import annotations
 
+import operator
+import platform
 from dataclasses import dataclass
 from functools import partial
 from itertools import accumulate
@@ -25,6 +27,23 @@ INNER_LOOP = "inner loop"
 FUNCTION = "function"
 METHOD = "method"
 INDEXING = "indexing"
+
+# Names platform.machine() gives an ARM64 processor: arm64 on macOS, aarch64 on Linux.
+ARM64_MACHINES = ("arm64", "aarch64")
+# Whether this is an ARM64 machine, where the binding has the in-place add and
+# subtract loops. They are not built for other architectures.
+ON_ARM64 = platform.machine() in ARM64_MACHINES
+# The operation of the in-place add and subtract loops. The binding does not
+# count the calls they leave to NumPy, since every float64 add and subtract
+# reaches them, so the report leaves that column blank for them.
+INPLACE = "inplace"
+# Why the in-place loops are not installed on another architecture.
+INPLACE_ARM64_ONLY = "ARM64 only: see docs/gradient-step-findings.md"
+# Element count of the in-place probes: the fewest the loops take
+# (INPLACE_MIN_N in hook_loop.c).
+PROBE_INPLACE_N = 131072
+# Value the in-place probes add to or subtract from each element.
+PROBE_INPLACE_STEP = 0.375
 
 # Element count of a probe array. Large enough for every size threshold in
 # the binding, small enough that install() stays fast.
@@ -121,18 +140,20 @@ class KernelInfo:
     numpy_call: str
     # Element type of the arrays it handles, as a NumPy type name.
     elements: str
-    # Name of the operation in the binding's counters of calls passed on to
-    # NumPy, or None for a kernel without a hook.
+    # Name of the operation the kernel serves, as the binding's counters of
+    # calls passed on to NumPy name it, or None for a kernel without a hook.
+    # An operation the binding does not count, such as INPLACE, has no
+    # figure of calls left to NumPy.
     operation: str | None
     # Names of the hooks that deliver the kernel. Empty for one without a hook.
     hooks: tuple[str, ...]
     # Why the kernel has no hook, or None when it has one.
     unbound_reason: str | None = None
     # True for a loop built into the binding, for calls on short arrays or
-    # for accumulations along the first axis of a matrix, which is plain C in
-    # the hook files and not a kernel from `kernels/`: the judge never sees
-    # it, and `report()` shows it as exact C and does not count it among the
-    # kernels.
+    # for accumulations along the first axis of a matrix, or for in-place adds
+    # and subtracts, which is plain C in the hook files and not a kernel from
+    # `kernels/`: the judge never sees it, and `report()` shows it as exact C
+    # and does not count it among the kernels.
     builtin: bool = False
 
 
@@ -252,6 +273,27 @@ def _clip_method(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
 def _clip(dtype: type) -> bool:
     """Probe the clip loop or the function hook: `np.clip(x, lo, hi)`."""
     return _clip_with(dtype, np.clip)
+
+
+def _inplace(plain: Callable[[np.ndarray, np.ndarray], np.ndarray],
+             in_place: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> bool:
+    """Probe an in-place loop: `w += b` or `w -= b` on PROBE_INPLACE_N float64 elements.
+
+    The answer is computed first by the operator that makes a new array,
+    which the in-place loops never take.
+
+    Args:
+        plain: The operator, `operator.add` or `operator.sub`.
+        in_place: Its in-place form, `operator.iadd` or `operator.isub`.
+
+    Returns:
+        Whether `w` holds the same values afterwards as the new array.
+    """
+    w = np.arange(PROBE_INPLACE_N, dtype=np.float64)
+    b = np.full(PROBE_INPLACE_N, PROBE_INPLACE_STEP)
+    expected = plain(w, b)
+    result = in_place(w, b)
+    return result is w and bool(np.array_equal(w, expected))
 
 
 def _clip_i64_with(clip: Callable[[np.ndarray, int, int], np.ndarray]) -> bool:
@@ -690,6 +732,11 @@ HOOKS: tuple[Hook, ...] = (
     Hook("slot.argmin.f64", TYPE_SLOT, (Probe("argmin_f64", partial(_argext_method, np.float64, "argmin", -1.0)),)),
     Hook("loop.clip.f32", INNER_LOOP, (Probe("clip_f32", partial(_clip, np.float32)),)),
     Hook("loop.clip.f64", INNER_LOOP, (Probe("clip_f64", partial(_clip, np.float64)),)),
+    *((
+        Hook("loop.add.f64", INNER_LOOP, (Probe("add_inplace_f64", partial(_inplace, operator.add, operator.iadd)),)),
+        Hook("loop.subtract.f64", INNER_LOOP,
+             (Probe("subtract_inplace_f64", partial(_inplace, operator.sub, operator.isub)),)),
+    ) if ON_ARM64 else ()),
     Hook("function.argmax", FUNCTION, (
         Probe("argmax_f32", partial(_argext_function, np.float32, np.argmax, 1.0)),
         Probe("argmax_f64", partial(_argext_function, np.float64, np.argmax, 1.0)),
@@ -853,4 +900,9 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("round_f64", "np.round", "float64", "round", ("function.round", "function.around", "method.round"),
                builtin=True),
     KernelInfo("median_f64", "np.median", "float64", "median", ("function.median",), builtin=True),
+    # Loops built into the binding for adds and subtracts in place, on ARM64.
+    KernelInfo("add_inplace_f64", "x += y", "float64", INPLACE, ("loop.add.f64",),
+               unbound_reason=None if ON_ARM64 else INPLACE_ARM64_ONLY, builtin=True),
+    KernelInfo("subtract_inplace_f64", "x -= y", "float64", INPLACE, ("loop.subtract.f64",),
+               unbound_reason=None if ON_ARM64 else INPLACE_ARM64_ONLY, builtin=True),
 )
