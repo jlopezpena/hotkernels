@@ -68,6 +68,12 @@ BINCOUNT_CODES = 64
 # elements that are NaN.
 REDUCEAT_RUN = 16
 REDUCEAT_NAN = 0.05
+# Bounds of the timed np.clip on int64: Python ints inside the range of the
+# small integers it clips, so that elements on both sides change.
+INT_LO, INT_HI = 2, 7
+# Largest element count each loop built into the binding takes: its limit in
+# the binding (CLIP_I64_MAX_N in hook_function.c).
+CLIP_I64_MAX_N = 4096
 # Length of the sorted array in the search statements that hold it fixed while
 # the number of needles grows: the shape of a lookup in a small table.
 SMALL_TABLE = 1000
@@ -94,10 +100,15 @@ class Timed:
     # Element count from which the kernel takes the call. Below it the
     # statement is measured as one left to NumPy.
     min_n: int = 0
+    # Largest element count at which the kernel takes the call, or None for
+    # no limit. The loops built into the binding for short arrays have one;
+    # above it the statement is measured as one left to NumPy.
+    max_n: int | None = None
 
     def kernel_at(self, n: int) -> str | None:
         """Return the kernel that takes the call at `n` elements, or None."""
-        return self.kernel if n >= self.min_n else None
+        below_limit = self.max_n is None or n <= self.max_n
+        return self.kernel if n >= self.min_n and below_limit else None
 
 
 @dataclass(frozen=True)
@@ -338,6 +349,10 @@ TAKEN: tuple[Timed, ...] = (
     Timed("clip", "np.clip(x, -0.5, 0.5)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, LO, HI), "clip_f64"),
     Timed("clip", "np.clip(x, 0, 1)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, 0, 1), "clip_f64"),
     Timed("clip", "x.clip(-0.5, 0.5)", "float32", partial(_floats, np.float32), lambda x: x.clip(LO, HI), "clip_f32"),
+    Timed("clip", "np.clip(x, 2, 7)", "int64", partial(_ints, np.int64), lambda x: np.clip(x, INT_LO, INT_HI),
+          "clip_i64", max_n=CLIP_I64_MAX_N),
+    Timed("clip", "x.clip(2, 7)", "int64", partial(_ints, np.int64), lambda x: x.clip(INT_LO, INT_HI), "clip_i64",
+          max_n=CLIP_I64_MAX_N),
     Timed("compress", "x[mask]", "float32, half selected", partial(_masked, np.float32, HALF), lambda x, m: x[m], "compress_f32"),
     Timed("compress", "x[mask]", "float64, half selected", partial(_masked, np.float64, HALF), lambda x, m: x[m], "compress_f64"),
     Timed("compress", "x[mask]", "float64, few selected", partial(_masked, np.float64, FEW), lambda x, m: x[m], "compress_f64"),
