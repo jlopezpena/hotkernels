@@ -59,7 +59,7 @@ typedef enum {
     HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64, HK_FMAX_REDUCE_F64, HK_ANY_ROWS_BOOL,
     HK_BINCOUNT_I16, HK_BINCOUNT_I64,
     // Built into the binding.
-    HK_CLIP_I64,
+    HK_CLIP_I64, HK_ROUND_F64,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -70,7 +70,7 @@ typedef enum {
     HK_OP_ARGMAX, HK_OP_ARGMIN, HK_OP_CLIP, HK_OP_COMPRESS, HK_OP_MASKFILL,
     HK_OP_NONZERO, HK_OP_CUMSUM, HK_OP_ASTYPE, HK_OP_SUM, HK_OP_COUNT_NONZERO,
     HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN, HK_OP_SEARCHSORTED, HK_OP_INTERP,
-    HK_OP_WHERE, HK_OP_ACCUMULATE, HK_OP_REDUCEAT, HK_OP_ANY,
+    HK_OP_WHERE, HK_OP_ACCUMULATE, HK_OP_REDUCEAT, HK_OP_ANY, HK_OP_ROUND,
     HK_OPERATION_COUNT
 } hk_operation;
 
@@ -269,6 +269,24 @@ static inline void hk_clear_float_flags(void) {
 #endif
 }
 
+// True when a floating-point exception that NumPy reports, as a warning or an
+// error by np.errstate, has been raised since the flags were last cleared:
+// invalid operation, divide by zero, overflow or underflow. NumPy ignores the
+// precision flag and, on x86-64, the denormal flag. On x86-64 only MXCSR is
+// read, which holds the flags of every SSE and AVX instruction, the only kind
+// the binding's own float code uses: one instruction, where the C library's
+// fetestexcept also reads the x87 state.
+static inline bool hk_float_flags_reported(void) {
+#if defined(__x86_64__)
+    // MXCSR's flags for invalid (0x01), divide by zero (0x04), overflow
+    // (0x08) and underflow (0x10).
+    const unsigned int reported = 0x1d;
+    return (_mm_getcsr() & reported) != 0;
+#else
+    return fetestexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW | FE_UNDERFLOW) != 0;
+#endif
+}
+
 // Convert a Python float or a Python int to a double, as NumPy does when such
 // a value is stored into a float64 array: an int is rounded to the nearest
 // double. Returns false, with no exception set, for anything else, including
@@ -347,6 +365,13 @@ PyObject *hk_try_nonzero(PyObject *mask);
 // arguments; the layout and the mask's bytes are tested here. In
 // hook_method.c.
 PyObject *hk_try_any_rows(PyObject *mask);
+
+// np.round(x, decimals) for a contiguous float64 `array` of 1 to
+// ROUND_F64_MAX_N elements, as the new array NumPy returns: the binding's own
+// loop, round_f64. `decimals` is the caller's argument, or NULL when it was
+// not given; it must be a Python int from 0 to 15. The caller has tested the
+// array's type, and that there is no `out`. In hook_method.c.
+PyObject *hk_try_round(PyObject *array, PyObject *decimals);
 
 // Set the elements of `x` where `mask` is True to `value`, in place: the
 // maskfill kernel. `x` is contiguous, writable float64 and `mask` a

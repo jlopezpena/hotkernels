@@ -40,6 +40,11 @@ PROBE_LO, PROBE_HI = -0.5, 0.5
 # Bounds the int64 clip probes clamp to: Python ints inside the probe's values,
 # so that elements on both sides change.
 PROBE_INT_BOUNDS = (-3, 5)
+# Number of decimals the round probes round to, and the step between their
+# values: a multiple of 0.375 times 100 ends in .5 whenever it is not whole,
+# so the probes meet ties, which go to the even neighbour.
+PROBE_DECIMALS = 2
+PROBE_ROUND_STEP = 0.375
 # How many of every `PROBE_STRIDE` elements a probe selects or sets.
 PROBE_STRIDE = 3
 # Number of bins and range of the histogram probe.
@@ -217,6 +222,31 @@ def _clip_i64_with(clip: Callable[[np.ndarray, int, int], np.ndarray]) -> bool:
     lo, hi = PROBE_INT_BOUNDS
     result = clip(x, lo, hi)
     return result.dtype == np.int64 and result.tolist() == [min(max(v, lo), hi) for v in x.tolist()]
+
+
+def _round_with(round_: Callable[[np.ndarray, int], np.ndarray]) -> bool:
+    """Probe a round hook: SMALL_PROBE_N multiples of PROBE_ROUND_STEP rounded to PROBE_DECIMALS decimals.
+
+    The expected values are computed in plain Python: `round` of a float to
+    an int goes to the even neighbour on a tie, as `rint` does, and the
+    products are exact.
+
+    Args:
+        round_: Rounds its first argument to the number of decimals given by
+            the second.
+
+    Returns:
+        Whether the result is float64 and holds the rounded values.
+    """
+    scale = 10.0 ** PROBE_DECIMALS
+    x = (np.arange(SMALL_PROBE_N) - SMALL_PROBE_N // 2) * PROBE_ROUND_STEP / scale
+    result = round_(x, PROBE_DECIMALS)
+    return result.dtype == np.float64 and result.tolist() == [round(v * scale) / scale for v in x.tolist()]
+
+
+def _round_method(x: np.ndarray, decimals: int) -> np.ndarray:
+    """Return `x.round(decimals)`."""
+    return x.round(decimals)
 
 
 def _stride_mask() -> np.ndarray:
@@ -557,6 +587,8 @@ HOOKS: tuple[Hook, ...] = (
         Probe("clip_i64", partial(_clip_i64_with, np.clip)),
     )),
     Hook("function.any", FUNCTION, (Probe("any_rows_bool", partial(_any_rows, _any_function)),)),
+    Hook("function.round", FUNCTION, (Probe("round_f64", partial(_round_with, np.round)),)),
+    Hook("function.around", FUNCTION, (Probe("round_f64", partial(_round_with, np.around)),)),
     Hook("method.astype", METHOD, (Probe("cast_u8_f32", _astype),)),
     Hook("method.sum", METHOD, (Probe("sum_u8", _sum_method),)),
     Hook("method.nonzero", METHOD, (Probe("nonzero_bool", partial(_nonzero, _nonzero_method)),)),
@@ -590,6 +622,7 @@ HOOKS: tuple[Hook, ...] = (
     )),
     Hook("ufunc.reduceat", METHOD, (Probe("fmax_reduce_f64", _fmax_reduceat),)),
     Hook("method.any", METHOD, (Probe("any_rows_bool", partial(_any_rows, _any_method)),)),
+    Hook("method.round", METHOD, (Probe("round_f64", partial(_round_with, _round_method)),)),
     Hook("index.get", INDEXING, (
         Probe("compress_f32", partial(_compress, np.float32)),
         Probe("compress_f64", partial(_compress, np.float64)),
@@ -639,4 +672,7 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("cumfmax_f64", "fmax.accumulate", "float64", "accumulate", ("ufunc.accumulate",)),
     KernelInfo("fmax_reduce_f64", "fmax.reduceat", "float64", "reduceat", ("ufunc.reduceat",)),
     KernelInfo("any_rows_bool", "m.any(axis=1)", "bool", "any", ("method.any", "function.any")),
+    # A loop built into the binding, for short arrays.
+    KernelInfo("round_f64", "np.round", "float64", "round", ("function.round", "function.around", "method.round"),
+               builtin=True),
 )

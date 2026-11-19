@@ -22,7 +22,7 @@ static const char *const HK_KERNEL_NAMES[HK_KERNEL_COUNT] = {
     "where_f64", "cummax_i64", "cumfmax_f64", "fmax_reduce_f64", "any_rows_bool",
     "bincount_i16", "bincount_i64",
     // Built into the binding.
-    "clip_i64",
+    "clip_i64", "round_f64",
 };
 
 // Operation names, in the order of hk_operation.
@@ -30,7 +30,7 @@ static const char *const HK_OPERATION_NAMES[HK_OPERATION_COUNT] = {
     "argmax", "argmin", "clip", "compress", "maskfill",
     "nonzero", "cumsum", "astype", "sum", "count_nonzero",
     "histogram", "bincount", "isin", "searchsorted", "interp",
-    "where", "accumulate", "reduceat", "any",
+    "where", "accumulate", "reduceat", "any", "round",
 };
 
 // Every table of hooks, in the order hooks are listed to Python: deepest first.

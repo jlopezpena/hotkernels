@@ -24,7 +24,7 @@
 
 // The methods that are hooked, as indices into `methods`.
 enum { M_ASTYPE, M_SUM, M_NONZERO, M_CUMSUM, M_SEARCHSORTED, M_ARGMAX, M_ARGMIN, M_CLIP, M_ACCUMULATE, M_REDUCEAT,
-       M_ANY, M_COUNT };
+       M_ANY, M_ROUND, M_COUNT };
 
 // The type whose method table holds a hooked method. The ufunc type is reached
 // through NumPy's table of pointers, which is filled only when the module is
@@ -915,6 +915,138 @@ static PyObject *method_any(PyObject *self, PyObject *const *args, Py_ssize_t na
     return ((hk_fast_keywords)(void (*)(void))methods[M_ANY].original)(self, args, nargs, kwnames);
 }
 
+// ------------------------------------------------------------------- round
+//
+// No kernel serves np.round: on the short arrays it is called on, nearly all
+// of a call is NumPy's call path (about 1.1 us at 32 elements, for a loop of
+// a few nanoseconds), so the method hook, and the function hooks of np.round
+// and np.around, run a loop of the binding's own, up to ROUND_F64_MAX_N
+// elements. Above it NumPy's three passes in vector code are the better
+// choice, and the call goes on to NumPy.
+//
+// NumPy's PyArray_Round computes, for a float array and decimals d >= 1,
+// rint(x * 10^d) / 10^d in three ufunc calls: np.multiply, np.rint and
+// np.true_divide, each correctly rounded in the current rounding mode. For
+// d = 0 it is np.rint alone. The loop does the same operations in the same
+// order on each element, so the result is the same bits, the sign of a zero
+// included: -0.004 rounded to two decimals is -0.0 in both. 10^d is a double
+// that holds the power exactly for every d taken, as NumPy's is.
+//
+// NumPy reports the flags those operations raise: overflow in the multiply,
+// and invalid for a signalling NaN. (Underflow cannot arise: a subnormal
+// number times a power of ten is exact while it stays subnormal, and a whole
+// number divided by one is not tiny.) So the flags are cleared before the
+// loop and read after it; if one NumPy reports is set, the result is dropped
+// and NumPy computes the call and warns or raises as np.errstate says. The
+// flags are left clear either way, as NumPy's own loops leave them.
+
+// Most elements of a float64 array the binding's loop rounds: the largest
+// power of two up to 4,096 at which the hooked call was at least 1.5x faster
+// than NumPy's. Measured from Python on the Intel Core i5-14600KF,
+// `np.round(x, 2)` was 7.4x faster at 16 elements and 2.2x at 4,096, and
+// `np.round(x)` 3.5x and 1.7x; at 8,192 `np.round(x)` was 1.1x, NumPy's rint
+// alone being as fast as the loop there.
+#define ROUND_F64_MAX_N 4096
+
+// The powers of ten np.round multiplies by, for 0 to 15 decimals: every one
+// is a double that holds it exactly. Negative decimals divide first and are
+// NumPy's.
+static const double ROUND_POWERS[] = {
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+};
+#define ROUND_MAX_DECIMALS ((long)(sizeof ROUND_POWERS / sizeof ROUND_POWERS[0]) - 1)
+
+// Read np.round's `decimals`: absent is 0, and a Python int from 0 to
+// ROUND_MAX_DECIMALS is itself. Returns false for anything else: a negative
+// or larger int, a bool, a NumPy integer or a float, which NumPy converts,
+// rejects or treats by rules of its own.
+static bool round_decimals(PyObject *decimals, long *value) {
+    if (decimals == NULL) {
+        *value = 0;
+        return true;
+    }
+    if (!PyLong_CheckExact(decimals)) return false;
+    int overflow = 0;
+    *value = PyLong_AsLongAndOverflow(decimals, &overflow);
+    return overflow == 0 && *value >= 0 && *value <= ROUND_MAX_DECIMALS;
+}
+
+// out[i] = rint(x[i] * scale) / scale for the `n` elements at `x`, and
+// rint(x[i]) when `scale` is 1, which is what multiplying and dividing by 1
+// would give. Compiled for the kernels' level, where rint is one vroundpd
+// per four elements; for any x86-64 it is a call into the C library per
+// element, since SSE2 has no rounding instruction.
+static HK_TARGET_KERNEL_LEVEL void round_loop(const double *restrict x, double *restrict out, size_t n,
+                                              double scale) {
+    if (scale == 1.0) {
+        for (size_t i = 0; i < n; i++) out[i] = rint(x[i]);
+    } else {
+        for (size_t i = 0; i < n; i++) out[i] = rint(x[i] * scale) / scale;
+    }
+}
+
+HK_NOINLINE PyObject *hk_try_round(PyObject *array, PyObject *decimals) {
+    PyArrayObject *x = (PyArrayObject *)array;
+    const npy_intp n = PyArray_SIZE(x);
+    long places;
+    // NumPy returns an empty array without computing anything.
+    if (n < 1 || n > ROUND_F64_MAX_N || !round_decimals(decimals, &places)) return NULL;
+    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), NPY_DOUBLE);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    hk_clear_float_flags();
+    round_loop(PyArray_DATA(x), PyArray_DATA((PyArrayObject *)result), (size_t)n, ROUND_POWERS[places]);
+    const bool raised = hk_float_flags_reported();
+    hk_clear_float_flags();
+    if (raised) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    hk_take(HK_ROUND_F64);
+    return result;
+}
+
+// The work of method_round once the array is contiguous float64: the
+// arguments are NumPy's, `decimals` and `out`, by position or by keyword, and
+// `out` must be absent or None. Returns NULL with no exception set for a call
+// that is NumPy's, including one NumPy would reject.
+static HK_NOINLINE PyObject *try_round(PyObject *self, PyObject *args, PyObject *kwargs) {
+    enum { DECIMALS, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"decimals", "out"};
+    const Py_ssize_t positional = PyTuple_GET_SIZE(args);
+    if (positional > PARAMETERS) return NULL;
+    PyObject *bound[PARAMETERS] = {NULL, NULL};
+    for (Py_ssize_t i = 0; i < positional; i++) bound[i] = PyTuple_GET_ITEM(args, i);
+    if (kwargs != NULL) {
+        PyObject *key, *value;
+        Py_ssize_t position = 0;
+        while (PyDict_Next(kwargs, &position, &key, &value)) {
+            Py_ssize_t i = 0;
+            while (i < PARAMETERS && !(PyUnicode_CheckExact(key) && hk_text_is(key, names[i]))) i++;
+            if (i == PARAMETERS || bound[i] != NULL) return NULL;
+            bound[i] = value;
+        }
+    }
+    if (!hk_is_absent(bound[OUT])) return NULL;
+    return hk_try_round(self, bound[DECIMALS]);
+}
+
+// x.round(decimals) on a contiguous float64 array. np.round(x, decimals) and
+// np.around call the method as x.round(decimals=d, out=o) when their own
+// hooks pass a call on, and NumPy converts a list or a scalar to an array and
+// calls its method; all of them that are not taken are counted here, once.
+// Called with a tuple and a dictionary (METH_VARARGS | METH_KEYWORDS).
+static PyObject *method_round(PyObject *self, PyObject *args, PyObject *kwargs) {
+    if (hk_is_flat(self, NPY_DOUBLE)) {
+        PyObject *result = try_round(self, args, kwargs);
+        if (result != NULL) return result;
+    }
+    hk_pass(HK_OP_ROUND);
+    return ((PyCFunctionWithKeywords)(void (*)(void))methods[M_ROUND].original)(self, args, kwargs);
+}
+
 // ----------------------------------------------------------------- the hook
 
 // Shorthand for one entry of `methods`: the method `name` of type `owner`,
@@ -937,6 +1069,7 @@ static hk_method methods[M_COUNT] = {
     [M_REDUCEAT] = HK_METHOD("reduceat", OWNER_UFUNC, accumulate_prepare, METH_FASTCALL | METH_KEYWORDS,
                              method_reduceat),
     [M_ANY] = HK_METHOD("any", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_any),
+    [M_ROUND] = HK_METHOD("round", OWNER_NDARRAY, NULL, METH_VARARGS | METH_KEYWORDS, method_round),
 };
 
 // The type object of `owner`, and its name for messages.
@@ -995,5 +1128,6 @@ hk_hook hk_method_hooks[] = {
     {"ufunc.accumulate", method_apply, method_remove, M_ACCUMULATE, false},
     {"ufunc.reduceat", method_apply, method_remove, M_REDUCEAT, false},
     {"method.any", method_apply, method_remove, M_ANY, false},
+    {"method.round", method_apply, method_remove, M_ROUND, false},
     {NULL, NULL, NULL, 0, false},
 };

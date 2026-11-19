@@ -791,6 +791,196 @@ def clip_i64_cases() -> Iterator[Case]:
                    partial(_clip3, np.clip, -100, 100), None)
 
 
+# ------------------------------------------------------------------ round
+
+# The largest float64 array the binding's own round loop takes:
+# ROUND_F64_MAX_N in hook_method.c. Above it the call is NumPy's.
+ROUND_F64_MAX_N = 4096
+# Sizes of the sweep over values: every size of the general sweep up to and
+# beyond the limit, and one below it.
+ROUND_SIZES = tuple(sorted({*VALUE_SIZES, ROUND_F64_MAX_N - 1}))
+# Sizes of the sweep over layouts and spellings: empty, the general ones, and
+# the limit and one above it.
+ROUND_LAYOUT_SIZES = (0, *LAYOUT_SIZES, ROUND_F64_MAX_N, ROUND_F64_MAX_N + 1)
+# Numbers of decimals the binding takes, 0 to 15. The first two are swept at
+# every size, the others at FEW_SIZES and around the limit.
+ROUND_DECIMALS = (0, 2, 1, 3, 5, 8, 10, 15)
+ROUND_FULL_SWEEP = 2
+# Value classes on which multiplying by a power of ten can overflow or
+# underflow, so that NumPy warns or not depending on the values: the call is
+# taken exactly when it raises no flag, which the case does not predict.
+ROUND_MAY_RAISE = frozenset({"denormal", "extremes"})
+# Element types beside float64 that the loop must leave to NumPy.
+ROUND_NEIGHBOURS = ("f32", "i64", "i32")
+# Values whose rounding a sign or a tie decides: negative values that round
+# to a zero, which must give -0.0 where NumPy's does, both zeros, and ties at
+# 0 and at 2 decimals, which go to the even neighbour.
+ROUND_SIGNS = (-0.004, -0.3, 0.004, -0.0, 0.0, -0.5, 0.5, 1.5, 2.5, -2.5, -0.005, 0.005, 0.125, -0.125,
+               0.375, 1e-17, -1e-17, 4503599627370495.5, -4503599627370495.5)
+# A value whose product with 100 overflows, for which NumPy warns or raises
+# as np.errstate says, and a subnormal value. A subnormal number times a
+# power of ten is exact while it stays subnormal, and a whole number divided
+# by one is not tiny, so rounding never underflows: that call is taken.
+ROUND_OVERFLOWS = 1e307
+ROUND_SUBNORMAL = 1.2345e-310
+
+
+def _round_expect(n: int, decimals: int = 0, cls: str = "") -> str | None:
+    """Say whether the binding's loop takes np.round on a plain float64 array.
+
+    Args:
+        n: Element count.
+        decimals: The number of decimals, from 0 to 15.
+        cls: The value class of the array, or "" for ordinary values.
+
+    Returns:
+        "round_f64", None, or ANY where the values decide.
+    """
+    if not 1 <= n <= ROUND_F64_MAX_N:
+        return None
+    return ANY if decimals and cls in ROUND_MAY_RAISE else "round_f64"
+
+
+def _round_call(decimals, x):
+    """Call `np.round(x, decimals)`."""
+    return np.round(x, decimals)
+
+
+def _round_method(decimals, x):
+    """Call `x.round(decimals)`."""
+    return x.round(decimals)
+
+
+def _round_into(x, decimals, target: str):
+    """Call `np.round(x, decimals, out=...)` into `x` itself or into a new array, and return the output.
+
+    Args:
+        x: The array.
+        decimals: The number of decimals.
+        target: "self" to round into `x`, "fresh" for a new array.
+
+    Returns:
+        The output array.
+    """
+    out = x if target == "self" else np.empty_like(x)
+    return np.round(x, decimals, out=out)
+
+
+def _round_errstate(setting: str, decimals: int, x):
+    """Call `np.round(x, decimals)` with every floating-point error set to `setting`.
+
+    Args:
+        setting: A value np.errstate takes, such as "raise" or "warn".
+        decimals: The number of decimals.
+        x: The array.
+
+    Returns:
+        The rounded array.
+    """
+    with np.errstate(all=setting):
+        return np.round(x, decimals)
+
+
+def _filled(value: float, n: int) -> tuple:
+    """Build the one argument of a unary case: random float64 values with `value` at every third element."""
+    x = values("f64", n)
+    x[::3] = value
+    return (x,)
+
+
+def round_cases() -> Iterator[Case]:
+    """Yield the cases of `np.round`, `np.around` and `x.round`.
+
+    The function hooks of np.round and np.around and the method hook of
+    x.round run the binding's own loop for a plain contiguous float64 array
+    of 1 to ROUND_F64_MAX_N elements, decimals absent or a Python int from
+    0 to 15, and no `out`. A call whose arithmetic raises a flag NumPy
+    reports, overflow or underflow in the multiply or a signalling NaN, goes
+    to NumPy, which warns or raises. Every other call is NumPy's.
+    """
+    sizes_near_limit = (ROUND_F64_MAX_N - 1, ROUND_F64_MAX_N, ROUND_F64_MAX_N + 1)
+    for index, decimals in enumerate(ROUND_DECIMALS):
+        sizes = ROUND_SIZES if index < ROUND_FULL_SWEEP else (*FEW_SIZES, *sizes_near_limit)
+        for n, cls, label, maker in value_arrays("f64", sizes):
+            expect = _round_expect(n, decimals, cls)
+            yield Case("round", f"np.round(x, {decimals}) f64 {label}", partial(_made, maker),
+                       partial(_round_call, decimals), expect)
+            yield Case("round", f"x.round({decimals}) f64 {label}", partial(_made, maker),
+                       partial(_round_method, decimals), expect)
+    for decimals in ROUND_DECIMALS:
+        signs = np.array(ROUND_SIGNS)
+        yield Case("round", f"np.round(x, {decimals}) f64 signs and ties", partial(_made, signs.copy),
+                   partial(_round_call, decimals), "round_f64")
+        for n in (1, 16, ROUND_F64_MAX_N):
+            yield Case("round", f"np.round(x, {decimals}) f64 n={n} x=signalling and negative NaNs",
+                       partial(_made, partial(unusual_nans, "f64", n)), partial(_round_call, decimals), None)
+    # The guards: a flag NumPy reports sends the call to NumPy, which warns,
+    # raises or stays silent as np.errstate says.
+    for n in (1, 16, ROUND_F64_MAX_N):
+        for decimals, value, flagged in ((2, ROUND_OVERFLOWS, True), (2, ROUND_SUBNORMAL, False),
+                                          (0, ROUND_OVERFLOWS, False), (0, ROUND_SUBNORMAL, False)):
+            expect = None if flagged else "round_f64"
+            make = partial(_filled, value, n)
+            yield Case("round", f"np.round(x, {decimals}) f64 n={n} x={value!r} every third", make,
+                       partial(_round_call, decimals), expect)
+            for setting in ("raise", "warn", "ignore"):
+                yield Case("round", f"np.errstate(all={setting!r}) np.round(x, {decimals}) f64 n={n} x={value!r} every third",
+                           make, partial(_round_errstate, setting, decimals), expect)
+    spellings = (
+        Spelling("np.round(x, 2)", partial(_round_call, 2)),
+        Spelling("np.round(x)", np.round),
+        Spelling("np.around(x, 2)", lambda x: np.around(x, 2)),
+        Spelling("np.around(x)", np.around),
+        Spelling("x.round(2)", partial(_round_method, 2)),
+        Spelling("x.round()", lambda x: x.round()),
+        Spelling("np.round(x, decimals=2)", lambda x: np.round(x, decimals=2)),
+        Spelling("np.round(a=x, decimals=2)", lambda x: np.round(a=x, decimals=2)),
+        Spelling("np.round(x, 2, None)", lambda x: np.round(x, 2, None)),
+        Spelling("np.round(x, 2, out=None)", lambda x: np.round(x, 2, out=None)),
+        Spelling("np.round(x, 0)", partial(_round_call, 0)),
+        Spelling("np.round(x, 15)", partial(_round_call, 15)),
+        Spelling("x.round(decimals=2)", lambda x: x.round(decimals=2)),
+        Spelling("x.round(2, None)", lambda x: x.round(2, None)),
+        Spelling("x.round(2, out=None)", lambda x: x.round(2, out=None)),
+        Spelling("x.round(out=None, decimals=2)", lambda x: x.round(out=None, decimals=2)),
+        Spelling("np.round(x, -1)", partial(_round_call, -1), NEVER),
+        Spelling("np.round(x, 16)", partial(_round_call, 16), NEVER),
+        Spelling("np.round(x, 2**70)", partial(_round_call, 2**70), NEVER),
+        Spelling("x.round(-2)", partial(_round_method, -2), NEVER),
+        Spelling("np.round(x, np.int64(2))", partial(_round_call, np.int64(2)), NEVER),
+        Spelling("x.round(np.int32(2))", partial(_round_method, np.int32(2)), NEVER),
+        Spelling("np.round(x, True)", partial(_round_call, True), NEVER),
+        Spelling("np.round(x, 2.0)", partial(_round_call, 2.0), NEVER),
+        Spelling("np.round(x, None)", partial(_round_call, None), NEVER),
+        Spelling("np.round(x, '2')", partial(_round_call, "2"), NEVER),
+        Spelling("np.round(x, 2, out=x)", lambda x: _round_into(x, 2, "self"), NEVER),
+        Spelling("np.round(x, 2, out=fresh)", lambda x: _round_into(x, 2, "fresh"), NEVER),
+        Spelling("x.round(2, out=x)", lambda x: x.round(2, out=x), NEVER),
+        Spelling("x.round(2, decimals=2)", lambda x: x.round(2, decimals=2), NEVER),
+        Spelling("x.round(2, None, None)", lambda x: x.round(2, None, None), NEVER),
+        Spelling("x.round(bogus=1)", lambda x: x.round(bogus=1), NEVER),
+        Spelling("np.round(x, 2, bogus=1)", lambda x: np.round(x, 2, bogus=1), NEVER),
+    )
+    for dtype in ("f64", *ROUND_NEIGHBOURS):
+        kernel = "round_f64" if dtype == "f64" else None
+        for n, spelling in itertools.product(ROUND_LAYOUT_SIZES, spellings):
+            for variant in variants_for(dtype, n):
+                expect = expectation(kernel, spelling, variant, n)
+                # The two-dimensional layouts hold the whole rows of n elements.
+                size = n // COLUMNS * COLUMNS if variant.dims == 2 else n
+                # Above the limit and for an empty array the call is NumPy's.
+                if expect == kernel and not 1 <= size <= ROUND_F64_MAX_N:
+                    expect = None
+                # np.round converts a list to an array of NumPy's choosing and
+                # calls its method, which the method hook serves: a list of
+                # Python floats is a float64 array, whatever the type it was
+                # built from. A list has no method of its own.
+                if variant.name == "list" and spelling.text.startswith("np.") and spelling.kind == TAKES:
+                    expect = ANY if dtype != "f64" else _round_expect(n)
+                yield Case("round", f"{spelling.text} {dtype} n={n} layout={variant.name}",
+                           partial(_built, dtype, n, variant), spelling.call, expect)
+
+
 def _clip3(function, lo, hi, x):
     """Call `function(x, lo, hi)`."""
     return function(x, lo, hi)
@@ -3142,6 +3332,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "accumulate": accumulate_cases,
     "reduceat": reduceat_cases,
     "any": any_cases,
+    "round": round_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the
