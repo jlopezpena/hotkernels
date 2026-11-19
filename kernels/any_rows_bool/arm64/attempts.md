@@ -69,3 +69,13 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
 - **Notes:** rows of 22 now take 0.23 ns a row in the first-level cache, 0.74 cycles: the two
   loads a row on three load units. Rows of 64 (four loads a row) and rows of 4 (eight loads per
   32 rows) are at the same limit.
+
+## 6. Rows of four: four to fifteen rows by 16-byte loads
+
+- **Idea:** under sixteen rows in all, four rows per `ldr q`, two `umaxp` of the vector with
+  itself and `str s`; the last four end at the last row and may store some rows a second time.
+  Only under four rows (fewer than 16 elements) the scalar loop of attempt 3.
+- **check:** pass
+- **compare:** significantly faster, 1.015x [1.013 – 1.016]; rows of 4 at 16 elements 1.63x
+  (4.1 ns to 2.6 ns), nothing else moved.
+- **Kept:** yes

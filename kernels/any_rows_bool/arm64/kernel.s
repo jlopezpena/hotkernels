@@ -270,13 +270,38 @@ Lfour_last:
     // 1 to 15 rows left. With 16 rows or more in all, one more block that
     // ends at the last row and stores some rows a second time.
     cmp     x5, #16
-    b.lo    Lfour_one
+    b.lo    Lfour_few
     mov     x6, #16
     sub     x6, x6, x4                  // rows to step back
     sub     x0, x0, x6, lsl #2
     sub     x1, x1, x6
     FOUR16
     str     q0, [x1]
+    b       Ldone
+Lfour_few:
+    // Fewer than 16 rows in all. With four or more, four rows per 16-byte
+    // load, the last four ending at the last row.
+    cmp     x4, #4
+    b.lo    Lfour_one
+    add     x6, x0, x4, lsl #2
+    sub     x6, x6, #16                 // the last four rows
+    add     x7, x1, x4
+    sub     x7, x7, #4                  // and their results
+Lfour4:
+    ldr     q0, [x0], #16
+    umaxp   v0.16b, v0.16b, v0.16b
+    umaxp   v0.16b, v0.16b, v0.16b
+    str     s0, [x1], #4
+    subs    x4, x4, #4
+    b.hi    Lfour4_more
+    b       Ldone
+Lfour4_more:
+    cmp     x4, #4
+    b.hs    Lfour4
+    ldr     q0, [x6]
+    umaxp   v0.16b, v0.16b, v0.16b
+    umaxp   v0.16b, v0.16b, v0.16b
+    str     s0, [x7]
     b       Ldone
 Lfour_one:
     ldr     w6, [x0], #4
