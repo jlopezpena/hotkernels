@@ -2,29 +2,35 @@
 // out[i] = the largest of x[0..i], compared as signed numbers.
 // x0 = x, x1 = out, x2 = n. out does not overlap x.
 //
-// NEON has no maximum of 64-bit lanes, and the scalar maximum is a cmp and a
-// csel. So the kernel does not compute the maximum where one vector compare
-// shows there is nothing to compute. It works in blocks of 16 elements, with M
-// (x3) the maximum before the block, and has three ways through a block:
+// NEON has no maximum of 64-bit lanes: one is a cmgt and a bit. So the kernel
+// does not compute the maximum where one vector compare shows there is nothing
+// to compute. It works in blocks of 16 elements, with M the maximum before the
+// block (x3, and v31 in both lanes), and has three ways through a block:
 //
 //   flat      no element of the block is above M: one cmgt per vector, and
 //             the block is M sixteen times.
 //   rising    no element of the block is below the element before it, and the
-//             element before the block is M: one cmgt per vector against an
-//             overlapping load one element back, and the block is a copy.
-//   general   anything else: groups of four in the integer registers without a
-//             branch. The maxima of x0, x0..x1, x0..x2, x0..x3 do not depend on
-//             M, so the chain from group to group is one cmp and one csel.
+//             element before the block is M: one cmgt per vector against the
+//             input one element back, and the block is a copy.
+//   general   anything else: a prefix maximum of the block in the vector
+//             registers without a branch (GENERAL_BLOCK), M brought in late so
+//             that the chain from block to block is two maxima and a dup.
 //
-// The flat and rising loops run until a block fails their test; that block is
-// done the general way. After a block that failed the flat test the flat test
-// is tried again at once. After a general block the next one is tried flat if
-// M did not change in it, rising if its last element is M, and is done the
-// general way without a test otherwise.
+// The first block is a prefix maximum from x[0] (FIRST_BLOCK); after it the
+// rising loop if it ends on M, the flat loop otherwise. The flat and rising
+// loops run until a block fails their test; that block is done the general
+// way. After a block that failed the flat test the flat test is tried again
+// at once. After a general block the next one is tried flat if M did not
+// change in it, rising if its last element is M, and is done the general way
+// without a test otherwise. The flat and rising loops store with stnp. Fewer
+// than 16 elements: groups of four in the integer registers (GROUP), then one
+// at a time.
 //
 // x2 counts the elements left minus 16 while blocks run.
 
-// Four elements at [x0 + \o] the general way; x3 = M before and after.
+// Four elements at [x0 + \o] in the integer registers; x3 = M before and
+// after. The maxima of x0, x0..x1, x0..x2, x0..x3 do not depend on M, so the
+// chain from group to group is one cmp and one csel.
 .macro GROUP o
     ldp     x4, x5, [x0, #\o]
     ldp     x6, x7, [x0, #\o + 16]
