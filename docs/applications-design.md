@@ -143,7 +143,7 @@ perf script -i perf.data -F comm,tid,ip,sym,dso
 
 The record is taken when nothing else is running: when `gh run list` shows no unfinished run, since this machine hosts the CI runners. `--record` asks `gh run list` and refuses while any of the last twenty runs is queued, waiting or in progress; `--allow-busy` records anyway. The number of unfinished runs and the load average are written in the record. A load average above 1.0 is not refused, since this desktop does not reach it ([#51](https://github.com/sofeikov/hotkernels/issues/51)); the record marks its times rough, as before.
 
-The record itself is taken once every change that moves an application's time has been made, and the findings are brought up to date from it then.
+The record itself is taken once every change that moves an application's time has been made, and the findings are brought up to date from it then. It was taken on the stack of #186 to #193 at a load average of 2.95 with no CI run unfinished; see [applications-findings.md](applications-findings.md#the-second-record-after-the-gaps-at-two-sizes).
 
 ### What changed in the building of the second round
 

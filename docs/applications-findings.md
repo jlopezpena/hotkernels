@@ -1,18 +1,64 @@
 # Applications: what five NumPy programs gain from hotkernels
 
-This is the report of the study designed in [applications-design.md](applications-design.md). Five programs that the kernels were not written for were run on plain NumPy and after `hotkernels.install()`, their results compared, and their time profiled. The full tables are in [delivery/results/apple-m1-pro-apps.md](../delivery/results/apple-m1-pro-apps.md).
+This is the report of the study designed in [applications-design.md](applications-design.md). Five programs that the kernels were not written for were run on plain NumPy and after `hotkernels.install()`, their results compared, and their time profiled. It was recorded twice: first before the gaps it found were worked on, at one size per application and a load average of 18.5; then, after the work on those gaps ([#186](https://github.com/sofeikov/hotkernels/issues/186) to [#192](https://github.com/sofeikov/hotkernels/issues/192)), at two sizes on a quiet machine. The second record is in [delivery/results/apple-m1-pro-apps.md](../delivery/results/apple-m1-pro-apps.md) and summarised in [The second record](#the-second-record-after-the-gaps-at-two-sizes); the sections from [Results](#results) on are the first, whose JSON is kept in `tests/data/apps-record-one-size.json`.
 
 ## Summary
+
+- **After the gaps were served, four of five run 1.27x to 3.5x faster at the size first recorded,** with every result bit for bit the same: `sklearn_metrics` 3.48x, `empyrical_stats` 3.52x, `mlp_train` 2.20x and `trimesh_mesh` 1.27x. `min_char_rnn` gained 3%. At the other size each gains the same or less, except `empyrical_stats`, whose longer series gain more (3.93x). See [The second record](#the-second-record-after-the-gaps-at-two-sizes).
+
+The first record, before that work:
 
 - **Two of five got measurably faster, by 8% and 12%.** Two more gained 2% to 3%, and one did not change. No application got slower by more than the noise, and every result was the same with and without hotkernels, bit for bit.
 - **The kernels work where they are reached.** In each application the calls a kernel took got faster. They are a small share of each program's time.
 - **The time is somewhere else,** and the profile says where: sorting and `np.unique` (half to three quarters of two applications), the BLAS and whole-array arithmetic that NumPy already vectorises (the two neural networks), a library that bypasses NumPy (half of the finance application), and accumulations along an axis of a matrix (the other half).
 - **Four gaps would move these numbers,** each filed as an issue with its measurement: 2-D accumulation along axis 0 ([#187](https://github.com/sofeikov/hotkernels/issues/187)), a stable `argsort` ([#188](https://github.com/sofeikov/hotkernels/issues/188)), `np.unique` on labels ([#189](https://github.com/sofeikov/hotkernels/issues/189)) and in-place `np.clip` ([#186](https://github.com/sofeikov/hotkernels/issues/186)). By arithmetic on the measured shares, the first three would take three of the five applications to between 1.3x and 1.8x.
-- **The figures were taken on a busy machine,** at a load average of 18.5, because the CI runners on it did not go quiet. The speedups are ratios of alternating runs and are stable; the profile's shares are rough. See [Limits](#limits).
+- **The figures were taken on a busy machine,** at a load average of 18.5, because the CI runners on it did not go quiet. The speedups are ratios of alternating runs and are stable; the profile's shares are rough. See [Limits](#limits). The second record was taken with no CI run unfinished, at a load average of 2.95.
+
+## The second record: after the gaps, at two sizes
+
+Apple M1 Pro, CPython 3.12.7, NumPy 2.5.5, hotkernels at `ccd37d1`: the stack of [#186](https://github.com/sofeikov/hotkernels/issues/186) to [#193](https://github.com/sofeikov/hotkernels/issues/193). Taken with `uv run --group apps delivery apps --profile --record` when `gh run list` showed no unfinished run, at a load average of 2.95 (this desktop does not go below about 2; [#51](https://github.com/sofeikov/hotkernels/issues/51)). Seven alternating rounds of each side, the best of each; the medians are within 5% of the best on every row. With `install()` the results were identical on every row; with `install(inexact=True)` on every row but the two of `empyrical_stats`, which calls `np.cumsum` on `float64`, as in the first record.
+
+| Application | Size | Data | NumPy | `install()` | Faster by | First record |
+|---|---|---|---|---|---|---|
+| `mlp_train` | small | 196 inputs, 64 hidden units | 32.5 ms | 26.1 ms | 1.24x | |
+| `mlp_train` | large | 784 inputs, 256 hidden units | 311.5 ms | 141.4 ms | **2.20x** | 1.08x |
+| `min_char_rnn` | small | vocabulary of 58 | 300.4 ms | 293.0 ms | **1.03x** | 0.99x |
+| `min_char_rnn` | large | vocabulary of 1,000 | 1626.3 ms | 1623.9 ms | 1.00x | |
+| `trimesh_mesh` | small | 5,120 faces | 11.3 ms | 9.4 ms | 1.20x | |
+| `trimesh_mesh` | large | 81,920 faces | 179.6 ms | 141.0 ms | **1.27x** | 1.12x |
+| `sklearn_metrics` | small | 50,000 predictions | 50.9 ms | 20.2 ms | 2.52x | |
+| `sklearn_metrics` | large | 1,000,000 predictions | 994.6 ms | 285.8 ms | **3.48x** | 1.03x |
+| `empyrical_stats` | small | 60 series of 5,040 days | 1274.0 ms | 361.4 ms | **3.52x** | 1.02x |
+| `empyrical_stats` | large | 6 series of 50,400 days | 1303.5 ms | 331.7 ms | 3.93x | |
+
+In bold, the size of the first record. The NumPy times of those rows agree with the first record's to within 5%, except `mlp_train`'s, 311.5 ms against 226.3 ms; each speedup is of alternating runs within one record.
+
+Where the time goes, plain NumPy and after `install()`, as shares of the samples of working threads:
+
+| Application | Size | NumPy, plain | NumPy, installed | hotkernels, installed | BLAS, plain | BLAS, installed | Other compiled code, plain |
+|---|---|---|---|---|---|---|---|
+| `mlp_train` | small | 60.2% | 40.7% | 0.9% | 16.6% | 29.4% | 0.0% |
+| `mlp_train` | large | 76.0% | 15.3% | 10.7% | 19.1% | 52.6% | 0.0% |
+| `min_char_rnn` | small | 41.8% | 42.0% | 0.8% | 29.0% | 28.4% | 0.0% |
+| `min_char_rnn` | large | 39.0% | 38.0% | 0.5% | 29.5% | 26.3% | 0.0% |
+| `trimesh_mesh` | small | 75.4% | 66.6% | 4.3% | 0.2% | 0.2% | 0.7% |
+| `trimesh_mesh` | large | 76.2% | 71.6% | 5.4% | 0.4% | 1.1% | 0.4% |
+| `sklearn_metrics` | small | 84.9% | 48.5% | 17.3% | 0.0% | 0.0% | 0.3% |
+| `sklearn_metrics` | large | 96.0% | 65.7% | 23.8% | 0.0% | 0.0% | 0.3% |
+| `empyrical_stats` | small | 49.7% | 33.0% | 47.7% | 0.0% | 0.0% | 45.5% |
+| `empyrical_stats` | large | 51.5% | 34.7% | 54.9% | 0.0% | 0.0% | 44.9% |
+
+What the two sizes and the quiet machine say:
+
+- **`mlp_train`: the in-place update was the cost, at both loads.** On plain NumPy `DOUBLE_subtract` is 54.6% of the large network on the quiet machine, as it was 50.4% at a load of 18.5, so its share was not an artefact of the load, as the first record's Limits supposed. After `install()` the update is taken by the binding's in-place loops (`x -= y`, `x += y`, 188 calls each; [gradient-step-findings.md](gradient-step-findings.md)) and the BLAS is the largest share, 52.6%. The small network, whose weights fit in the cache, gains 1.24x: there the masked assignment and the `argmax` are what is taken, and the update was never slow.
+- **`min_char_rnn` gains 3% at its first size and nothing at the large one.** The in-place `np.clip` is now taken (1,500 calls); at a vocabulary of 1,000 the program's time is the BLAS and the gradient accumulation `dW += np.dot(...)`, 30.8% `DOUBLE_add`, which no kernel takes because the right-hand side is a fresh array of another product.
+- **`trimesh_mesh` gains 1.20x to 1.27x at both sizes.** Three of nine `argsort` calls are taken by the stable sort; the default-kind sorts left are the largest share, `aquicksort` on `uint64` at about 10% ([#207](https://github.com/sofeikov/hotkernels/issues/207)).
+- **`sklearn_metrics` gains 3.48x on a million predictions and 2.52x on fifty thousand.** The sort and `np.unique` are taken; at the small size the Python interpreter becomes 22% of the installed run, as the arrays shrink and the cost of calls stays.
+- **`empyrical_stats` gains more on longer series:** 3.52x on twenty years and 3.93x on two hundred. The bottleneck functions are now served by hotkernels (47.7% and 54.9% of the installed run); what is left to bottleneck itself is under 2%.
 
 ## Results
 
-Apple M1 Pro, CPython 3.12.7, NumPy 2.5.5. Seven alternating runs of each side, the best of each. Each application at one size, the one its section names; the second size each now has is not in this record yet.
+The first record, before the gaps were worked on. Apple M1 Pro, CPython 3.12.7, NumPy 2.5.5. Seven alternating runs of each side, the best of each. Each application at one size, the one its section names; both sizes are in [the second record](#the-second-record-after-the-gaps-at-two-sizes).
 
 | Application | What it is | NumPy | `install()` | Faster by | Results | Kernel calls | Left to NumPy |
 |---|---|---|---|---|---|---|---|
@@ -183,9 +229,9 @@ empyrical-reloaded 0.7.3: twelve statistics, alpha and beta, cumulative returns,
 
 ## Limits
 
-- **A busy machine.** The run started at a load average of 18.5. The speedups come from alternating runs and their medians agree with their minima, so the ratios hold. The profile's shares do not all hold: functions bound by memory are inflated when other processes compete for the cache. `DOUBLE_subtract` in `mlp_train` is the clear case.
+- **A busy machine.** The first run started at a load average of 18.5. The speedups come from alternating runs and their medians agree with their minima, so the ratios hold. It was supposed here that functions bound by memory were inflated by the load, `DOUBLE_subtract` in `mlp_train` above all; the second record, at 2.95 with no CI run, found it at 54.6%, so that share was not the load's. The second record is still on a desktop in use, not an idle machine ([#51](https://github.com/sofeikov/hotkernels/issues/51)).
 - **One machine, one architecture.** On x86-64 NumPy has vector loops it lacks on ARM64. The profile now runs on Linux through `perf`, but it has not been run on an x86-64 machine ([#205](https://github.com/sofeikov/hotkernels/issues/205)).
-- **One size each.** A larger mesh or a longer return series would move the shares. Every application now has a second size, `small` and `large` (see [applications-design.md](applications-design.md#two-sizes)); the figures here are from the first record, which ran each at one: `min_char_rnn` and `empyrical_stats` at the small size, the other three at the large.
+- **One size each, in the first record.** It ran `min_char_rnn` and `empyrical_stats` at the small size and the other three at the large. The second record has both sizes of each (see [applications-design.md](applications-design.md#two-sizes)).
 - **Five programs.** They were chosen by field before any was timed, and the list was not changed by the results. They are still five. Dense linear algebra, image processing and pandas-heavy code are represented by one program or by none.
 - **Estimates of what a missing kernel is worth** assume the rest of the program is unchanged and take the kernel's speed from a stand-in measured in Python, not from a kernel.
 
