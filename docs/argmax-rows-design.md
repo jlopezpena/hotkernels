@@ -1,6 +1,6 @@
 # `argmax` and `argmin` along the rows of a matrix, and how a call is counted
 
-This answers [issue 190](https://github.com/sofeikov/hotkernels/issues/190). It is written before the code, in the same pull request, as the maintainer asked for one pull request per issue.
+This answers [issue 190](https://github.com/sofeikov/hotkernels/issues/190). It was written before the code, in the same pull request, as the maintainer asked for one pull request per issue, and is now implemented. Where the building departed from it, [What changed in the building](#what-changed-in-the-building) says so.
 
 Every figure here is ARM64's, measured on an Apple M1 Pro with NumPy 2.5.5, from Python, while other agents were timing on the same machine (load average 1.6 to 3.0). The ratios are what to read.
 
@@ -130,6 +130,28 @@ The applications and workloads reports read these counters through `report()`, s
 - From Python, `np.argmax(p, axis=1)` on 300,000 × 10 float64 is faster than NumPy by about 3x, and rows of 2, 3 and 10 of both types are faster than NumPy.
 - `report()` shows the `sklearn_metrics` and `mlp_train` applications with no `np.argmax` left to NumPy.
 - `docsite build` succeeds.
+
+## What changed in the building
+
+| Proposed | Built | Why |
+|---|---|---|
+| The kernel from about eight columns for both types | From 6 columns for float64 and 9 for float32 | Timed on the built code from Python: the loop takes 1.25 ns a row on five float64 columns and 1.50 on six, the kernel 1.6 from four columns up; the float32 loop takes 1.42 ns on eight columns and the kernel 1.6 from eight. The thresholds are where the two meet |
+| Shown in `report()` as `  axis=1` under its operation | `argmax(axis=1)` and `argmin(axis=1)` | The footnote that lists the loops built into the binding names each by its first column, and `  axis=1` did not say which operation |
+| Cases for spellings that must stay with NumPy | The same, and `np.argmax(list, axis=1)` may be taken | NumPy makes an array of the list and calls its method, which takes it |
+
+Measured on the built code, Apple M1 Pro, plain and installed alternating, load average 2.7 to 5.0, so rough:
+
+| Rows × columns | Type | NumPy | hotkernels | Faster by |
+|---|---|---|---|---|
+| 300,000 × 2 | float64 | 2.27 ms | 0.146 ms | 15.6x |
+| 300,000 × 3 | float64 | 3.38 ms | 0.217 ms | 15.6x |
+| 300,000 × 10 | float64 | 2.43 ms | 0.692 ms | 3.51x |
+| 300,000 × 3 | float32 | 3.20 ms | 0.157 ms | 20.4x |
+| 300,000 × 10 | float32 | 6.68 ms | 0.489 ms | 13.7x |
+| 30,000 × 100 | float64 | 1.79 ms | 0.425 ms | 4.20x |
+| 3,000 × 1,000 | float64 | 1.98 ms | 0.406 ms | 4.86x |
+
+`argmin` took the same times within a few per cent. The applications: `sklearn_metrics` reports 99 kernel calls and 161 left to NumPy (300,161 before), `mlp_train` 190 and 942 (4,942 before); `np.argmax` is one kernel call in each. `delivery check`: 20,595 cases each for `argmax` and `argmin`, none failing; with the tie rule of the loop broken 460 fail, with its NaN rule broken 288.
 
 ## Left for later
 

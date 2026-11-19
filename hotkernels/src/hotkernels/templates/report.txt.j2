@@ -26,6 +26,8 @@ hotkernels {{ report.version }}: installed, {{ report.installed_count }} of {{ r
 "Left to NumPy" counts calls that reached a hook and did not meet a kernel's
 conditions: another element type, a strided array, an argument the kernel does
 not implement. It is counted per NumPy call and shown on its first row.
+Both columns count calls as written: np.argmax(m, axis=1) is one call, however
+many rows NumPy splits it into.
 {% set builtins = report.kernels | selectattr("builtin") | list %}
 {% if builtins %}
 Not counted on the first line, because they are loops built into hotkernels

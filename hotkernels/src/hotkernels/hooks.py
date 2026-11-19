@@ -783,14 +783,15 @@ COMPRESS_HOOKS = ("index.get", "function.compress", "function.extract")
 KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("argmax_f32", "np.argmax", "float32", "argmax", ("slot.argmax.f32", "function.argmax", "method.argmax")),
     KernelInfo("argmax_f64", "np.argmax", "float64", "argmax", ("slot.argmax.f64", "function.argmax", "method.argmax")),
-    # Loops built into the binding, for rows too narrow for the kernels:
-    # np.argmax(m, axis=1), indented under the rows above.
-    KernelInfo("argmax_rows_f32", "  axis=1", "float32", "argmax", ("function.argmax", "method.argmax"), builtin=True),
-    KernelInfo("argmax_rows_f64", "  axis=1", "float64", "argmax", ("function.argmax", "method.argmax"), builtin=True),
+    # Loops built into the binding, for rows too narrow for the kernels in
+    # np.argmax(m, axis=1) and m.argmax(axis=1); wider rows count under the
+    # kernels above.
+    KernelInfo("argmax_rows_f32", "argmax(axis=1)", "float32", "argmax", ("function.argmax", "method.argmax"), builtin=True),
+    KernelInfo("argmax_rows_f64", "argmax(axis=1)", "float64", "argmax", ("function.argmax", "method.argmax"), builtin=True),
     KernelInfo("argmin_f32", "np.argmin", "float32", "argmin", ("slot.argmin.f32", "function.argmin", "method.argmin")),
     KernelInfo("argmin_f64", "np.argmin", "float64", "argmin", ("slot.argmin.f64", "function.argmin", "method.argmin")),
-    KernelInfo("argmin_rows_f32", "  axis=1", "float32", "argmin", ("function.argmin", "method.argmin"), builtin=True),
-    KernelInfo("argmin_rows_f64", "  axis=1", "float64", "argmin", ("function.argmin", "method.argmin"), builtin=True),
+    KernelInfo("argmin_rows_f32", "argmin(axis=1)", "float32", "argmin", ("function.argmin", "method.argmin"), builtin=True),
+    KernelInfo("argmin_rows_f64", "argmin(axis=1)", "float64", "argmin", ("function.argmin", "method.argmin"), builtin=True),
     KernelInfo("clip_f32", "np.clip", "float32", "clip", ("loop.clip.f32", "function.clip", "method.clip")),
     KernelInfo("clip_f64", "np.clip", "float64", "clip", ("loop.clip.f64", "function.clip", "method.clip")),
     # A loop built into the binding, for short arrays.
