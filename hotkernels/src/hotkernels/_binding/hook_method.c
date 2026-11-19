@@ -274,8 +274,20 @@ static HK_NOINLINE PyObject *try_cumsum(PyObject *self, hk_kernel kernel) {
     return result;
 }
 
-// Called with a tuple and a dictionary (METH_VARARGS | METH_KEYWORDS).
+// x.cumsum(axis=0) on a matrix, with np.add's row loop. Below.
+static PyObject *try_cumsum_rows(PyObject *self, PyObject *args, PyObject *kwargs, bool *answered);
+
+// Called with a tuple and a dictionary (METH_VARARGS | METH_KEYWORDS). A
+// float64 array of two or more dimensions called with arguments may be a
+// cumsum along the first axis, which the row loop takes here rather than at
+// ufunc.accumulate, so that the call is not counted as passed on here first.
 static PyObject *method_cumsum(PyObject *self, PyObject *args, PyObject *kwargs) {
+    if ((PyTuple_GET_SIZE(args) != 0 || kwargs != NULL) && hk_is_flat(self, NPY_DOUBLE) &&
+        PyArray_NDIM((PyArrayObject *)self) >= 2) {
+        bool answered;
+        PyObject *result = try_cumsum_rows(self, args, kwargs, &answered);
+        if (answered) return result;
+    }
     const hk_kernel kernel = cumsum_kernel(self);
     if (kernel != HK_KERNEL_COUNT && cumsum_arguments_are_default(args, kwargs)) {
         PyObject *result = try_cumsum(self, kernel);
@@ -448,27 +460,38 @@ static PyObject *method_clip(PyObject *self, PyObject *const *args, Py_ssize_t n
 
 // -------------------------------------------------------------- accumulate
 
-// The ufunc objects `np.maximum` and `np.fmax`, the two whose accumulation has
-// a kernel; `np.fmax` is also the one whose reduceat has one. NumPy keeps one
+// The ufunc objects `np.maximum` and `np.fmax`, the two whose accumulation of
+// one dimension has a kernel; `np.fmax` is also the one whose reduceat has one. NumPy keeps one
 // of each, so a call is recognised by comparing `self` with them. Fetched
 // when the first of the two hooks is applied, and kept.
 static PyObject *maximum_ufunc;
 static PyObject *fmax_ufunc;
 
-// Fetch np.maximum and np.fmax. See hk_method.prepare.
+// np.add and np.multiply, which have row loops (below).
+static PyObject *add_ufunc;
+static PyObject *multiply_ufunc;
+
+// Fetch np.maximum, np.fmax, np.add and np.multiply. See hk_method.prepare.
+// Also the preparation of method.cumsum, whose row loop is np.add's.
 static int accumulate_prepare(void) {
-    if (fmax_ufunc != NULL) return 0;
+    if (multiply_ufunc != NULL) return 0;
     PyObject *numpy = PyImport_ImportModule("numpy");
     if (numpy == NULL) return -1;
     PyObject *maximum = PyObject_GetAttrString(numpy, "maximum");
     PyObject *fmax = maximum != NULL ? PyObject_GetAttrString(numpy, "fmax") : NULL;
+    PyObject *add = fmax != NULL ? PyObject_GetAttrString(numpy, "add") : NULL;
+    PyObject *multiply = add != NULL ? PyObject_GetAttrString(numpy, "multiply") : NULL;
     Py_DECREF(numpy);
-    if (fmax == NULL) {
+    if (multiply == NULL) {
         Py_XDECREF(maximum);
+        Py_XDECREF(fmax);
+        Py_XDECREF(add);
         return -1;
     }
     maximum_ufunc = maximum;
     fmax_ufunc = fmax;
+    add_ufunc = add;
+    multiply_ufunc = multiply;
     return 0;
 }
 
@@ -686,16 +709,366 @@ static HK_NOINLINE PyObject *try_accumulate(PyObject *ufunc, PyObject *const *ar
     return result;
 }
 
-// Every ufunc's accumulate arrives here. Any ufunc but the two with a kernel
-// goes straight on after two pointer comparisons, uncounted: no kernel serves
-// it. A call to one of the two that is not taken is counted.
+// ------------------------------------- accumulation along the first axis
+//
+// np.add, np.multiply, np.maximum and np.fmax accumulated along axis 0 of a
+// C-ordered float64 array of two or more dimensions, and x.cumsum(axis=0),
+// a row at a time. See docs/accumulate-rows-design.md.
+//
+// NumPy hands its inner loop one column at a time, a row apart between
+// elements, and computes out[i] = op(out[i-1], x[i]) down the column. The
+// loops below compute the same operation on the same two operands for every
+// element, along the rows, which is about six times faster on a matrix of
+// thousands of columns. Only where an operation is not a function of its
+// operands' values can the result differ:
+//
+// - add and multiply: which NaN results from two NaNs of different bits, and
+//   the floating-point flags NumPy reports. The flags are read after each
+//   block of rows, and each row says whether it made a NaN; at the first
+//   block that did either the rest of the call is handed to NumPy
+//   (rows_numpy_rest).
+// - maximum and fmax: the sign of a zero maximum of zeros of both signs, and
+//   which NaN wins among NaNs of different bits. The array is read first by
+//   fmax_accumulate_left_to_numpy, and one that holds a negative zero, a
+//   signalling NaN or NaNs of several patterns is NumPy's.
+
+// The four operations, in the order of ROW_FUNCTIONS and ROW_KERNELS.
+typedef enum { ROWS_ADD, ROWS_MULTIPLY, ROWS_MAXIMUM, ROWS_FMAX, ROWS_OPERATION_COUNT } rows_operation;
+
+// Bytes of input taken a block at a time: as many whole rows as fit, and one
+// row when a row is longer. In place, a block is computed into a scratch
+// buffer, which stays in the first-level cache, and then copied over the
+// input; for add and multiply the flags are read once per block.
+#define ROWS_BLOCK_BYTES 16384
+
+// One row of an accumulation: out[j] = op(prev[j], x[j]) for the `cols`
+// columns, where `prev` is the output's previous row. No two of the pointers
+// overlap, which lets the compiler make vector code of each loop. Returns all
+// ones when add or multiply made a NaN in the row, and otherwise 0; maximum
+// and fmax return 0. Compiled for the kernels' level.
+typedef uint64_t (*row_function)(const double *restrict prev, const double *restrict x, double *restrict out,
+                                 size_t cols);
+
+// The masks are 64-bit, as wide as an element: with a bool the compiler
+// leaves the loop scalar on x86-64 (see fmax_accumulate_left_to_numpy).
+static HK_TARGET_KERNEL_LEVEL uint64_t add_row(const double *restrict prev, const double *restrict x,
+                                               double *restrict out, size_t cols) {
+    uint64_t nan = 0;
+    for (size_t j = 0; j < cols; j++) {
+        const double sum = prev[j] + x[j];
+        out[j] = sum;
+        nan |= sum != sum ? ~0ULL : 0;
+    }
+    return nan;
+}
+
+static HK_TARGET_KERNEL_LEVEL uint64_t multiply_row(const double *restrict prev, const double *restrict x,
+                                                    double *restrict out, size_t cols) {
+    uint64_t nan = 0;
+    for (size_t j = 0; j < cols; j++) {
+        const double product = prev[j] * x[j];
+        out[j] = product;
+        nan |= product != product ? ~0ULL : 0;
+    }
+    return nan;
+}
+
+// np.maximum propagates a NaN, and np.fmax skips one: the other operand, or
+// the NaN when both are. With the array guarded, every NaN in it has one bit
+// pattern and is quiet, and no zero is negative, so any operation that
+// propagates (or skips) a NaN and takes the larger number gives NumPy's bits.
+// The array is read by the guard before these run, which is about a quarter
+// of the call (0.55 ms against 0.42 for the product on a 253 x 4,789 matrix,
+// Apple M1 Pro); the loops themselves written with ARM64's fmax and fmaxnm
+// instructions took the same time as this plain C.
+static HK_TARGET_KERNEL_LEVEL uint64_t maximum_row(const double *restrict prev, const double *restrict x,
+                                                   double *restrict out, size_t cols) {
+    for (size_t j = 0; j < cols; j++) {
+        const double a = prev[j], b = x[j];
+        out[j] = a != a ? a : (b != b ? b : (b > a ? b : a));
+    }
+    return 0;
+}
+
+static HK_TARGET_KERNEL_LEVEL uint64_t fmax_row(const double *restrict prev, const double *restrict x,
+                                                double *restrict out, size_t cols) {
+    for (size_t j = 0; j < cols; j++) {
+        const double a = prev[j], b = x[j];
+        out[j] = b != b ? a : (a != a ? b : (b > a ? b : a));
+    }
+    return 0;
+}
+
+static const row_function ROW_FUNCTIONS[ROWS_OPERATION_COUNT] = {add_row, multiply_row, maximum_row, fmax_row};
+
+// The counter of each operation's loop.
+static const hk_kernel ROW_KERNELS[ROWS_OPERATION_COUNT] = {
+    HK_CUMSUM_ROWS_F64, HK_CUMPROD_ROWS_F64, HK_CUMMAX_ROWS_F64, HK_CUMFMAX_ROWS_F64,
+};
+
+// Accumulate the `rows` rows of `cols` doubles at `x` into `out`, which is
+// either `x` itself or shares no byte with it, `block_rows` rows at a time.
+// In place, each block is computed into `scratch`, which holds a block, and
+// then copied over the input's rows: computing straight into the rows the
+// input was just read from took 2.4 to 9 ms on a 253 x 4,789 product where
+// this takes 0.5 to 0.8 (Apple M1 Pro, a loop in C outside the binding), and
+// copying the input's block aside first and computing in place was as slow.
+// `scratch` is not used otherwise.
+//
+// Returns `rows` when every row is done. For add and multiply, returns
+// instead the first row of the first block that made a NaN or raised a flag
+// NumPy reports, with `out` from that row on holding the input's rows as
+// they were: rows before it hold the accumulation. The flags are left clear
+// either way, as NumPy's loops leave them. Touches no Python object, and runs
+// with the interpreter lock released.
+static size_t accumulate_rows(rows_operation op, const double *x, double *out, double *scratch, size_t rows,
+                              size_t cols, size_t block_rows) {
+    const bool in_place = x == out;
+    const bool checked = op == ROWS_ADD || op == ROWS_MULTIPLY;
+    const row_function row = ROW_FUNCTIONS[op];
+    const size_t row_bytes = cols * sizeof(double);
+    if (!in_place) memcpy(out, x, row_bytes);
+    hk_clear_float_flags();
+    for (size_t b = 1; b < rows; b += block_rows) {
+        const size_t count = rows - b < block_rows ? rows - b : block_rows;
+        // Where the block's rows are computed: the output, or the scratch
+        // buffer in place.
+        double *target = in_place ? scratch : out + b * cols;
+        uint64_t nan = 0;
+        for (size_t i = 0; i < count; i++) {
+            const double *prev = i == 0 ? out + (b - 1) * cols : target + (i - 1) * cols;
+            nan |= row(prev, x + (b + i) * cols, target + i * cols, cols);
+        }
+        // The rows were computed by calls the compiler cannot see into, so
+        // the flags are read after all of their arithmetic.
+        if (checked && (nan != 0 || hk_float_flags_reported())) {
+            if (!in_place) memcpy(out + b * cols, x + b * cols, (rows - b) * row_bytes);
+            hk_clear_float_flags();
+            return b;
+        }
+        if (in_place) memcpy(out + b * cols, scratch, count * row_bytes);
+    }
+    hk_clear_float_flags();
+    return rows;
+}
+
+// True when `axis` names the first axis of an array of `dimensions`
+// dimensions as a Python int: 0 or -dimensions. Absent, it is the first axis
+// when `absent_is_first`, as for accumulate, and not for cumsum, whose default
+// flattens. None, a tuple and NumPy integers are NumPy's to interpret.
+static bool rows_axis_is_first(PyObject *axis, int dimensions, bool absent_is_first) {
+    if (axis == NULL) return absent_is_first;
+    if (!PyLong_CheckExact(axis)) return false;
+    int overflow = 0;
+    const long value = PyLong_AsLongAndOverflow(axis, &overflow);
+    return overflow == 0 && (value == 0 || value == -dimensions);
+}
+
+// True when `out`, given for the result of accumulating `x`, can be written
+// by the loop: a plain float64 ndarray in native byte order, C-contiguous and
+// writable, of `x`'s shape, and either `x`'s memory exactly or sharing no
+// byte with it. A partial overlap is NumPy's.
+static bool rows_output_fits(PyArrayObject *x, PyObject *out) {
+    if (!hk_is_flat(out, NPY_DOUBLE)) return false;
+    PyArrayObject *o = (PyArrayObject *)out;
+    if (!PyArray_ISWRITEABLE(o) || !hk_same_shape(x, o)) return false;
+    const size_t bytes = (size_t)PyArray_NBYTES(x);
+    return PyArray_DATA(o) == PyArray_DATA(x) || hk_disjoint(PyArray_DATA(o), bytes, PyArray_DATA(x), bytes);
+}
+
+// NumPy's own `ufunc.accumulate`: the function the hook replaced while it is
+// applied, so that the call never comes back to the binding, and the method
+// as NumPy has it otherwise (when only method.cumsum is applied). Returns a
+// new reference, or NULL with NumPy's exception set.
+static PyObject *numpy_accumulate(PyObject *ufunc, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    if (methods[M_ACCUMULATE].definition != NULL) {
+        return ((hk_fast_keywords)(void (*)(void))methods[M_ACCUMULATE].original)(ufunc, args, nargs, kwnames);
+    }
+    PyObject *method = PyObject_GetAttrString(ufunc, "accumulate");
+    if (method == NULL) return NULL;
+    PyObject *result = PyObject_Vectorcall(method, args, (size_t)nargs, kwnames);
+    Py_DECREF(method);
+    return result;
+}
+
+// Hand the rows of `out` from `stop` on to NumPy, where accumulate_rows
+// stopped: `ufunc.accumulate(out[stop-1:], 0, out=out[stop-1:])`. Row
+// stop - 1 holds the accumulation up to it and the rows after it the input,
+// so NumPy computes what it would have for the whole call, and warns or
+// raises as np.errstate says for the operations that raised a flag; none did
+// before row `stop`. Returns 0, or -1 with NumPy's exception set.
+static HK_NOINLINE int rows_numpy_rest(PyObject *ufunc, PyArrayObject *out, npy_intp stop) {
+    PyObject *view = PySequence_GetSlice((PyObject *)out, stop - 1, PyArray_DIM(out, 0));
+    PyObject *axis = PyLong_FromLong(0);
+    PyObject *kwnames = Py_BuildValue("(s)", "out");
+    PyObject *result = NULL;
+    if (view != NULL && axis != NULL && kwnames != NULL) {
+        PyObject *const args[] = {view, axis, view};
+        result = numpy_accumulate(ufunc, args, 2, kwnames);
+    }
+    Py_XDECREF(view);
+    Py_XDECREF(axis);
+    Py_XDECREF(kwnames);
+    if (result == NULL) return -1;
+    Py_DECREF(result);
+    return 0;
+}
+
+// The accumulation of `array` by `op` along its first axis, given the call's
+// `axis`, `dtype` and `out` (NULL when not given), when the call is one the
+// loop takes: `array` a plain C-ordered float64 ndarray of two or more
+// dimensions with at least one row and one column, `axis` the first,
+// `dtype` absent or None, and `out` absent, None, or an array
+// rows_output_fits. `ufunc` is the ufunc of `op`, and `operation` the
+// counter a call handed to NumPy part way is counted under.
+//
+// Sets *answered to true when the call was answered here: the return value is
+// then the result (a new array, or `out` with a new reference), or NULL with
+// NumPy's exception set when NumPy computed part of it and raised. Otherwise
+// returns NULL with no exception set and nothing written, and the call is
+// NumPy's.
+static HK_NOINLINE PyObject *try_rows(rows_operation op, PyObject *array, PyObject *axis, bool absent_is_first,
+                                      PyObject *dtype, PyObject *out_argument, PyObject *ufunc,
+                                      hk_operation operation, bool *answered) {
+    *answered = false;
+    if (!hk_is_flat(array, NPY_DOUBLE)) return NULL;
+    PyArrayObject *x = (PyArrayObject *)array;
+    const int dimensions = PyArray_NDIM(x);
+    if (dimensions < 2 || !rows_axis_is_first(axis, dimensions, absent_is_first) || !hk_is_absent(dtype)) {
+        return NULL;
+    }
+    const npy_intp rows = PyArray_DIM(x, 0), n = PyArray_SIZE(x);
+    if (rows < 1 || n < 1) return NULL;
+    const size_t cols = (size_t)(n / rows);
+    PyArrayObject *out;
+    if (hk_is_absent(out_argument)) {
+        out = (PyArrayObject *)PyArray_SimpleNew(dimensions, PyArray_DIMS(x), NPY_DOUBLE);
+        if (out == NULL) {
+            PyErr_Clear();
+            return NULL;
+        }
+    } else {
+        if (!rows_output_fits(x, out_argument)) return NULL;
+        out = (PyArrayObject *)out_argument;
+        Py_INCREF(out);
+    }
+    const bool in_place = PyArray_DATA(out) == PyArray_DATA(x);
+    const size_t row_bytes = cols * sizeof(double);
+    const size_t block_rows = row_bytes >= ROWS_BLOCK_BYTES ? 1 : ROWS_BLOCK_BYTES / row_bytes;
+    double on_stack[HK_STACK_SCRATCH_BYTES / sizeof(double)];
+    double *scratch = NULL;
+    if (in_place) {
+        const size_t scratch_bytes = block_rows * row_bytes;
+        scratch = scratch_bytes <= sizeof on_stack ? on_stack : malloc(scratch_bytes);
+        if (scratch == NULL) {
+            Py_DECREF(out);
+            return NULL;
+        }
+    }
+    // True when the guard of maximum and fmax leaves the array to NumPy.
+    bool left = false;
+    size_t stop = (size_t)rows;
+    {
+        HK_BEGIN_NOGIL(n)
+        if (op == ROWS_MAXIMUM || op == ROWS_FMAX) left = fmax_accumulate_left_to_numpy(PyArray_DATA(x), (size_t)n);
+        if (!left) {
+            stop = accumulate_rows(op, PyArray_DATA(x), PyArray_DATA(out), scratch, (size_t)rows, cols, block_rows);
+        }
+        HK_END_NOGIL
+    }
+    if (scratch != NULL && scratch != on_stack) free(scratch);
+    if (left) {
+        Py_DECREF(out);
+        return NULL;
+    }
+    *answered = true;
+    if (stop == (size_t)rows) {
+        hk_take(ROW_KERNELS[op]);
+        return (PyObject *)out;
+    }
+    hk_pass(operation);
+    if (rows_numpy_rest(ufunc, out, (npy_intp)stop) != 0) {
+        Py_DECREF(out);
+        return NULL;
+    }
+    return (PyObject *)out;
+}
+
+// The operation of a ufunc that has a row loop, or ROWS_OPERATION_COUNT.
+static rows_operation rows_operation_of(PyObject *ufunc) {
+    if (ufunc == add_ufunc) return ROWS_ADD;
+    if (ufunc == multiply_ufunc) return ROWS_MULTIPLY;
+    if (ufunc == maximum_ufunc) return ROWS_MAXIMUM;
+    if (ufunc == fmax_ufunc) return ROWS_FMAX;
+    return ROWS_OPERATION_COUNT;
+}
+
+// `ufunc.accumulate(array, axis, dtype, out)` along the first axis, for the
+// four ufuncs with a row loop: try_rows on the call's arguments, which NumPy
+// takes by position or by keyword. See try_rows for *answered and the result.
+static HK_NOINLINE PyObject *try_accumulate_rows(PyObject *ufunc, PyObject *const *args, Py_ssize_t nargs,
+                                                 PyObject *kwnames, bool *answered) {
+    enum { ARRAY, AXIS, DTYPE, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"array", "axis", "dtype", "out"};
+    *answered = false;
+    // The array is nearly always the first positional argument, and its type
+    // and shape decide most calls; it is tested before the arguments are
+    // matched.
+    if (nargs >= 1 && !(hk_is_flat(args[0], NPY_DOUBLE) && PyArray_NDIM((PyArrayObject *)args[0]) >= 2)) {
+        return NULL;
+    }
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[ARRAY] == NULL) return NULL;
+    return try_rows(rows_operation_of(ufunc), bound[ARRAY], bound[AXIS], true, bound[DTYPE], bound[OUT], ufunc,
+                    HK_OP_ACCUMULATE, answered);
+}
+
+// Every ufunc's accumulate arrives here. np.maximum and np.fmax have kernels
+// for one dimension and the row loops for more; a call to either that is
+// not taken is counted. np.add and np.multiply have the row loops; a call to
+// either that is not taken goes on uncounted, since nearly all of them are
+// accumulations of one dimension that nothing serves, and np.cumsum counts
+// its own at its method. Any other ufunc goes straight on after four pointer
+// comparisons, uncounted.
 static PyObject *method_accumulate(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    bool answered;
     if (self == maximum_ufunc || self == fmax_ufunc) {
         PyObject *result = try_accumulate(self, args, nargs, kwnames);
         if (result != NULL) return result;
+        result = try_accumulate_rows(self, args, nargs, kwnames, &answered);
+        if (answered) return result;
         hk_pass(HK_OP_ACCUMULATE);
+    } else if (self == add_ufunc || self == multiply_ufunc) {
+        PyObject *result = try_accumulate_rows(self, args, nargs, kwnames, &answered);
+        if (answered) return result;
     }
     return ((hk_fast_keywords)(void (*)(void))methods[M_ACCUMULATE].original)(self, args, nargs, kwnames);
+}
+
+// x.cumsum(axis, dtype, out) along the first axis of a matrix: try_rows for
+// np.add, the arguments bound by name from the tuple and dictionary the
+// method is called with. `axis` must be given: without it cumsum flattens.
+// See try_rows for *answered and the result.
+static HK_NOINLINE PyObject *try_cumsum_rows(PyObject *self, PyObject *args, PyObject *kwargs, bool *answered) {
+    *answered = false;
+    const Py_ssize_t positional = PyTuple_GET_SIZE(args);
+    if (positional > CUMSUM_PARAMETER_COUNT) return NULL;
+    PyObject *bound[CUMSUM_PARAMETER_COUNT] = {NULL, NULL, NULL};
+    for (Py_ssize_t i = 0; i < positional; i++) bound[i] = PyTuple_GET_ITEM(args, i);
+    if (kwargs != NULL) {
+        PyObject *key, *value;
+        Py_ssize_t position = 0;
+        while (PyDict_Next(kwargs, &position, &key, &value)) {
+            Py_ssize_t i = 0;
+            while (i < CUMSUM_PARAMETER_COUNT && !(PyUnicode_CheckExact(key) && hk_text_is(key, CUMSUM_PARAMETERS[i]))) {
+                i++;
+            }
+            if (i == CUMSUM_PARAMETER_COUNT || bound[i] != NULL) return NULL;
+            bound[i] = value;
+        }
+    }
+    return try_rows(ROWS_ADD, self, bound[0], false, bound[1], bound[2], add_ufunc, HK_OP_CUMSUM, answered);
 }
 
 // ---------------------------------------------------------------- reduceat
@@ -1185,7 +1558,7 @@ static hk_method methods[M_COUNT] = {
     [M_ASTYPE] = HK_METHOD("astype", OWNER_NDARRAY, astype_prepare, METH_FASTCALL | METH_KEYWORDS, method_astype),
     [M_SUM] = HK_METHOD("sum", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_sum),
     [M_NONZERO] = HK_METHOD("nonzero", OWNER_NDARRAY, NULL, METH_VARARGS, method_nonzero),
-    [M_CUMSUM] = HK_METHOD("cumsum", OWNER_NDARRAY, NULL, METH_VARARGS | METH_KEYWORDS, method_cumsum),
+    [M_CUMSUM] = HK_METHOD("cumsum", OWNER_NDARRAY, accumulate_prepare, METH_VARARGS | METH_KEYWORDS, method_cumsum),
     [M_SEARCHSORTED] = HK_METHOD("searchsorted", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS,
                                  method_searchsorted),
     [M_ARGMAX] = HK_METHOD("argmax", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_argmax),

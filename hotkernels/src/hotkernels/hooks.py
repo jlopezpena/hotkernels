@@ -69,6 +69,13 @@ PROBE_COLS = 22
 # misplaced a code would fail.
 PROBE_CODES = 41
 
+# Rows of the matrices the probes of the row loops accumulate down: PROBE_N
+# elements in 25 rows of 40 columns.
+PROBE_ROWS = 25
+# Largest factor in the cumulative-product probe: its products are at most
+# 3 ** PROBE_ROWS, below 2 ** 53, so every one is exact in float64.
+PROBE_FACTOR = 3
+
 # Element count of the sorted array the search probes look in. It differs
 # from PROBE_N so that a kernel which confused its two lengths would fail.
 PROBE_TABLE_N = 37
@@ -117,10 +124,11 @@ class KernelInfo:
     hooks: tuple[str, ...]
     # Why the kernel has no hook, or None when it has one.
     unbound_reason: str | None = None
-    # True for a loop built into the binding for calls on short arrays, which
-    # is plain C in the hook files and not a kernel from `kernels/`: the
-    # judge never sees it, and `report()` shows it as exact C and does not
-    # count it among the kernels.
+    # True for a loop built into the binding, for calls on short arrays or
+    # for accumulations along the first axis of a matrix, which is plain C in
+    # the hook files and not a kernel from `kernels/`: the judge never sees
+    # it, and `report()` shows it as exact C and does not count it among the
+    # kernels.
     builtin: bool = False
 
 
@@ -418,6 +426,73 @@ def _cumfmax() -> bool:
     return result.dtype == np.float64 and result.tolist() == _running_max(values)
 
 
+def _down_columns(values: list[float], operation: Callable[[float, float], float]) -> list[list[float]]:
+    """Return the accumulation of a PROBE_ROWS-row matrix down its columns, in plain Python.
+
+    Args:
+        values: The matrix's elements in C order, PROBE_N of them.
+        operation: The step: element i of a column is operation(element i-1
+            of the result, element i of the column).
+
+    Returns:
+        The result's rows, as lists.
+    """
+    cols = len(values) // PROBE_ROWS
+    rows = [values[i * cols:(i + 1) * cols] for i in range(PROBE_ROWS)]
+    result = [rows[0]]
+    for row in rows[1:]:
+        result.append([operation(a, b) for a, b in zip(result[-1], row)])
+    return result
+
+
+def _rows_probe(call: Callable[[np.ndarray], np.ndarray], values: list[float],
+                operation: Callable[[float, float], float]) -> bool:
+    """Probe a row loop: an accumulation along the first axis of a PROBE_ROWS-row float64 matrix.
+
+    Args:
+        call: Makes the NumPy call on the matrix.
+        values: The matrix's elements in C order. None of the results is a NaN.
+        operation: The step of the accumulation, in plain Python.
+
+    Returns:
+        Whether the result is float64, of the matrix's shape, and holds the
+        accumulation down each column.
+    """
+    matrix = np.array(values, np.float64).reshape(PROBE_ROWS, -1)
+    result = call(matrix)
+    return result.dtype == np.float64 and result.shape == matrix.shape and result.tolist() == _down_columns(
+        values, operation)
+
+
+def _rows_cumsum(call: Callable[[np.ndarray], np.ndarray]) -> bool:
+    """Probe the row loop of np.add: `call` sums the running-maximum probe values down the columns, exactly."""
+    return _rows_probe(call, _running_max_probe(), lambda a, b: a + b)
+
+
+def _rows_cumprod() -> bool:
+    """Probe the row loop of np.multiply: `m.cumprod(axis=0)` on whole numbers 1 to PROBE_FACTOR, exactly."""
+    values = [float(1 + i % PROBE_FACTOR) for i in range(PROBE_N)]
+    return _rows_probe(lambda m: m.cumprod(axis=0), values, lambda a, b: a * b)
+
+
+def _rows_cummax() -> bool:
+    """Probe the row loop of np.maximum: `np.maximum.accumulate(m)` on the running-maximum probe values."""
+    return _rows_probe(np.maximum.accumulate, _running_max_probe(), max)
+
+
+def _rows_cumfmax() -> bool:
+    """Probe the row loop of np.fmax: `np.fmax.accumulate(m)` with a NaN at every PROBE_STRIDE-th element after the first row.
+
+    The first row holds numbers, so no result is a NaN; a loop that let a NaN
+    through, or propagated it as np.maximum does, fails.
+    """
+    values = _running_max_probe()
+    cols = PROBE_N // PROBE_ROWS
+    for i in range(cols, PROBE_N, PROBE_STRIDE):
+        values[i] = float("nan")
+    return _rows_probe(np.fmax.accumulate, values, lambda a, b: a if b != b or b <= a else b)
+
+
 def _fmax_reduceat() -> bool:
     """Probe the ufunc method hook: `np.fmax.reduceat(x, starts)` on float64, in runs of PROBE_RUN.
 
@@ -617,6 +692,7 @@ HOOKS: tuple[Hook, ...] = (
         Probe("cumsum_f32", partial(_cumsum, np.float32), inexact=True),
         Probe("cumsum_f64", partial(_cumsum, np.float64), inexact=True),
         Probe("cumsum_bool", _cumsum_bool),
+        Probe("cumsum_rows_f64", partial(_rows_cumsum, lambda m: m.cumsum(axis=0))),
     )),
     Hook("method.searchsorted", METHOD, (
         Probe("searchsorted_f64", _searchsorted),
@@ -639,6 +715,10 @@ HOOKS: tuple[Hook, ...] = (
         Probe("cummax_i64", partial(_cummax, np.maximum)),
         Probe("cummax_i64", partial(_cummax, np.fmax)),
         Probe("cumfmax_f64", _cumfmax),
+        Probe("cumsum_rows_f64", partial(_rows_cumsum, np.add.accumulate)),
+        Probe("cumprod_rows_f64", _rows_cumprod),
+        Probe("cummax_rows_f64", _rows_cummax),
+        Probe("cumfmax_rows_f64", _rows_cumfmax),
     )),
     Hook("ufunc.reduceat", METHOD, (Probe("fmax_reduce_f64", _fmax_reduceat),)),
     Hook("method.any", METHOD, (Probe("any_rows_bool", partial(_any_rows, _any_method)),)),
@@ -672,6 +752,9 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("cumsum_f32", "np.cumsum", "float32", "cumsum", ("method.cumsum",)),
     KernelInfo("cumsum_f64", "np.cumsum", "float64", "cumsum", ("method.cumsum",)),
     KernelInfo("cumsum_bool", "np.cumsum", "bool", "cumsum", ("method.cumsum",)),
+    # A loop built into the binding: the sum down the columns of a matrix.
+    KernelInfo("cumsum_rows_f64", "np.cumsum axis=0", "float64", "cumsum", ("method.cumsum", "ufunc.accumulate"),
+               builtin=True),
     KernelInfo("cast_u8_f32", "x.astype(float32)", "uint8", "astype", ("method.astype",)),
     KernelInfo("sum_u8", "np.sum", "uint8", "sum", ("function.sum", "method.sum")),
     KernelInfo("count_nonzero_i64", "np.count_nonzero", "int64", "count_nonzero", ("function.count_nonzero",)),
@@ -690,6 +773,13 @@ KERNELS: tuple[KernelInfo, ...] = (
     # np.maximum.accumulate does not fit the report's column of 19 characters.
     KernelInfo("cummax_i64", "maximum.accumulate", "int64", "accumulate", ("ufunc.accumulate",)),
     KernelInfo("cumfmax_f64", "fmax.accumulate", "float64", "accumulate", ("ufunc.accumulate",)),
+    # Loops built into the binding: accumulations down the columns of a matrix.
+    KernelInfo("cumprod_rows_f64", "np.cumprod axis=0", "float64", "accumulate", ("ufunc.accumulate",),
+               builtin=True),
+    KernelInfo("cummax_rows_f64", "maximum.acc axis=0", "float64", "accumulate", ("ufunc.accumulate",),
+               builtin=True),
+    KernelInfo("cumfmax_rows_f64", "fmax.acc axis=0", "float64", "accumulate", ("ufunc.accumulate",),
+               builtin=True),
     KernelInfo("fmax_reduce_f64", "fmax.reduceat", "float64", "reduceat", ("ufunc.reduceat",)),
     KernelInfo("any_rows_bool", "m.any(axis=1)", "bool", "any", ("method.any", "function.any")),
     # A loop built into the binding, for short arrays.

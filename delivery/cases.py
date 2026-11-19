@@ -1736,11 +1736,15 @@ def cumsum_cases(inexact: bool) -> Iterator[Case]:
         Spelling("np.add.accumulate(x)", np.add.accumulate, NEVER),
     )
     if inexact:
-        yield from unary_cases("cumsum", {"f32": "cumsum_f32", "f64": "cumsum_f64"}, (), spellings,
-                               empty_takes=False, tolerance=True)
+        for case in unary_cases("cumsum", {"f32": "cumsum_f32", "f64": "cumsum_f64"}, (), spellings,
+                                empty_takes=False, tolerance=True):
+            yield _with_rows_expectation(case)
     else:
-        yield from unary_cases("cumsum", {"i64": "cumsum_i64", "bool": "cumsum_bool"}, ("f32", "f64", "i32", "u8"),
-                               spellings, empty_takes=False)
+        for case in unary_cases("cumsum", {"i64": "cumsum_i64", "bool": "cumsum_bool"}, ("f32", "f64", "i32", "u8"),
+                                spellings, empty_takes=False):
+            yield _with_rows_expectation(case)
+        # x.cumsum(axis=0) on a matrix: the row loop of np.add.
+        yield from (case for case in rows_accumulate_cases() if case.operation == "cumsum")
         # A mask holding a byte other than 0 or 1 counts once per element in NumPy.
         for n, byte, spelling in itertools.product(LAYOUT_SIZES, BAD_MASK_BYTES, spellings[:2]):
             yield Case("cumsum", f"{spelling.text} bool n={n} mask bytes are {byte}",
@@ -3000,20 +3004,336 @@ def _late_signalling_nan(n: int) -> np.ndarray:
     return x
 
 
+# --------------------------------------- accumulation along the first axis
+#
+# np.add, np.multiply, np.maximum and np.fmax accumulated along axis 0 of a
+# C-ordered float64 array of two or more dimensions, and x.cumsum(axis=0),
+# are taken by loops built into the binding that walk the rows
+# (docs/accumulate-rows-design.md). add and multiply hand the rest of a call
+# to NumPy at the first block of rows that makes a NaN or raises a
+# floating-point flag; maximum and fmax are guarded as cumfmax_f64 is.
+
+# The row loop of each ufunc, by the name its calls are written with.
+_ROWS_KERNELS = {
+    "np.add.accumulate": "cumsum_rows_f64",
+    "np.multiply.accumulate": "cumprod_rows_f64",
+    "np.maximum.accumulate": "cummax_rows_f64",
+    "np.fmax.accumulate": "cumfmax_rows_f64",
+}
+# What follows the ufunc's name in the spellings of the one-dimensional sweeps
+# that the row loops take on the two-dimensional "rows" layout: the default
+# axis, axis 0, and a fresh `out`. `axis=-1` is the second axis there.
+_ROWS_SPELLING_TAILS = ("(x)", "(x, 0)", "(array=x)", "(x, 0, None, None)", "(x, axis=0, dtype=None, out=None)",
+                        "(x, out=o)")
+# The same for the cumsum sweep, whose default flattens: only an axis of 0.
+_ROWS_CUMSUM_SPELLINGS = ("np.cumsum(x, axis=0)", "x.cumsum(0)")
+# Shapes of the row-loop cases: a single row, a single column, rows shorter
+# and longer than the 16,384 bytes the loop takes a block of, a row of exactly
+# that, empyrical's window of 253 rows, enough elements to release the
+# interpreter lock, many narrow rows, and three dimensions.
+ROWS_SHAPES = ((1, 1), (1, 5), (2, 1), (2, 3), (5, 1), (3, 1000), (5, 2048), (4, 2049), (253, 47), (40, 700),
+               (3000, 2), (7, 3, 4))
+# Shapes the sweep over value classes runs at.
+ROWS_VALUE_SHAPES = ((2, 3), (253, 47), (40, 700))
+# Shape of the cases that stop part way, and the element made a NaN, an
+# overflow or an underflow: in the middle of a column, several blocks in.
+ROWS_STOP_SHAPE = (253, 47)
+ROWS_STOP_AT = (120, 30)
+# np.errstate settings the cases that stop part way run under.
+ROWS_ERRSTATES = ("warn", "raise", "ignore")
+
+
+def _rows_expect(kernel: str, x: np.ndarray, call: Callable[[np.ndarray], object]) -> str | None:
+    """Say whether a row loop runs a call to the end, for a plain C-ordered float64 x.
+
+    add and multiply stop, and leave the rest to NumPy, exactly when NumPy's
+    own result holds a NaN or NumPy raises under np.errstate(all="raise"):
+    the loop computes the same values and reads the same flags. maximum and
+    fmax are left to NumPy where cumfmax_f64 is.
+
+    Args:
+        kernel: The row loop the call reaches.
+        x: The array, as the call receives it.
+        call: Makes the call on a copy of x with plain NumPy.
+
+    Returns:
+        The kernel, or None.
+    """
+    if kernel in ("cummax_rows_f64", "cumfmax_rows_f64"):
+        return kernel if _cumfmax_takes(x.ravel()) else None
+    with np.errstate(all="raise"):
+        try:
+            result = call(x.copy())
+        except FloatingPointError:
+            return None
+    return None if np.isnan(result).any() else kernel
+
+
+def _with_rows_expectation(case: Case) -> Case:
+    """Return a case of the one-dimensional sweeps, expecting a row loop where it takes the "rows" layout.
+
+    Args:
+        case: A case of an accumulation or of cumsum. Only a float64 one on
+            the C-ordered two-dimensional layout, written with a spelling the
+            row loops take, is changed.
+
+    Returns:
+        The case with its expectation worked out from its spelling and array.
+    """
+    if " f64 " not in case.label or not case.label.endswith("layout=rows"):
+        return case
+    text = case.label.split(" f64 ")[0]
+    kernel = None
+    if text in _ROWS_CUMSUM_SPELLINGS:
+        kernel = "cumsum_rows_f64"
+    for name, rows_kernel in _ROWS_KERNELS.items():
+        if text.startswith(name) and text[len(name):] in _ROWS_SPELLING_TAILS:
+            kernel = rows_kernel
+    if kernel is None:
+        return case
+    (x,) = case.make()
+    return replace(case, expect=_rows_expect(kernel, x, case.call))
+
+
+def _rows_values(shape: tuple[int, ...], cls: str = judge_cases.RANDOM, position: int = 0) -> np.ndarray:
+    """Return judge values of one class as a C-ordered float64 array of `shape`."""
+    return values("f64", int(np.prod(shape)), cls, position).reshape(shape)
+
+
+def _rows_out_pair(shape: tuple[int, ...]) -> tuple:
+    """Build random float64 values of `shape` and a separate float64 array of that shape for the result."""
+    return (_rows_values(shape), np.zeros(shape))
+
+
+def _rows_overlapping_out(shape: tuple[int, ...]) -> tuple:
+    """Build an array of `shape` and an `out` of its shape one row further on in the same buffer: a partial overlap."""
+    cols = int(np.prod(shape[1:]))
+    buffer = values("f64", int(np.prod(shape)) + cols)
+    return (buffer[:-cols].reshape(shape), buffer[cols:].reshape(shape))
+
+
+def _rows_readonly_out(shape: tuple[int, ...]) -> tuple:
+    """Build an array of `shape` and a read-only `out` of its shape, which NumPy refuses."""
+    out = np.zeros(shape)
+    out.flags.writeable = False
+    return (_rows_values(shape), out)
+
+
+def _with_element(shape: tuple[int, ...], value: float) -> np.ndarray:
+    """Return 1 plus a small random part in `shape`, with `value` at ROWS_STOP_AT.
+
+    The values stay near 1, so that a product or a sum down a column raises
+    no flag on its own; the elements put in decide whether the loop stops.
+    """
+    x = 1.0 + 1e-3 * _rows_values(shape)
+    x[ROWS_STOP_AT] = value
+    return x
+
+
+def _in_errstate(setting: str, call: Callable[..., object], *arguments: object) -> object:
+    """Make a call with every floating-point error set to `setting`, a value np.errstate takes."""
+    with np.errstate(all=setting):
+        return call(*arguments)
+
+
+# The calls of the row-loop cases, each with the operation it is counted
+# under, its text, the call, and the row loop that takes it. Each takes the
+# array alone.
+_ROWS_CALLS: tuple[tuple[str, str, Callable[[np.ndarray], object], str], ...] = (
+    ("accumulate", "np.add.accumulate(x)", np.add.accumulate, "cumsum_rows_f64"),
+    ("accumulate", "np.add.accumulate(x, axis=0)", lambda x: np.add.accumulate(x, axis=0), "cumsum_rows_f64"),
+    ("accumulate", "np.cumulative_sum(x, axis=0)", lambda x: np.cumulative_sum(x, axis=0), "cumsum_rows_f64"),
+    ("cumsum", "x.cumsum(axis=0)", lambda x: x.cumsum(axis=0), "cumsum_rows_f64"),
+    ("cumsum", "np.cumsum(x, axis=0)", lambda x: np.cumsum(x, axis=0), "cumsum_rows_f64"),
+    ("cumsum", "x.cumsum(-x.ndim)", lambda x: x.cumsum(-x.ndim), "cumsum_rows_f64"),
+    ("cumsum", "x.cumsum(0, None, None)", lambda x: x.cumsum(0, None, None), "cumsum_rows_f64"),
+    ("cumsum", "np.nancumsum(x, axis=0)", lambda x: np.nancumsum(x, axis=0), "cumsum_rows_f64"),
+    ("cumsum", "x.cumsum(axis=0, out=x)", lambda x: x.cumsum(axis=0, out=x), "cumsum_rows_f64"),
+    ("accumulate", "x.cumprod(axis=0)", lambda x: x.cumprod(axis=0), "cumprod_rows_f64"),
+    ("accumulate", "np.cumprod(x, axis=0)", lambda x: np.cumprod(x, axis=0), "cumprod_rows_f64"),
+    ("accumulate", "np.multiply.accumulate(x, 0, None)", lambda x: np.multiply.accumulate(x, 0, None),
+     "cumprod_rows_f64"),
+    ("accumulate", "np.cumulative_prod(x, axis=0)", lambda x: np.cumulative_prod(x, axis=0), "cumprod_rows_f64"),
+    ("accumulate", "x.cumprod(axis=0, out=x)", lambda x: x.cumprod(axis=0, out=x), "cumprod_rows_f64"),
+    ("accumulate", "np.multiply.accumulate(x, out=x)", lambda x: np.multiply.accumulate(x, out=x),
+     "cumprod_rows_f64"),
+    ("accumulate", "np.maximum.accumulate(x)", np.maximum.accumulate, "cummax_rows_f64"),
+    ("accumulate", "np.maximum.accumulate(x, axis=-x.ndim)", lambda x: np.maximum.accumulate(x, axis=-x.ndim),
+     "cummax_rows_f64"),
+    ("accumulate", "np.maximum.accumulate(x, out=x)", lambda x: np.maximum.accumulate(x, out=x), "cummax_rows_f64"),
+    ("accumulate", "np.fmax.accumulate(x, axis=0)", lambda x: np.fmax.accumulate(x, axis=0), "cumfmax_rows_f64"),
+    ("accumulate", "np.fmax.accumulate(x, 0, out=x)", lambda x: np.fmax.accumulate(x, 0, out=x),
+     "cumfmax_rows_f64"),
+)
+# The same calls with a separate `out`, taking (x, out).
+_ROWS_OUT_CALLS: tuple[tuple[str, str, Callable[..., object], str], ...] = (
+    ("cumsum", "x.cumsum(axis=0, out=o)", lambda x, o: x.cumsum(axis=0, out=o), "cumsum_rows_f64"),
+    ("accumulate", "np.add.accumulate(x, out=o)", lambda x, o: np.add.accumulate(x, out=o), "cumsum_rows_f64"),
+    ("accumulate", "x.cumprod(axis=0, out=o)", lambda x, o: x.cumprod(axis=0, out=o), "cumprod_rows_f64"),
+    ("accumulate", "np.maximum.accumulate(x, 0, None, o)", lambda x, o: np.maximum.accumulate(x, 0, None, o),
+     "cummax_rows_f64"),
+    ("accumulate", "np.fmax.accumulate(x, out=o)", lambda x, o: np.fmax.accumulate(x, out=o), "cumfmax_rows_f64"),
+)
+# A float32 signalling NaN: the contents of an `out` NumPy casts, which makes
+# it warn "invalid value encountered in cast" on every platform.
+_SIGNALLING_F32 = 0x7FA00000
+# Calls on a C-ordered float64 matrix that the row loops leave to NumPy, with
+# the operation each is counted under.
+_ROWS_LEFT_CALLS: tuple[tuple[str, str, Callable[[np.ndarray], object]], ...] = (
+    ("accumulate", "np.add.accumulate(x, axis=1)", lambda x: np.add.accumulate(x, axis=1)),
+    ("accumulate", "np.multiply.accumulate(x, axis=-1)", lambda x: np.multiply.accumulate(x, axis=-1)),
+    ("accumulate", "np.maximum.accumulate(x, axis=np.int64(0))", lambda x: np.maximum.accumulate(x, axis=np.int64(0))),
+    ("accumulate", "np.fmax.accumulate(x, dtype=np.float64)", lambda x: np.fmax.accumulate(x, dtype=np.float64)),
+    ("accumulate", "np.minimum.accumulate(x)", np.minimum.accumulate),
+    ("accumulate", "np.subtract.accumulate(x)", np.subtract.accumulate),
+    # Each `out` is zeros, not np.empty: with an `out` of another element
+    # type NumPy casts what `out` held, and leftover memory that reads as a
+    # signalling NaN makes it warn "invalid value encountered in cast", or
+    # not, depending on what the allocator hands back.
+    ("accumulate", "x.cumprod(axis=0, out=(o,))", lambda x: x.cumprod(axis=0, out=(np.zeros_like(x),))),
+    ("accumulate", "x.cumprod(axis=0, out=float32)", lambda x: x.cumprod(axis=0, out=np.zeros(x.shape, np.float32))),
+    ("accumulate", "x.cumprod(axis=0, out=float32 of signalling NaNs)",
+     lambda x: x.cumprod(axis=0, out=np.full(x.shape, _SIGNALLING_F32, np.uint32).view(np.float32))),
+    ("accumulate", "x.cumprod(axis=0, out=fortran)",
+     lambda x: x.cumprod(axis=0, out=np.zeros(x.shape, order="F"))),
+    ("cumsum", "x.cumsum()", lambda x: x.cumsum()),
+    ("cumsum", "x.cumsum(axis=1)", lambda x: x.cumsum(axis=1)),
+    ("cumsum", "x.cumsum(axis=0, dtype=np.float64)", lambda x: x.cumsum(axis=0, dtype=np.float64)),
+)
+# Layouts of the matrix that the row loops leave to NumPy: another order, a
+# view with a step, another element type and another byte order. Each builds
+# from a C-ordered float64 matrix.
+_ROWS_LEFT_LAYOUTS: tuple[tuple[str, Callable[[np.ndarray], np.ndarray]], ...] = (
+    ("fortran", np.asfortranarray),
+    ("every second column", lambda m: np.repeat(m, 2, axis=-1)[..., ::2]),
+    ("float32", lambda m: m.astype(np.float32)),
+    ("int64", lambda m: (m * 10).astype(np.int64)),
+    ("byteswapped", lambda m: m.astype(m.dtype.newbyteorder())),
+    ("subclass", lambda m: m.copy().view(_Subclass)),
+)
+
+
+def _rows_layout_cases() -> Iterator[Case]:
+    """Yield the row loops' cases over shapes, spellings, outputs and layouts."""
+    for shape, (operation, text, call, kernel) in itertools.product(ROWS_SHAPES, _ROWS_CALLS):
+        maker = partial(_rows_values, shape)
+        yield Case(operation, f"{text} f64 shape={shape}", partial(_made, maker), call,
+                   _rows_expect(kernel, maker(), call))
+    for shape, (operation, text, call, kernel) in itertools.product(ROWS_SHAPES, _ROWS_OUT_CALLS):
+        expect = _rows_expect(kernel, _rows_values(shape), lambda x, call=call: call(x, np.zeros_like(x)))
+        yield Case(operation, f"{text} f64 shape={shape}", partial(_rows_out_pair, shape), call, expect)
+    for shape in ((2, 3), (253, 47)):
+        for operation, text, call, _ in _ROWS_OUT_CALLS:
+            yield Case(operation, f"{text} f64 shape={shape} out overlaps x by all but a row",
+                       partial(_rows_overlapping_out, shape), call, None)
+            yield Case(operation, f"{text} f64 shape={shape} out read-only", partial(_rows_readonly_out, shape),
+                       call, None)
+        for operation, text, call in _ROWS_LEFT_CALLS:
+            yield Case(operation, f"{text} f64 shape={shape}", partial(_made, partial(_rows_values, shape)), call, None)
+        for (operation, text, call, _), (layout, build) in itertools.product(_ROWS_CALLS, _ROWS_LEFT_LAYOUTS):
+            # np.nancumsum copies its array first, into a layout NumPy chooses.
+            expect = ANY if text.startswith("np.nancumsum") else None
+            yield Case(operation, f"{text} shape={shape} layout={layout}",
+                       partial(_made, lambda shape=shape, build=build: build(_rows_values(shape))), call, expect)
+        for operation, text, call, _ in _ROWS_CALLS:
+            maker = partial(_rows_values, shape)
+            readonly = partial(_made, lambda maker=maker: _readonly(maker()))
+            # A read-only array is taken unless the call writes into it.
+            expect = None if "out=x" in text else _ROWS_CALLS_KERNEL[text]
+            yield Case(operation, f"{text} f64 shape={shape} layout=readonly", readonly, call, expect)
+    # Zero rows and zero columns are NumPy's.
+    for shape, (operation, text, call, _) in itertools.product(((0, 3), (3, 0), (0, 2, 2)), _ROWS_CALLS):
+        yield Case(operation, f"{text} f64 shape={shape}", partial(_made, partial(np.zeros, shape)), call, None)
+
+
+# The row loop of each call of _ROWS_CALLS, by its text.
+_ROWS_CALLS_KERNEL = {text: kernel for _, text, _, kernel in _ROWS_CALLS}
+
+
+def _rows_value_cases() -> Iterator[Case]:
+    """Yield the row loops' cases over every value class of the judge, and the guards of maximum and fmax."""
+    for shape, (operation, text, call, kernel) in itertools.product(ROWS_VALUE_SHAPES, _ROWS_CALLS):
+        n = int(np.prod(shape))
+        plain, positional = judge_cases.classes("f64")
+        classes = [(cls, 0) for cls in plain] + [(cls, p) for cls in positional for p in sorted({0, n // 2, n - 1})]
+        for cls, position in classes:
+            maker = partial(_rows_values, shape, cls, position)
+            yield Case(operation, f"{text} f64 shape={shape} x={cls}@{position}", partial(_made, maker), call,
+                       _rows_expect(kernel, maker(), call))
+    for operation, text, call, kernel in _ROWS_CALLS:
+        if kernel not in ("cummax_rows_f64", "cumfmax_rows_f64"):
+            continue
+        for label, value in (("negative zero", -0.0), ("positive zero", 0.0), ("NaN of another pattern",
+                                                                                 _from_bits((_PAYLOAD_NAN,))[0])):
+            def make(value=value) -> tuple:
+                """Build a matrix with NaNs of one pattern, and `value` at ROWS_STOP_AT."""
+                x = _rows_values(ROWS_STOP_SHAPE, "nan_some")
+                x[ROWS_STOP_AT] = value
+                return (x,)
+            yield Case(operation, f"{text} f64 shape={ROWS_STOP_SHAPE} x=nan_some, {label} at {ROWS_STOP_AT}", make,
+                       call, _rows_expect(kernel, make()[0], call))
+        yield Case(operation, f"{text} f64 shape={ROWS_STOP_SHAPE} x=nan_some invalid flag after",
+                   partial(_made, partial(_rows_values, ROWS_STOP_SHAPE, "nan_some")),
+                   partial(_invalid_flag_after, call), kernel)
+
+
+def _rows_stop_cases() -> Iterator[Case]:
+    """Yield the cases where np.add or np.multiply's row loop hands the rest of the call to NumPy part way.
+
+    A NaN, an overflow, an underflow, an infinity times zero or infinities of
+    both signs in the middle of a column, under each np.errstate setting, in
+    place and not: the result, the warnings or the error, and the array
+    afterwards must be NumPy's. (np.nancumsum replaces the NaN first, and
+    its loop runs to the end.)
+    """
+    # The element at ROWS_STOP_AT, the one below it, and the ufuncs whose
+    # loop each pair stops.
+    triggers = (
+        ("NaN", np.nan, 1.0, ("add", "multiply")),
+        ("overflow", 1e308, 1e308, ("add", "multiply")),
+        ("underflow", 1e-300, 1e-300, ("multiply",)),
+        ("infinity then zero", np.inf, 0.0, ("multiply",)),
+        ("infinities of both signs", -np.inf, np.inf, ("add",)),
+    )
+    below = (ROWS_STOP_AT[0] + 1, ROWS_STOP_AT[1])
+    for label, value, next_value, ufuncs in triggers:
+        def make(value=value, next_value=next_value) -> tuple:
+            """Build a matrix near 1 with the trigger at ROWS_STOP_AT and `next_value` below it."""
+            x = _with_element(ROWS_STOP_SHAPE, value)
+            x[below] = next_value
+            return (x,)
+        for (operation, text, call, kernel), setting in itertools.product(_ROWS_CALLS, ROWS_ERRSTATES):
+            ufunc = {"cumsum_rows_f64": "add", "cumprod_rows_f64": "multiply"}.get(kernel)
+            if ufunc not in ufuncs:
+                continue
+            yield Case(operation, f"np.errstate(all={setting!r}) {text} f64 shape={ROWS_STOP_SHAPE} x={label}", make,
+                       partial(_in_errstate, setting, call), _rows_expect(kernel, make()[0], call))
+
+
+def rows_accumulate_cases() -> Iterator[Case]:
+    """Yield every case of the row loops, of both operations they are counted under."""
+    yield from _rows_layout_cases()
+    yield from _rows_value_cases()
+    yield from _rows_stop_cases()
+
+
 def accumulate_cases() -> Iterator[Case]:
-    """Yield the cases of `np.maximum.accumulate` and `np.fmax.accumulate`.
+    """Yield the cases of `np.maximum.accumulate` and `np.fmax.accumulate`, and of the row loops.
 
     Both ufuncs take cummax_i64 on int64. np.fmax takes cumfmax_f64 on
     float64 unless the array holds a signalling NaN, a negative zero or NaNs
     of more than one pattern (`_cumfmax_takes`); np.maximum on float64
-    propagates NaN and is NumPy's. Other ufuncs' accumulations pass through
-    the hook uncounted.
+    propagates NaN and is NumPy's. On a C-ordered float64 matrix along its
+    first axis the row loops take np.maximum, np.fmax, np.add and
+    np.multiply. Other ufuncs' accumulations pass through the hook uncounted.
     """
-    yield from unary_cases("accumulate", {"i64": "cummax_i64"}, ("f64", "f32", "i32", "u64"),
-                           (*_accumulate_spellings(np.maximum), *_OTHER_ACCUMULATIONS), empty_takes=False)
+    for case in unary_cases("accumulate", {"i64": "cummax_i64"}, ("f64", "f32", "i32", "u64"),
+                            (*_accumulate_spellings(np.maximum), *_OTHER_ACCUMULATIONS), empty_takes=False):
+        yield _with_rows_expectation(case)
     for case in unary_cases("accumulate", {"i64": "cummax_i64", "f64": "cumfmax_f64"}, ("f32", "i32", "u64"),
                             _accumulate_spellings(np.fmax), empty_takes=False):
-        yield _with_cumfmax_expectation(case)
+        yield _with_rows_expectation(_with_cumfmax_expectation(case))
+    yield from (case for case in rows_accumulate_cases() if case.operation == "accumulate")
     # np.maximum on float64 over every value class, NaNs included: NumPy's.
     for n, _, label, maker in value_arrays("f64", FEW_SIZES):
         yield Case("accumulate", f"np.maximum.accumulate(x) f64 {label}", partial(_made, maker),

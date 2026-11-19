@@ -12,6 +12,7 @@ average is recorded with every run.
 from __future__ import annotations
 
 import importlib
+import math
 import os
 import platform
 import subprocess
@@ -88,6 +89,14 @@ MEDIAN_F64_MAX_N = 128
 # Decimals of the timed np.round: the commonest in the program the second
 # shortlist came from.
 DECIMALS = 2
+# Most rows of the timed matrices accumulated along their first axis: about a
+# year of trading days, as in empyrical's rolling windows. A matrix of n
+# elements has min(ROWS_WINDOW, isqrt(n)) rows: 4 x 4, 64 x 64 and 256 x 4,096.
+ROWS_WINDOW = 256
+# Standard deviation of the factors of the timed cumulative product, which are
+# near 1 as daily returns plus one are.
+ROWS_SPREAD = 0.01
+
 # Length of the sorted array in the search statements that hold it fixed while
 # the number of needles grows: the shape of a lookup in a small table.
 SMALL_TABLE = 1000
@@ -247,6 +256,22 @@ def _matrix(share: float, n: int) -> tuple:
     """
     rows = max(n // ANY_COLUMNS, 1)
     return (_rng(n).random((rows, ANY_COLUMNS)) < share,)
+
+
+def _window(n: int, center: float = 0.0, spread: float = 1.0) -> tuple:
+    """Build a C-ordered float64 matrix of about `n` normally distributed elements, for accumulations down its columns.
+
+    Args:
+        n: Element count asked for; a perfect square at or below 65,536, and
+            a multiple of ROWS_WINDOW above it.
+        center: Mean of the elements.
+        spread: Standard deviation of the elements.
+
+    Returns:
+        (matrix,), of min(ROWS_WINDOW, isqrt(n)) rows.
+    """
+    rows = min(ROWS_WINDOW, math.isqrt(n))
+    return (center + spread * _rng(n).standard_normal((rows, n // rows)),)
 
 
 def _narrow_ints(n: int) -> tuple:
@@ -423,6 +448,13 @@ TAKEN: tuple[Timed, ...] = (
     Timed("accumulate", "np.maximum.accumulate(x)", "int64", _spread_ints, np.maximum.accumulate, "cummax_i64"),
     Timed("accumulate", "np.fmax.accumulate(x)", "float64", partial(_floats, np.float64), np.fmax.accumulate,
           "cumfmax_f64"),
+    Timed("accumulate", "np.fmax.accumulate(a, axis=0)", "float64 matrix", _window,
+          lambda a: np.fmax.accumulate(a, axis=0), "cumfmax_rows_f64"),
+    Timed("accumulate", "np.maximum.accumulate(a, axis=0)", "float64 matrix", _window,
+          lambda a: np.maximum.accumulate(a, axis=0), "cummax_rows_f64"),
+    Timed("accumulate", "a.cumprod(axis=0)", "float64 matrix near 1", partial(_window, center=1.0, spread=ROWS_SPREAD),
+          lambda a: a.cumprod(axis=0), "cumprod_rows_f64"),
+    Timed("cumsum", "a.cumsum(axis=0)", "float64 matrix", _window, lambda a: a.cumsum(axis=0), "cumsum_rows_f64"),
     Timed("reduceat", "np.fmax.reduceat(x, starts)", f"float64, runs of {REDUCEAT_RUN}, {REDUCEAT_NAN:.0%} NaN",
           partial(_runs, nan=REDUCEAT_NAN), np.fmax.reduceat, "fmax_reduce_f64"),
     Timed("cumsum", "np.cumsum(mask)", "bool, half selected", partial(_mask, HALF), np.cumsum, "cumsum_bool"),
