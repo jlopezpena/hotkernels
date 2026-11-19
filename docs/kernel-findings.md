@@ -388,7 +388,7 @@ Kernels from [second-shortlist-design.md](second-shortlist-design.md), which too
 - **At 1,048,576 elements the judge's first table is misleading.** It shows the kernel 0.75x of the naive C. The same run's second table, and a micro-benchmark of the two alone, have the kernel 1.17x faster there (174 µs against 203 µs). The first table times NumPy between them, and NumPy allocates 8 MB for its result on every call, which pushes the kernel's own output out of the third-level cache just before the kernel is timed.
 - **`pext` in one place:** a group of eight outside a block of 32 gets its bits from an 8-byte load and `pext`, which is fast on Intel and on AMD from Zen 3 and slow on earlier AMD processors. Blocks do not use it.
 - **What a caller must know:** every mask byte is 0 or 1. The spec says so, and the kernel uses the bytes as numbers. The binding reads the mask for other bytes first.
-- **From Python,** `np.cumsum(mask)` is 3.1x faster at 16 elements, 9.7x at 4,096 and 9.5x at 1,048,576 with half the mask True (recorded on a quiet machine at the top of the stack: 3.0x, 9.6x and 13.9x). At 16 elements nearly all of the 338 ns left is `np.cumsum`'s own Python wrapper, which the method hook sits below.
+- **From Python,** `np.cumsum(mask)` is 3.1x faster at 16 elements, 9.7x at 4,096 and 9.5x at 1,048,576 with half the mask True (recorded on a quiet machine at the top of the stack: 3.0x, 9.6x and 13.9x, and 9.1x in the run recorded for release 0.3.0: this figure moves between runs). At 16 elements nearly all of the 338 ns left is `np.cumsum`'s own Python wrapper, which the method hook sits below.
 
 #### `np.where(c, a, b)`
 
