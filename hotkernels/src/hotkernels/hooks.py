@@ -55,6 +55,12 @@ PROBE_RUN = 16
 # was timed for. PROBE_N is a whole number of such rows' worth or more.
 PROBE_COLS = 22
 
+# Number of distinct codes the int16 and int64 bincount probes count: their
+# element i is i modulo it. PROBE_N is not a multiple of it, so the first
+# codes are counted once more than the others, and a kernel that dropped or
+# misplaced a code would fail.
+PROBE_CODES = 41
+
 # Element count of the sorted array the search probes look in. It differs
 # from PROBE_N so that a kernel which confused its two lengths would fail.
 PROBE_TABLE_N = 37
@@ -426,6 +432,22 @@ def _bincount() -> bool:
     return len(counts) == PROBE_BYTE + 1 and int(counts[PROBE_BYTE]) == PROBE_N
 
 
+def _bincount_codes(dtype: type) -> bool:
+    """Probe the function hook: `np.bincount` on int16 or int64 codes that cycle through PROBE_CODES values.
+
+    Args:
+        dtype: np.int16 or np.int64.
+
+    Returns:
+        Whether the result is an intp array of PROBE_CODES counts, each the
+        number of positions below PROBE_N that leave its code modulo
+        PROBE_CODES.
+    """
+    counts = np.bincount(np.arange(PROBE_N, dtype=dtype) % PROBE_CODES)
+    expected = [len(range(code, PROBE_N, PROBE_CODES)) for code in range(PROBE_CODES)]
+    return counts.dtype == np.intp and counts.tolist() == expected
+
+
 def _isin() -> bool:
     """Probe the function hook: `np.isin` with two test values."""
     x = np.arange(PROBE_N, dtype=np.int64)
@@ -485,7 +507,11 @@ HOOKS: tuple[Hook, ...] = (
     )),
     Hook("function.sum", FUNCTION, (Probe("sum_u8", _sum_function),)),
     Hook("function.histogram", FUNCTION, (Probe("histogram_f64", _histogram),)),
-    Hook("function.bincount", FUNCTION, (Probe("bincount_u8", _bincount),)),
+    Hook("function.bincount", FUNCTION, (
+        Probe("bincount_u8", _bincount),
+        Probe("bincount_i16", partial(_bincount_codes, np.int16)),
+        Probe("bincount_i64", partial(_bincount_codes, np.int64)),
+    )),
     Hook("function.isin", FUNCTION, (Probe("isin_i64", _isin),)),
     Hook("function.interp", FUNCTION, (Probe("interp_f64", _interp),)),
     Hook("function.compress", FUNCTION, (
@@ -572,6 +598,8 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("count_nonzero_f64", "np.count_nonzero", "float64", "count_nonzero", ("function.count_nonzero",)),
     KernelInfo("histogram_f64", "np.histogram", "float64", "histogram", ("function.histogram",)),
     KernelInfo("bincount_u8", "np.bincount", "uint8", "bincount", ("function.bincount",)),
+    KernelInfo("bincount_i16", "np.bincount", "int16", "bincount", ("function.bincount",)),
+    KernelInfo("bincount_i64", "np.bincount", "int64", "bincount", ("function.bincount",)),
     KernelInfo("isin_i64", "np.isin", "int64", "isin", ("function.isin",)),
     KernelInfo("searchsorted_f64", "np.searchsorted", "float64", "searchsorted", ("method.searchsorted",)),
     # Indented under the row above: the same call with one argument more, in a

@@ -73,7 +73,7 @@ Importing the package changes nothing; only `install()` does. Calling it twice i
 `print(hotkernels.report())` after your code has run:
 
 ```text
-hotkernels 0.2.0: installed, 27 of 29 kernels (NumPy 2.5.5)
+hotkernels 0.2.0: installed, 29 of 31 kernels (NumPy 2.5.5)
 
 NumPy call         Elements Kernel    Result            Kernel calls  Left to NumPy
 np.argmax          float32  assembly  exact                        0              0
@@ -113,7 +113,7 @@ A kernel takes a call only when the array is a plain, contiguous `ndarray` of th
 | `np.sum(x)`, `x.sum()` | uint8, bool | No other arguments |
 | `np.count_nonzero(x)` | int64, float64 | No `axis` |
 | `np.histogram(x, bins, range)` | float64 | An integer bin count; no weights or density |
-| `np.bincount(x)` | uint8 | No weights |
+| `np.bincount(x)`, `np.bincount(x, minlength=m)` | uint8, int16, int64 | `x` is one-dimensional; no weights; `minlength`, if given, is a Python int. For int16 and int64, `x` has at least one element, none negative, and the result is no longer than 65,536 counts or than `x` |
 | `np.isin(x, values)` | int64 | At most eight test values; flags at their defaults |
 | `np.searchsorted(a, v)`, `a.searchsorted(v)`, `np.digitize(x, bins)` | float64 | `a` is one-dimensional; `v` is an array of any shape or a Python number; either `side`; no `sorter`. For `np.digitize`, with or without `right=True`, when the bins increase |
 | `np.interp(x, xp, fp)` | float64 | `xp` and `fp` are one-dimensional and the same length; no `left`, `right` or `period`; `xp` holds no NaN; at most 64 sample points per query |
@@ -134,6 +134,7 @@ How much faster each one is, from Python and at three sizes, is in [the results]
 - **`np.fmax.reduceat` gains most on short runs.** On runs of 16 it is several times faster than NumPy. On runs of several hundred elements it is about as fast as NumPy, and on long runs of an array too large for the processor's second-level cache it can be slower (0.8x at runs of 1,024 in a million elements): every element is read once more, for signalling NaNs. Give `starts` as an int64 array; a list or int32 starts go to NumPy.
 - **`np.fmax.reduceat` leaves two kinds of answer to NumPy.** When `x` holds a negative zero and the maximum of some run is a zero, or `x` holds NaNs of different bit patterns and some run is all NaN, the whole call goes to NumPy. Which zero or which NaN NumPy returns there depends on the vector instructions it picked when it started, which differ between processors, and hotkernels does not guess. Values from ordinary arithmetic have one NaN pattern, and a zero maximum among negative values only matters if a negative zero is present.
 - **Only `m.any(axis=1)` is served, not its neighbours.** `m.all(axis=1)`, `m.any(axis=0)`, `m.any()` and `np.logical_or.reduce(m, axis=1)` go to NumPy, and so does `m.any(axis=1)` with `keepdims`, `out` or `where`, or with the axis given as a NumPy integer. A matrix of 22 columns is about 40 times faster than NumPy at a million elements; rows of four columns gain most and rows of one, two or eight least, though all are well ahead of NumPy.
+- **`np.bincount` on int16 and int64 reads the array twice.** NumPy's result is one count longer than the largest element, so the array is read once for its smallest and largest elements before it is counted. An array holding a negative element goes to NumPy, which raises its `ValueError` as before. So does a result much longer than the array, such as `np.bincount(np.array([10**9]))`: NumPy gets that memory from the system already zeroed, and the kernel would write every count. The gain is largest on int16 (about 4.5x at a million elements) and smaller on int64 (about 1.9x), whose array is four times the size to read twice. Other integer types, int32 and uint16 among them, and `weights` stay with NumPy.
 - **`np.clip(x, 0, 1)` is faster by less than `np.clip(x, -1, 1)`.** A lower bound of exactly zero needs extra care for negative zeros. It is still several times faster than NumPy.
 - **A small `np.clip` is fast when its bounds are plain numbers.** `np.clip(x, lo, hi)` and `x.clip(lo, hi)` skip NumPy's own call path, most of a call on a small array, when the bounds are Python floats or ints, or NumPy scalars of the array's own type, and there is no `out`, `dtype`, `casting` or `where`. The result has the element type NumPy gives it: a float32 array clipped to Python floats stays float32. Other calls, such as `np.float64` bounds on a float32 array (NumPy returns float64), `out=`, or a bound of `None`, go through NumPy's call path first; the kernel still serves them where it served them before, and they gain only on larger arrays.
 - **`np.isin` is fastest when the test values are close together**: all between 0 and 65,534, or all within 32,767 of the first one. Otherwise it runs at the speed of compiled C, which is still ahead of NumPy.

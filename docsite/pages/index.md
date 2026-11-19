@@ -22,7 +22,7 @@ np.argmax(x)       <span class="c"># 7x faster</span></code></pre>
 </section>
 
 <div class="stats">
-<div><b>29</b><span>kernels for 19 NumPy operations, all of them bound to NumPy</span></div>
+<div><b>31</b><span>kernels for 19 NumPy operations, all of them bound to NumPy</span></div>
 <div><b>5x+</b><span>faster than NumPy for 17 of the 22 in the results table, at a million elements</span></div>
 <div><b>21 / 23</b><span>return NumPy's result bit for bit; the other two are opt-in</span></div>
 <div><b>~1 ns</b><span>added to a call that no kernel takes</span></div>

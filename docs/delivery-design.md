@@ -241,7 +241,7 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 | `count_nonzero` | 2 | Function | Contiguous, no `axis` |
 | `interp` | 1 | Function | Three contiguous float64 arrays, `xp` and `fp` one-dimensional and the same length; no `left`, `right` or `period`; no NaN in `xp`; at most 64 sample points per query |
 | `histogram` | 1 | Function | Contiguous float64, an integer bin count, no weights or density |
-| `bincount` | 1 | Function | Contiguous `uint8`, no weights |
+| `bincount` | 3 | Function | One-dimensional, contiguous, no weights, `minlength` absent or a Python int >= 0. `uint8` (`bincount_u8`) whatever its values. `int16` (`bincount_i16`) and `int64` (`bincount_i64`) with at least one element: the array is read once for its largest element as an unsigned number, compiled for AVX2 with four running maxima, and a negative element, which reads as too large, sends the call to NumPy, which raises. The result has NumPy's length, the largest element plus one or `minlength`, and the kernel is given exactly that many counters, which it zeroes itself, so every element is inside its range. A result longer than 65,536 counts and longer than the array is NumPy's, whose memory comes zeroed from the system where the kernel would write every count; so is a largest element of the largest int64, whose length overflows. Empty arrays are NumPy's. The lock is released for the scan and for the kernel |
 | `isin` | 1 | Function | Contiguous int64, at most eight test values, flags at their defaults |
 
 "Contiguous" for a kernel that works element by element or reduces the whole array means any shape. NumPy's inner loops already work that way: a contiguous 40 by 25 array arrived at the `clip` loop as one run of 1,000.
