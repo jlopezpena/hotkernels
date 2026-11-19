@@ -94,31 +94,61 @@ _any_rows_bool:
     b.hi    Lmid64
     sub     x7, x3, #16                 // start of a row's last 16 bytes
     subs    x4, x4, #16
-    b.lo    Lmid32_tail
+    b.lo    Lmid32_few
 Lmid32:
     TREE16  ROW32
     str     q0, [x1], #16
     subs    x4, x4, #16
     b.hs    Lmid32
-Lmid32_tail:
-    adds    x4, x4, #16
+    adds    x4, x4, #16                 // 0 to 15 rows left
     b.eq    Ldone
-    b       Lrow
+    // One more block that ends at the last row and stores some rows a
+    // second time.
+    mov     x6, #16
+    sub     x6, x6, x4                  // rows to step back
+    msub    x0, x6, x3, x0
+    sub     x1, x1, x6
+    TREE16  ROW32
+    str     q0, [x1]
+    b       Ldone
+Lmid32_few:                             // fewer than 16 rows in all
+    add     x4, x4, #16
+Lmid32_one:
+    ROW32   0
+    umaxv   b0, v0.16b
+    str     b0, [x1], #1
+    subs    x4, x4, #1
+    b.ne    Lmid32_one
+    b       Ldone
 Lmid64:
     sub     x7, x3, #32
     add     x8, x0, x7                  // start of the row's last 32 bytes
     subs    x4, x4, #16
-    b.lo    Lmid64_tail
+    b.lo    Lmid64_few
 Lmid64_loop:
     TREE16  ROW64
     str     q0, [x1], #16
     subs    x4, x4, #16
     b.hs    Lmid64_loop
-Lmid64_tail:
     adds    x4, x4, #16
     b.eq    Ldone
-    sub     x7, x3, #16
-    b       Lrow
+    mov     x6, #16
+    sub     x6, x6, x4
+    msub    x0, x6, x3, x0
+    msub    x8, x6, x3, x8
+    sub     x1, x1, x6
+    TREE16  ROW64
+    str     q0, [x1]
+    b       Ldone
+Lmid64_few:
+    add     x4, x4, #16
+Lmid64_one:
+    ROW64   0
+    umaxv   b0, v0.16b
+    str     b0, [x1], #1
+    subs    x4, x4, #1
+    b.ne    Lmid64_one
+    b       Ldone
 Lgeneric:
     sub     x7, x3, #16                 // start of a row's last chunk
 Lrow:

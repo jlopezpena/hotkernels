@@ -43,3 +43,14 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
 - **compare:** significantly faster, 3.20x [3.19 – 3.21] over all tables; the other widths
   unchanged.
 - **Kept:** yes
+
+## 4. Rows of 16 to 64: the last rows as one overlapping block, fewer than 16 rows one by one
+
+- **Idea:** with at least 16 rows, the rows left under a block are done by one more block that
+  ends at the last row (the positions step back by `msub`) and stores some rows a second time.
+  With fewer than 16 rows in all, each row is reduced the same way as in a block, then `umaxv`
+  and `str b`: no chunk loop and its branches.
+- **check:** pass
+- **compare:** significantly faster, 1.13x [1.13 – 1.13]; rows of 22 1.21x and rows of 64
+  1.20x over each table, 2.2x to 3.3x at 64 and 256 elements.
+- **Kept:** yes
