@@ -66,6 +66,7 @@ typedef enum {
     // Built into the binding.
     HK_CLIP_I64, HK_ROUND_F64, HK_MEDIAN_F64,
     HK_CUMSUM_ROWS_F64, HK_CUMPROD_ROWS_F64, HK_CUMMAX_ROWS_F64, HK_CUMFMAX_ROWS_F64,
+    HK_ARGMAX_ROWS_F32, HK_ARGMAX_ROWS_F64, HK_ARGMIN_ROWS_F32, HK_ARGMIN_ROWS_F64,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -107,6 +108,26 @@ static inline void hk_take(hk_kernel k) {
 static inline void hk_pass(hk_operation op) {
     hk_count(&hk_passed[op]);
 }
+
+// One Python call of argmax or argmin that NumPy may split into many calls of
+// the type slot, one per row. The method hook sets `active` before it hands
+// a float32 or float64 array on to NumPy; while it is set the slot hook
+// records here what it did with each row instead of counting, and the method
+// hook counts the whole call once when NumPy returns. One per thread: NumPy
+// runs the slot on the calling thread with the interpreter lock released,
+// while other threads may be in calls of their own. See
+// docs/argmax-rows-design.md.
+typedef struct {
+    // True while a method hook waits for NumPy to return.
+    bool active;
+    // True when the slot took a kernel for at least one row.
+    bool taken;
+    // The kernel the slot took. Every row of one call has the same length,
+    // so it is the same kernel for all of them.
+    hk_kernel slot_kernel;
+} hk_argext_call;
+
+extern _Thread_local hk_argext_call hk_argext_mark;
 
 // True when install(inexact=True) was given: kernels that are not
 // bit-identical to NumPy may then take calls.
@@ -424,6 +445,15 @@ static inline bool hk_as_exact_double(PyObject *obj, double *out) {
 // belongs to NumPy. None of them raises.
 PyObject *hk_try_sum(PyObject *array);
 PyObject *hk_try_argext(PyObject *array, bool want_max);
+
+// argmax or argmin along the last axis of a matrix, as the new
+// one-dimensional np.intp array NumPy's `m.argmax(axis=1)` returns: the
+// operation's kernel once per row for rows of at least ARGEXT_ROWS_KERNEL_COLS
+// elements, and a loop of the binding's own (argmax_rows_f32 and the rest)
+// for narrower ones. The caller has tested that the axis is 1 or -1 and that
+// there is no other argument but an `out` of None; the array's type, shape and
+// layout are tested here. In hook_function.c.
+PyObject *hk_try_argext_rows(PyObject *array, bool want_max);
 
 // The array NumPy's clip returns for `array` clamped to the bounds `lo` and
 // `hi`, as given by the caller: the clip kernels, or for int64 the binding's

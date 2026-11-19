@@ -197,6 +197,15 @@ Each kernel's `x86_64/attempts.md` has every attempt, the judge's tables and wha
 - **What differs for a caller.** The second look is at one block and is bounded, nothing outside the array is read whatever a concurrent writer does, and the result is always an index inside the array; [issue 56](https://github.com/sofeikov/hotkernels/issues/56) does not arise. New: `vmaxps` and `vminps` set the invalid flag for any NaN operand, so these kernels leave it set after a call on an array with a NaN.
 - **Not tried:** aligned loads and a prefetch, which is where a second run should start.
 
+#### Along the rows of a matrix
+
+`np.argmax(m, axis=1)` makes NumPy call the type's argmax function once per row, at 6 to 20 ns a row whatever its length. The binding takes the call above NumPy and walks the rows itself ([argmax-rows-design.md](argmax-rows-design.md)). Measured on ARM64 only (Apple M1 Pro, from Python):
+
+- **From six float64 or nine float32 elements, the kernels once per row.** The ARM64 kernels take about 1.6 ns a row from four float64 or eight float32 elements; below that they read the elements one at a time and take 5 to 12 ns, little better than NumPy. On 300,000 rows of ten float64, 0.69 ms against NumPy's 2.43 ms (3.5x); of ten float32, 0.49 against 6.68 (13.7x).
+- **Narrower rows: a loop of the binding's own, one row per lane** of a 32-byte vector, written with the compiler's vector types. It takes a column when the best so far is a number and the element is not at most the best (not at least, for `argmin`): NumPy's NaN and tie rules with no branch. 0.37 to 0.49 ns a row on rows of two, where NumPy takes 7, and about 0.25 (float64) or 0.18 (float32) ns more per column, which meets the kernels at the thresholds above.
+- **A loop that branches loses.** `naive.c`'s loop, one row after another, took 11.5 ns a row on random rows of ten float64 against NumPy's 8.3, from mispredicted branches.
+- **What a caller must know.** The kernel path holds the interpreter lock for the whole call, where NumPy releases it: the kernels read a row twice ([issue 9](https://github.com/sofeikov/hotkernels/issues/9)). The binding's loop reads each element once and releases it above 8,192 elements. On x86-64 the same thresholds are used and neither path has been timed.
+
 ### Mask selection: `compress` and `nonzero`
 
 #### The operation

@@ -42,7 +42,7 @@ A throwaway script ran each workload below on plain NumPy and after `install()`,
 Calls with no count on either side are left out of the table. What the probe shows:
 
 - **Code that uses mask selection gains, wherever it is written.** NPBench's `azimint_naive` and a pandas boolean filter reach `x[mask]` with no change.
-- **A library's own spelling often misses the kernel by one condition.** scikit-learn searches each column of a C-ordered matrix, which is strided. `LogisticRegression.predict` takes `argmax(axis=1)` over rows of three, far under the type slot's 128 elements. `equalize_hist` interpolates over 256 sample points, and `np.interp`'s kernel takes at most 64.
+- **A library's own spelling often misses the kernel by one condition.** scikit-learn searches each column of a C-ordered matrix, which is strided. `LogisticRegression.predict` takes `argmax(axis=1)` over rows of three, far under the type slot's 128 elements. (Since [issue 190](https://github.com/sofeikov/hotkernels/issues/190) that call is served and counted once: `LogisticRegression.predict` on 200,000 × 8 with three classes went from 6.04 ms to 3.77 ms, 1.60x, on an Apple M1 Pro at a load average of 4.6, and reports one call of `argmax(axis=1)`; see [argmax-rows-design.md](argmax-rows-design.md).) `equalize_hist` interpolates over 256 sample points, and `np.interp`'s kernel takes at most 64.
 - **Why some calls were left is not known yet.** The `np.searchsorted` in `pd.cut` and the `np.bincount` in `threshold_otsu` meet the conditions as written in [delivery-design.md](delivery-design.md#which-hook-serves-which-kernel) at first sight. Finding out is the first use of the tool.
 
 ## Design

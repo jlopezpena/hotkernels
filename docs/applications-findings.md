@@ -22,6 +22,8 @@ Apple M1 Pro, CPython 3.12.7, NumPy 2.5.5. Seven alternating runs of each side, 
 | `sklearn_metrics` | Scoring a classifier with scikit-learn | 1005.8 ms | 978.6 ms | 1.03x | identical | 98 | 300,161 |
 | `empyrical_stats` | Risk statistics of return series with empyrical | 1331.1 ms | 1305.2 ms | 1.02x | identical | 1,020 | 1,080 |
 
+Since this run, `np.argmax(m, axis=1)` is served and a Python call is counted once however many rows NumPy splits it into ([#190](https://github.com/sofeikov/hotkernels/issues/190), [argmax-rows-design.md](argmax-rows-design.md)). With that change `mlp_train` reports 190 kernel calls and 942 left to NumPy, and `sklearn_metrics` 99 and 161 (one run each, load average about 5). The times above are not affected beyond the noise: the call was 0.25% of `sklearn_metrics` and less of `mlp_train`.
+
 The median of the seven runs is within 6% of the best on every row, on both sides. A difference of 1% to 3% is at the edge of what this run can show; the 0.99x of `min_char_rnn` is no change.
 
 `install(inexact=True)` gave the same times to within 2% on every application. Only the results of `empyrical_stats` differed in that mode, as it says they may: it calls `np.cumsum` on `float64`.
@@ -57,7 +59,7 @@ A hand-written training loop: 12,000 examples of 784 `float64` inputs, 256 hidde
 
 **Why it does not gain more.** The matrix products are Accelerate's and the element-wise loops are NumPy's own vector loops; neither has a kernel and neither is slow for what it does. The weight update is the largest cost because of memory, not arithmetic: timed alone, with its arrays in cache, the statement takes 0.08 ms; inside the loop it takes 0.45 to 0.53 ms, since the gradient computation has pushed the weights out of the cache and the machine was busy. Its share was 26% to 37% in three earlier profiles at lower load. It is one pass over memory written as two, and only fusion would change that ([#191](https://github.com/sofeikov/hotkernels/issues/191)).
 
-**What was left to NumPy.** `np.argmax(scores, axis=1)` on 2,000 rows of ten, counted as 4,000 calls, and 940 `float64` sums, for which there is no kernel. Neither costs anything that shows in the profile ([#190](https://github.com/sofeikov/hotkernels/issues/190)).
+**What was left to NumPy.** `np.argmax(scores, axis=1)` on 2,000 rows of ten, counted as 4,000 calls, and 940 `float64` sums, for which there is no kernel. Neither costs anything that shows in the profile ([#190](https://github.com/sofeikov/hotkernels/issues/190)). The `np.argmax` call is now served, 3.5x faster than NumPy, and counted as one call each time.
 
 ## `min_char_rnn`: no change
 
@@ -122,7 +124,7 @@ scikit-learn 1.9.1: ROC and precision-recall curves, AUC, average precision, a c
 
 **Why it does not gain more.** Neither of the two has a kernel. A stable `argsort` of a million `float64` takes 117 ms; one twice as fast would make this application 1.33x faster ([#188](https://github.com/sofeikov/hotkernels/issues/188)). `np.unique` on a million labels with two distinct values takes 5.9 ms and hashes every element; done as the bincount kernels do it, the application would be about 1.25x faster ([#189](https://github.com/sofeikov/hotkernels/issues/189)).
 
-**What was left to NumPy.** 300,161 calls, of which 300,000 are one statement, `np.argmax(proba, axis=1)`, counted once per row. It takes 2.5 ms, 0.25% of the run ([#190](https://github.com/sofeikov/hotkernels/issues/190)). The rest are casts, `searchsorted` on `int64`, `np.bincount` with weights and `np.cumsum` on `float64`.
+**What was left to NumPy.** 300,161 calls, of which 300,000 are one statement, `np.argmax(proba, axis=1)`, counted once per row. It takes 2.5 ms, 0.25% of the run ([#190](https://github.com/sofeikov/hotkernels/issues/190)). It is now served, in 0.7 ms, and counted as one call. The rest are casts, `searchsorted` on `int64`, `np.bincount` with weights and `np.cumsum` on `float64`.
 
 ## `empyrical_stats`: 1.02x
 
@@ -163,7 +165,7 @@ empyrical-reloaded 0.7.3: twelve statistics, alpha and beta, cumulative returns,
 **What this changes about the plan.**
 
 - **The survey ranked calls by how slow NumPy is at each. These programs rank them by time spent.** The two orders differ. `argsort` and `np.unique` are on neither shortlist and are the largest items here. The calls the kernels serve best, mask selection and `np.searchsorted`, are real but small shares of real programs.
-- **"Left to NumPy" counts are a poor guide to time.** The largest count in the study, 300,000, is 0.25% of its application. The call that costs most among those left, the 2-D accumulation, is counted 60 times. And the largest costs, sorting and bottleneck, are not counted at all, because they have no hook. Time has to come from a profile.
+- **"Left to NumPy" counts are a poor guide to time.** The largest count in the study, 300,000, is 0.25% of its application. It was one Python call counted once per row, which `report()` no longer does ([#190](https://github.com/sofeikov/hotkernels/issues/190)). The call that costs most among those left, the 2-D accumulation, is counted 60 times. And the largest costs, sorting and bottleneck, are not counted at all, because they have no hook. Time has to come from a profile.
 - **With the three kernels that are within reach,** [#187](https://github.com/sofeikov/hotkernels/issues/187), [#188](https://github.com/sofeikov/hotkernels/issues/188) and [#189](https://github.com/sofeikov/hotkernels/issues/189), the estimates above put `sklearn_metrics` near 1.8x, `empyrical_stats` near 1.45x and `trimesh_mesh` near 1.3x. These are arithmetic on measured shares, not measurements.
 
 ## Issues filed
