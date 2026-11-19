@@ -71,3 +71,19 @@ The kernel does the same work whatever the elements are, so the two timing distr
 - **compare:** significantly faster, 1.006x [1.005 – 1.007]
 - **Kept:** yes
 - **Notes:** rows of 64: 1.02x, all of it at 64 elements, 1.9 ns back to 1.5 (1.25x); every other size 1.00x.
+
+## 9. Rows of up to 32: the loop of single rows on the straight path
+
+- **Idea:** what attempt 8 did for the rows of 33 to 64: the loop of single rows directly after the test for four rows, the loop of four entered by a jump, for the two rows that 64 elements of width 22 are.
+- **check:** pass
+- **compare:** no significant difference, 1.001x [0.999 – 1.003]
+- **Kept:** no
+- **Notes:** 64 elements: 1.9 ns before and after, 1.00x [0.96 – 1.04]. Nothing moved at any size.
+
+## 10. Eight rows per step in the rows of up to 32
+
+- **Idea:** a second position four rows ahead of the first, so eight rows are addressed with the same three indices and one branch ends eight rows. The branch shares ports 0 and 6 with the `vptest` and the `setnz`: 17 instructions on them per eight rows where two steps of four have 18. Fewer than eight rows left go to the loop of four and then to single rows.
+- **check:** pass
+- **compare:** significantly faster, 1.016x [1.014 – 1.017]
+- **Kept:** yes
+- **Notes:** rows of 22: 1.04x in both distributions. 1.02x at 4,096 (50.1 ns to 48.9), 1.06x at 16,384, 1.12x from 65,536 to 1,048,576 (948.6 ns to 846.8 at 65,536), 1.08x above; 0.92x at 64 elements (1.9 ns to 2.1), 0.97x at 256 and 0.99x at 1,024, which pay for one more test on the way in. More than the count of instructions on the two ports predicts beyond the first-level cache, and the reason was not looked for. HEAD itself has taken 803 ns and 945 ns for 65,536 elements in different runs of `compare`, so the placement of the buffers plays a part there. The micro-benchmark was not usable for this attempt: its core was shared with another job.

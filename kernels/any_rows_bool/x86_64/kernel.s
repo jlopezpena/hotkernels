@@ -87,6 +87,42 @@ any_rows_bool:
     vmovdqu ymm0, [rax]                 # the first cols bytes set
     lea     r10, [r9 - VEC]             # the last place a vector can be loaded
     lea     r11, [rcx + rcx * 2]
+    lea     rax, [r11 * 2 + rcx]        # 7 cols
+    mov     rdx, r10
+    sub     rdx, rax                    # the last place eight rows can start
+    jb      .Lfew
+    cmp     rdi, rdx
+    ja      .Lfew
+    mov     [rsp - 8], r9
+    lea     r9, [rdi + rcx * 4]         # the fifth row of a step
+    lea     rax, [rcx * 8]
+.p2align 4
+.Lrow8:
+    vptest  ymm0, [rdi]
+    setnz   byte ptr [rsi]
+    vptest  ymm0, [rdi + rcx]
+    setnz   byte ptr [rsi + 1]
+    vptest  ymm0, [rdi + rcx * 2]
+    setnz   byte ptr [rsi + 2]
+    vptest  ymm0, [rdi + r11]
+    setnz   byte ptr [rsi + 3]
+    vptest  ymm0, [r9]
+    setnz   byte ptr [rsi + 4]
+    vptest  ymm0, [r9 + rcx]
+    setnz   byte ptr [rsi + 5]
+    vptest  ymm0, [r9 + rcx * 2]
+    setnz   byte ptr [rsi + 6]
+    vptest  ymm0, [r9 + r11]
+    setnz   byte ptr [rsi + 7]
+    add     rdi, rax
+    add     r9, rax
+    add     rsi, 8
+    cmp     rdi, rdx
+    jbe     .Lrow8
+    mov     r9, [rsp - 8]
+    cmp     rdi, r10
+    ja      .Lrows_done
+.Lfew:
     mov     rax, r10
     sub     rax, r11                    # the last place four rows can start
     jb      .Lrow
