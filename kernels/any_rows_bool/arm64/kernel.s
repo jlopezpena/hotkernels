@@ -226,6 +226,60 @@
 // cache.
 .set HUGE_N, 8388608
 
+// The loop of the rows of 2 to 15: \l1 loads the row's first bytes into a
+// \r1 register, \l2 its last bytes (at x13 = cols minus their size) into a
+// \r2 register. x9, x10, x11 = 1, 2, 3 cols, x12 = 4 cols. Ends at Ldone.
+.macro SHORT l1, r1, l2, r2
+    add     x14, x13, x9
+    add     x15, x13, x10
+    add     x16, x13, x11
+    subs    x4, x4, #4
+    b.lo    2f
+1:
+    \l1     \r1\()6, [x0]
+    \l2     \r2\()7, [x0, x13]
+    \l1     \r1\()8, [x0, x9]
+    \l2     \r2\()17, [x0, x14]
+    orr     x6, x6, x7
+    orr     x8, x8, x17
+    cmp     x6, #0
+    cset    w6, ne
+    cmp     x8, #0
+    cset    w8, ne
+    strb    w6, [x1]
+    strb    w8, [x1, #1]
+    \l1     \r1\()6, [x0, x10]
+    \l2     \r2\()7, [x0, x15]
+    \l1     \r1\()8, [x0, x11]
+    \l2     \r2\()17, [x0, x16]
+    orr     x6, x6, x7
+    orr     x8, x8, x17
+    cmp     x6, #0
+    cset    w6, ne
+    cmp     x8, #0
+    cset    w8, ne
+    strb    w6, [x1, #2]
+    strb    w8, [x1, #3]
+    add     x0, x0, x12
+    add     x1, x1, #4
+    subs    x4, x4, #4
+    b.hs    1b
+2:
+    adds    x4, x4, #4
+    b.eq    Ldone
+3:
+    \l1     \r1\()6, [x0]
+    \l2     \r2\()7, [x0, x13]
+    orr     x6, x6, x7
+    cmp     x6, #0
+    cset    w6, ne
+    strb    w6, [x1], #1
+    add     x0, x0, x3
+    subs    x4, x4, #1
+    b.ne    3b
+    b       Ldone
+.endm
+
 .text
 .globl _any_rows_bool
 .p2align 2
@@ -328,18 +382,74 @@ Lrow_end:
     b.ne    Lrow
     b       Ldone
 Lshort:
-    mov     w8, #0
-    mov     x6, #0
-Lbyte:
-    ldrb    w9, [x0, x6]
-    orr     w8, w8, w9
-    add     x6, x6, #1
-    cmp     x6, x3
-    b.lo    Lbyte
-    strb    w8, [x1], #1
-    add     x0, x0, x3
-    subs    x4, x4, #1
-    b.ne    Lshort
+    // Rows of 1 to 15 other than 4. A row is reduced in a general register:
+    // two loads that start at the row's start and end at its end (they
+    // overlap when the row is shorter than both), or'ed, compared with zero.
+    // Four rows per step, addressed from one position and fixed offsets.
+    cmp     x3, #1
+    b.eq    Lone
+    mov     x9, x3                      // offsets of rows 1, 2 and 3
+    add     x10, x3, x3
+    add     x11, x10, x3
+    lsl     x12, x3, #2                 // 4 cols: one step
+    cmp     x3, #8
+    b.hs    Lshort8
+    cmp     x3, #4
+    b.hs    Lshort4
+    // Rows of 2 and 3: the first two bytes and the last byte.
+    sub     x13, x3, #1
+    SHORT   ldrh, w, ldrb, w
+Lshort4:                                // rows of 5 to 7: the first 4 bytes and the last 4
+    sub     x13, x3, #4
+    SHORT   ldr, w, ldr, w
+Lshort8:                                // rows of 8 to 15: the first 8 bytes and the last 8
+    sub     x13, x3, #8
+    SHORT   ldr, x, ldr, x
+
+// Rows of one: the result is the matrix itself, every byte being 0 or 1.
+Lone:
+    mov     x5, x2
+    cmp     x2, #32
+    b.lo    Lone_small
+    sub     x6, x2, #32
+    add     x8, x0, x6
+    ldp     q0, q1, [x8]                // the last 32, stored at the end
+    add     x7, x1, x6
+    sub     x2, x2, #32
+Lone_loop:
+    ldp     q2, q3, [x0], #32
+    stp     q2, q3, [x1], #32
+    subs    x2, x2, #32
+    b.gt    Lone_loop
+    stp     q0, q1, [x7]
+    b       Ldone
+Lone_small:                             // 1 to 31 bytes: two overlapping copies
+    sub     x6, x2, #16
+    tbz     x2, #4, 1f
+    ldr     q0, [x0]
+    ldr     q1, [x0, x6]
+    str     q0, [x1]
+    str     q1, [x1, x6]
+    b       Ldone
+1:  sub     x6, x2, #8
+    tbz     x2, #3, 2f
+    ldr     x7, [x0]
+    ldr     x8, [x0, x6]
+    str     x7, [x1]
+    str     x8, [x1, x6]
+    b       Ldone
+2:  sub     x6, x2, #4
+    tbz     x2, #2, 3f
+    ldr     w7, [x0]
+    ldr     w8, [x0, x6]
+    str     w7, [x1]
+    str     w8, [x1, x6]
+    b       Ldone
+3:  ldrb    w7, [x0], #1                // 1 to 3 bytes
+    strb    w7, [x1], #1
+    subs    x2, x2, #1
+    b.ne    3b
+    b       Ldone
 Ldone:
     mov     x0, x5
     ret
