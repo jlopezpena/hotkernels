@@ -76,7 +76,7 @@ Andrej Karpathy's 112-line recurrent network, copied unchanged, run for 300 iter
 | 4.6% | `exp`, `tanh` and the floating-point status checks around them |
 | about 23% | NumPy's call path, spread over dozens of functions with no one above 2% |
 
-**Why it does not gain.** Every array has between 60 and 10,000 elements, so the program's time is the cost of making 100,000 calls and of the BLAS, not of any loop a kernel replaces. The one hooked call that matters is the gradient clipping, `np.clip(dparam, -5, 5, out=dparam)`, 1,500 times. hotkernels leaves it to NumPy because `out` is given. On a 100 × 100 array that call takes 9.1 µs; the same clip without `out` takes 1.4 µs with hotkernels ([#186](https://github.com/sofeikov/hotkernels/issues/186)). Taking it would be worth about 3% here.
+**Why it does not gain.** Every array has between 60 and 10,000 elements, so the program's time is the cost of making 100,000 calls and of the BLAS, not of any loop a kernel replaces. The one hooked call that matters is the gradient clipping, `np.clip(dparam, -5, 5, out=dparam)`, 1,500 times. hotkernels leaves it to NumPy because `out` is given. On a 100 × 100 array that call takes 9.1 µs; the same clip without `out` takes 1.4 µs with hotkernels ([#186](https://github.com/sofeikov/hotkernels/issues/186)). Taking it would be worth about 3% here. The binding now takes it, through a buffer of its own ([clip-in-place-design.md](clip-in-place-design.md)); the figures here are from before that.
 
 The other calls left are `np.sum` on `float64` (8,100, in the softmax) and `np.random.choice`'s internals. The evidence this program gives on hooks for short arrays is in [#99](https://github.com/sofeikov/hotkernels/issues/99).
 
