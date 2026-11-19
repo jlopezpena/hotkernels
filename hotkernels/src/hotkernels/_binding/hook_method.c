@@ -419,9 +419,10 @@ static PyObject *method_argmin(PyObject *self, PyObject *const *args, Py_ssize_t
 
 // x.clip(min, max) for a contiguous float32 or float64 array, or a short
 // int64 one, the bounds by
-// position or as `min=` and `max=`, and `out` absent or None: the same direct
-// call as np.clip's function hook makes (see hk_try_clip). The method passes
-// its arguments to NumPy's `_methods._clip`, whose parameters these are.
+// position or as `min=` and `max=`, and `out` absent or None, or for float32
+// and float64 the array itself: the same direct call as np.clip's function
+// hook makes (see hk_try_clip). The method passes its arguments to NumPy's
+// `_methods._clip`, whose parameters these are.
 static HK_NOINLINE PyObject *try_clip(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     enum { MIN, MAX, OUT, PARAMETERS };
     static const char *const names[PARAMETERS] = {"min", "max", "out"};
@@ -429,8 +430,8 @@ static HK_NOINLINE PyObject *try_clip(PyObject *self, PyObject *const *args, Py_
     if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
     // A bound left out or None is the commonest call left to NumPy, and the
     // cheapest to recognise.
-    if (hk_is_absent(bound[MIN]) || hk_is_absent(bound[MAX]) || !hk_is_absent(bound[OUT])) return NULL;
-    return hk_try_clip(self, bound[MIN], bound[MAX]);
+    if (hk_is_absent(bound[MIN]) || hk_is_absent(bound[MAX])) return NULL;
+    return hk_try_clip(self, bound[MIN], bound[MAX], bound[OUT]);
 }
 
 // The array's type is tested first: most calls are for another element type,

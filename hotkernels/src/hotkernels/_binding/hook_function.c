@@ -944,20 +944,53 @@ static bool clip_bound_f32(PyObject *bound, float *value) {
     return (double)*value == d;
 }
 
-// Run a clip kernel on the whole of `x` into a new array of its shape. The
-// kernels leave the invalid-operation flag set on NaN data; NumPy's own loop
-// ends by clearing the flags, and so does this, as the loop hook does.
-static PyObject *run_clip(PyArrayObject *x, hk_kernel kernel, double lo, double hi) {
-    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), PyArray_TYPE(x));
-    if (result == NULL) {
-        PyErr_Clear();
-        return NULL;
+// Bytes of the array an in-place clip copies out and clips back at a time,
+// and the size of the stack buffer that holds the copy. Measured on the
+// Apple M1 Pro from Python: 2 KB and 4 KB are level, 8 KB is 5% to 10%
+// slower, and from 16 KB a million float64 elements take 1.2 ms or more
+// against NumPy's 0.66 ms, the C library's copy of that size apparently
+// leaving the cache. See docs/clip-in-place-design.md.
+#define CLIP_IN_PLACE_RUN_BYTES 4096
+
+void hk_clip_in_place(hk_kernel kernel, void *data, size_t n, double lo, double hi) {
+    // Doubles, so that the buffer is aligned for either element type.
+    double buffer[CLIP_IN_PLACE_RUN_BYTES / sizeof(double)];
+    const size_t element = kernel == HK_CLIP_F32 ? sizeof(float) : sizeof(double);
+    const size_t run = CLIP_IN_PLACE_RUN_BYTES / element;
+    char *at = data;
+    for (size_t done = 0; done < n; done += run) {
+        const size_t count = n - done < run ? n - done : run;
+        // The run is copied out, and the kernel clips the copy back over it:
+        // each element is clipped once, from its own value, and the kernel
+        // never sees overlapping buffers.
+        memcpy(buffer, at, count * element);
+        if (kernel == HK_CLIP_F32) clip_f32((const float *)buffer, (float *)at, count, (float)lo, (float)hi);
+        else clip_f64(buffer, (double *)at, count, lo, hi);
+        at += count * element;
+    }
+}
+
+// Run a clip kernel on the whole of `x`, into a new array of its shape, or
+// into `x` itself when `in_place` is true. The kernels leave the
+// invalid-operation flag set on NaN data; NumPy's own loop ends by clearing
+// the flags, and so does this, as the loop hook does.
+static PyObject *run_clip(PyArrayObject *x, hk_kernel kernel, double lo, double hi, bool in_place) {
+    PyObject *result;
+    if (in_place) {
+        result = Py_NewRef((PyObject *)x);
+    } else {
+        result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), PyArray_TYPE(x));
+        if (result == NULL) {
+            PyErr_Clear();
+            return NULL;
+        }
     }
     const npy_intp n = PyArray_SIZE(x);
     void *out = PyArray_DATA((PyArrayObject *)result);
     {
         HK_BEGIN_NOGIL(n)
-        if (kernel == HK_CLIP_F32) clip_f32(PyArray_DATA(x), out, (size_t)n, (float)lo, (float)hi);
+        if (in_place) hk_clip_in_place(kernel, out, (size_t)n, lo, hi);
+        else if (kernel == HK_CLIP_F32) clip_f32(PyArray_DATA(x), out, (size_t)n, (float)lo, (float)hi);
         else clip_f64(PyArray_DATA(x), out, (size_t)n, lo, hi);
         feclearexcept(FE_ALL_EXCEPT);
         HK_END_NOGIL
@@ -1042,22 +1075,29 @@ static HK_NOINLINE PyObject *try_clip_i64(PyArrayObject *x, PyObject *lo, PyObje
 // a NaN bound fails the comparison, as does lo > hi, and both are NumPy's.
 // The float32 bounds are compared after their conversion, as the loop sees
 // them.
-HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi) {
+//
+// An `out` that is the array itself is clipped in place, through a buffer of
+// the binding's (hk_clip_in_place): the kernels are wrong when their output
+// is their input (issue 7). NumPy then returns that same array. A read-only
+// array is NumPy's, which raises, and so is an in-place int64 clip.
+HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi, PyObject *out) {
     if (!hk_is_plain_array(array)) return NULL;
     PyArrayObject *x = (PyArrayObject *)array;
+    const bool in_place = !hk_is_absent(out);
+    if (in_place && (out != array || !PyArray_ISWRITEABLE(x))) return NULL;
     // NumPy returns an empty array without calling the loop; the kernels are
     // never called with n = 0.
     if (PyArray_SIZE(x) < 1) return NULL;
-    if (hk_is_flat(array, NPY_INT64)) return try_clip_i64(x, lo, hi);
+    if (hk_is_flat(array, NPY_INT64)) return in_place ? NULL : try_clip_i64(x, lo, hi);
     if (hk_is_flat(array, NPY_FLOAT)) {
         float lo32, hi32;
         if (!clip_bound_f32(lo, &lo32) || !clip_bound_f32(hi, &hi32) || !islessequal(lo32, hi32)) return NULL;
-        return run_clip(x, HK_CLIP_F32, lo32, hi32);
+        return run_clip(x, HK_CLIP_F32, lo32, hi32, in_place);
     }
     if (hk_is_flat(array, NPY_DOUBLE)) {
         double lo64, hi64;
         if (!clip_bound_f64(lo, &lo64) || !clip_bound_f64(hi, &hi64) || !islessequal(lo64, hi64)) return NULL;
-        return run_clip(x, HK_CLIP_F64, lo64, hi64);
+        return run_clip(x, HK_CLIP_F64, lo64, hi64, in_place);
     }
     return NULL;
 }
@@ -1065,16 +1105,17 @@ HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi) {
 // np.clip(a, a_min, a_max) for a contiguous float32 or float64 array, or a
 // short int64 one, with
 // the bounds given by position, as `a_min=` and `a_max=`, or, where NumPy
-// has them, as `min=` and `max=`; `out` absent or None; nothing else. A
-// bound left out, None, or both spellings at once are NumPy's: it raises, or
-// calls np.maximum or np.minimum instead.
+// has them, as `min=` and `max=`; `out` absent, None, or for float32 and
+// float64 the array itself; nothing else. A bound left out, None, or both
+// spellings at once are NumPy's: it raises, or calls np.maximum or
+// np.minimum instead.
 static HK_NOINLINE PyObject *try_clip(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     enum { A, A_MIN, A_MAX, OUT, MIN, MAX, PARAMETERS };
     // `min` and `max` can only be given by keyword.
     static const char *const names[PARAMETERS] = {"a", "a_min", "a_max", "out", "min", "max"};
     PyObject *bound[PARAMETERS];
     if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, OUT + 1, bound)) return NULL;
-    if (bound[A] == NULL || !hk_is_absent(bound[OUT])) return NULL;
+    if (bound[A] == NULL) return NULL;
     PyObject *lo = bound[A_MIN], *hi = bound[A_MAX];
     if (bound[MIN] != NULL || bound[MAX] != NULL) {
         if (!clip_takes_min_max || lo != NULL || hi != NULL) return NULL;
@@ -1084,7 +1125,7 @@ static HK_NOINLINE PyObject *try_clip(PyObject *const *args, Py_ssize_t nargs, P
     // A bound left out or None is the commonest call left to NumPy, and the
     // cheapest to recognise.
     if (hk_is_absent(lo) || hk_is_absent(hi)) return NULL;
-    return hk_try_clip(bound[A], lo, hi);
+    return hk_try_clip(bound[A], lo, hi, bound[OUT]);
 }
 
 // A call left to NumPy reaches `x.clip` and then the clip loop, whose hooks

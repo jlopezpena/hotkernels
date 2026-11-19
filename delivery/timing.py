@@ -347,6 +347,30 @@ def _copyto(value: float, x: np.ndarray, mask: np.ndarray) -> None:
     np.copyto(x, value, where=mask)
 
 
+def _clip_in_place(x: np.ndarray) -> np.ndarray:
+    """Run `np.clip(x, -0.5, 0.5, out=x)`. Running it twice changes nothing more.
+
+    Args:
+        x: The array, clipped in place.
+
+    Returns:
+        `x`, as NumPy returns it.
+    """
+    return np.clip(x, LO, HI, out=x)
+
+
+def _clip_method_in_place(x: np.ndarray) -> np.ndarray:
+    """Run `x.clip(-0.5, 0.5, out=x)`. Running it twice changes nothing more.
+
+    Args:
+        x: The array, clipped in place.
+
+    Returns:
+        `x`, as NumPy returns it.
+    """
+    return x.clip(LO, HI, out=x)
+
+
 def _set_element(x: np.ndarray) -> None:
     """Run `x[3] = 1.0`."""
     x[3] = 1.0
@@ -363,6 +387,8 @@ TAKEN: tuple[Timed, ...] = (
     Timed("clip", "np.clip(x, -0.5, 0.5)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, LO, HI), "clip_f64"),
     Timed("clip", "np.clip(x, 0, 1)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, 0, 1), "clip_f64"),
     Timed("clip", "x.clip(-0.5, 0.5)", "float32", partial(_floats, np.float32), lambda x: x.clip(LO, HI), "clip_f32"),
+    Timed("clip", "np.clip(x, -0.5, 0.5, out=x)", "float64", partial(_floats, np.float64), _clip_in_place, "clip_f64"),
+    Timed("clip", "x.clip(-0.5, 0.5, out=x)", "float32", partial(_floats, np.float32), _clip_method_in_place, "clip_f32"),
     Timed("clip", "np.clip(x, 2, 7)", "int64", partial(_ints, np.int64), lambda x: np.clip(x, INT_LO, INT_HI),
           "clip_i64", max_n=CLIP_I64_MAX_N),
     Timed("clip", "x.clip(2, 7)", "int64", partial(_ints, np.int64), lambda x: x.clip(INT_LO, INT_HI), "clip_i64",

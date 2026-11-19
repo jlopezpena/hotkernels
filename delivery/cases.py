@@ -461,9 +461,18 @@ def argext_cases(name: str) -> Iterator[Case]:
     yield from unusual_nan_cases(name, kernels, f"x.{name}()", spellings[1].call)
 
 
-# Layouts NumPy passes to the clip loop as they are, so that an in-place
-# call arrives with the output equal to the input.
-IN_PLACE_UNBUFFERED = frozenset({"contiguous", "rows", "readonly"})
+# Shapes of the gradients the in-place clip was asked for by: issue 186, from
+# the min_char_rnn application's weights and biases.
+CLIP_GRADIENT_SHAPES = ((100, 100), (100, 60), (100, 1))
+# The bounds that application clips its gradients to, as Python ints and as
+# Python floats.
+CLIP_GRADIENT_BOUNDS = ((-5, 5), (-5.0, 5.0))
+# What the judge's random values are multiplied by to make a gradient, so
+# that some elements lie beyond those bounds.
+CLIP_GRADIENT_SCALE = 10
+# Text in a spelling of clip that marks a call writing into the array it
+# clips: `out=x` and its views, or `x` passed as `out` by position.
+_CLIP_IN_PLACE_MARKERS = ("out=x", ", x)")
 
 
 def _clip_bounds(kernel: str) -> Iterator[tuple[str, float, float]]:
@@ -475,13 +484,121 @@ def _clip_bounds(kernel: str) -> Iterator[tuple[str, float, float]]:
 
 
 def _clip_in_place(x, lo, hi):
-    """Clip `x` into itself and return it."""
-    return np.clip(x, lo, hi, out=x)
+    """Clip `x` into itself.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        Whether NumPy returned `x` itself, as it does for `out=x`, and what
+        it returned. `x` is compared afterwards as an argument.
+    """
+    result = np.clip(x, lo, hi, out=x)
+    return result is x, result
 
 
 def _clip_method_in_place(x, lo, hi):
-    """Clip `x` into itself with the method and return it."""
-    return x.clip(lo, hi, out=x)
+    """Clip `x` into itself with the method.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        Whether the method returned `x` itself, and what it returned.
+    """
+    result = x.clip(lo, hi, out=x)
+    return result is x, result
+
+
+def _clip_in_place_kw(x, lo, hi, positional: bool = False, **kwargs):
+    """Clip `x` into itself, passing `out` by position or with further keywords.
+
+    Args:
+        x: The array.
+        lo: Lower bound.
+        hi: Upper bound.
+        positional: Whether `x` is passed as `out` by position.
+        **kwargs: Further keyword arguments of `np.clip`.
+
+    Returns:
+        Whether NumPy returned `x` itself, and what it returned.
+    """
+    result = np.clip(x, lo, hi, x, **kwargs) if positional else np.clip(x, lo, hi, out=x, **kwargs)
+    return result is x, result
+
+
+def _clip_in_place_lo_hi(lo, hi, x):
+    """Call `np.clip(x, lo, hi, out=x)`, the bounds first so that `partial` can bind them.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        What _clip_in_place returns.
+    """
+    return _clip_in_place(x, lo, hi)
+
+
+def _clip_method_in_place_lo_hi(lo, hi, x):
+    """Call `x.clip(lo, hi, out=x)`, the bounds first so that `partial` can bind them.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        What _clip_method_in_place returns.
+    """
+    return _clip_method_in_place(x, lo, hi)
+
+
+def _clip_shifted(x, lo, hi):
+    """Clip all of `x` but its first element into all of it but its last.
+
+    The output overlaps the input one element behind it, which the kernels
+    must never see. NumPy copies the input first, so the clip loop is handed
+    two separate buffers.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        `x`.
+    """
+    np.clip(x[1:], lo, hi, out=x[:-1])
+    return x
+
+
+def _gradient(dtype: str, shape: tuple[int, int], unusual: bool) -> tuple:
+    """Build one gradient-shaped array of random values, as the one argument of a case.
+
+    Args:
+        dtype: "f32" or "f64".
+        shape: Rows and columns.
+        unusual: Whether to spread signalling and negative NaNs through it.
+
+    Returns:
+        A one-element tuple holding a C-contiguous array of that shape,
+        scaled so that some elements lie beyond the bounds of
+        CLIP_GRADIENT_BOUNDS.
+    """
+    x = values(dtype, shape[0] * shape[1]) * CLIP_GRADIENT_SCALE
+    if unusual:
+        # Placed after the scaling, which would quiet a signalling NaN.
+        unsigned, signalling, negative = _UNUSUAL_NANS[x.dtype.itemsize]
+        bits = x.view(unsigned)
+        bits[::_SIGNALLING_EVERY] = signalling
+        bits[2::_NEGATIVE_EVERY] = negative
+    return (x.reshape(shape),)
 
 
 def _clip_into_fresh(x, lo, hi):
@@ -550,11 +667,14 @@ def clip_cases() -> Iterator[Case]:
     hook on `x.clip` call the kernel directly for a contiguous float32 or
     float64 array with no `out` and two bounds that keep the result in the
     array's element type (Python floats and ints, NumPy scalars of the
-    array's type), lo <= hi. Every other call goes on to the `clip` ufunc,
+    array's type), lo <= hi, and no `out`, or for an in-place clip `out` the
+    writeable array itself. Every other call goes on to the `clip` ufunc,
     whose loop hook takes contiguous data with scalar bounds, lo <= hi, when
-    the output is not the input. NumPy buffers arrays that are misaligned or
-    in the other byte order and hands the loop contiguous chunks, so those
-    may reach the kernel too. The counters do not say which of the hooks took
+    the output is clear of the input or is exactly the input. An in-place
+    call goes through a buffer of the binding's, in runs, so the sizes of the
+    value sweep fall on both sides of a run's end. NumPy buffers arrays that
+    are misaligned or in the other byte order and hands the loop contiguous
+    chunks, so those may reach the kernel too. The counters do not say which of the hooks took
     a call; `installation_checks` proves the direct path on its own. int64,
     which the function and method hooks serve on short arrays with a loop of
     the binding's own, has its cases in `clip_i64_cases`.
@@ -564,13 +684,31 @@ def clip_cases() -> Iterator[Case]:
         default = next(_clip_bounds(kernel))
         for set_name, lo, hi in _clip_bounds(kernel):
             sizes = VALUE_SIZES if set_name in (DEFAULT_SCALARS, "zero_lo") else FEW_SIZES
-            for _, _, label, maker in value_arrays(dtype, sizes):
+            for n, _, label, maker in value_arrays(dtype, sizes):
                 yield Case("clip", f"np.clip(x, {lo!r}, {hi!r}) {dtype} {label}", partial(_made, maker),
                            partial(_clip3, np.clip, lo, hi), kernel)
+                # Bounds the function hook declines, such as a float32
+                # denormal, go to the clip loop. Given `out`, NumPy hands the
+                # loop a step other than the element size for one element,
+                # and the loop leaves that to NumPy.
+                in_place = kernel if n > 1 else ANY
+                yield Case("clip", f"np.clip(x, {lo!r}, {hi!r}, out=x) {dtype} {label}", partial(_made, maker),
+                           partial(_clip_in_place_lo_hi, lo, hi), in_place)
+        for _, _, label, maker in value_arrays(dtype, FEW_SIZES):
+            yield Case("clip", f"x.clip(lo, hi, out=x) {dtype} {label}", partial(_made, maker),
+                       partial(_clip_method_in_place_lo_hi, default[1], default[2]), kernel)
         yield from _clip_bound_cases(dtype, kernel, default)
+        for shape, (lo, hi), unusual in itertools.product(CLIP_GRADIENT_SHAPES, CLIP_GRADIENT_BOUNDS, (False, True)):
+            data = "signalling and negative NaNs" if unusual else "random"
+            for text, call in (("np.clip", _clip_in_place_lo_hi), ("x.clip", _clip_method_in_place_lo_hi)):
+                yield Case("clip", f"{text}(x, {lo!r}, {hi!r}, out=x) {dtype} shape={shape} x={data}",
+                           partial(_gradient, dtype, shape, unusual), partial(call, lo, hi), kernel)
     yield from unusual_nan_cases("clip", kernels, "np.clip(x, -0.5, 0.5)", partial(_clip3, np.clip, -0.5, 0.5))
     yield from unusual_nan_cases("clip", kernels, "np.clip(x, 0.0, 1.0)", partial(_clip3, np.clip, 0.0, 1.0))
     yield from unusual_nan_cases("clip", kernels, "x.clip(-0.5, 0.5)", partial(_clip_method, -0.5, 0.5))
+    yield from unusual_nan_cases("clip", kernels, "np.clip(x, -0.5, 0.5, out=x)", partial(_clip_in_place_lo_hi, -0.5, 0.5))
+    yield from unusual_nan_cases("clip", kernels, "np.clip(x, 0.0, 1.0, out=x)", partial(_clip_in_place_lo_hi, 0.0, 1.0))
+    yield from unusual_nan_cases("clip", kernels, "x.clip(-5, 5, out=x)", partial(_clip_method_in_place_lo_hi, -5, 5))
     lo, hi, nan = -0.5, 0.5, float("nan")
     spellings = (
         Spelling("np.clip(x, lo, hi)", partial(_clip3, np.clip, lo, hi), normalises=True),
@@ -599,6 +737,15 @@ def clip_cases() -> Iterator[Case]:
         Spelling("np.clip(x, lo, np.float32(hi))", lambda x: np.clip(x, lo, np.float32(hi)), normalises=True),
         Spelling("x.clip(np.float32(lo), np.float32(hi))", lambda x: x.clip(np.float32(lo), np.float32(hi)), normalises=True),
         Spelling("np.clip(x, lo, hi, out=fresh)", lambda x: _clip_into_fresh(x, lo, hi), normalises=True),
+        Spelling("np.clip(x, lo, hi, out=x)", lambda x: _clip_in_place(x, lo, hi), normalises=True),
+        Spelling("x.clip(lo, hi, out=x)", lambda x: _clip_method_in_place(x, lo, hi), normalises=True),
+        Spelling("np.clip(x, lo, hi, x)", lambda x: _clip_in_place_kw(x, lo, hi, positional=True), normalises=True),
+        Spelling("x.clip(lo, hi, x)", lambda x: x.clip(lo, hi, x), normalises=True),
+        Spelling("np.clip(x, min=lo, max=hi, out=x)", lambda x: np.clip(x, min=lo, max=hi, out=x), normalises=True),
+        Spelling("np.clip(x, -1, 1, out=x)", lambda x: _clip_in_place(x, -1, 1), normalises=True),
+        Spelling("np.clip(x, np.float32(lo), np.float32(hi), out=x)", lambda x: _clip_in_place(x, np.float32(lo), np.float32(hi)), normalises=True),
+        Spelling("np.clip(x, lo, hi, out=x.view())", lambda x: np.clip(x, lo, hi, out=x.view()), normalises=True),
+        Spelling("np.clip(x, lo, hi, out=x, dtype=x.dtype)", lambda x: _clip_in_place_kw(x, lo, hi, dtype=x.dtype), normalises=True),
         Spelling("np.clip(x, np.float64(lo), np.float64(hi))", lambda x: np.clip(x, np.float64(lo), np.float64(hi)), MAYBE),
         Spelling("np.clip(x, lo, np.float64(hi))", lambda x: np.clip(x, lo, np.float64(hi)), MAYBE),
         Spelling("x.clip(np.float64(lo), np.float64(hi))", lambda x: x.clip(np.float64(lo), np.float64(hi)), MAYBE),
@@ -608,8 +755,13 @@ def clip_cases() -> Iterator[Case]:
         Spelling("np.clip(x, lo, hi, casting='unsafe')", lambda x: np.clip(x, lo, hi, casting="unsafe"), MAYBE),
         Spelling("np.clip(x, lo, hi, out=zeros, where=x > 0)", lambda x: _clip_where(x, lo, hi), MAYBE),
         Spelling("x.clip(lo, hi, order='F')", lambda x: x.clip(lo, hi, order="F"), MAYBE),
-        Spelling("np.clip(x, lo, hi, out=x)", lambda x: _clip_in_place(x, lo, hi), NEVER, normalises=True),
-        Spelling("x.clip(lo, hi, out=x)", lambda x: _clip_method_in_place(x, lo, hi), NEVER, normalises=True),
+        Spelling("np.clip(x, lo, hi, out=x, casting='unsafe')", lambda x: _clip_in_place_kw(x, lo, hi, casting="unsafe"), MAYBE),
+        Spelling("np.clip(x, np.float64(lo), np.float64(hi), out=x)", lambda x: _clip_in_place(x, np.float64(lo), np.float64(hi)), MAYBE),
+        Spelling("np.clip(x[1:], lo, hi, out=x[:-1]) shifted", lambda x: _clip_shifted(x, lo, hi), MAYBE),
+        Spelling("np.clip(x, hi, lo, out=x) reversed", lambda x: _clip_in_place(x, hi, lo), NEVER),
+        Spelling("x.clip(hi, lo, out=x) reversed", lambda x: _clip_method_in_place(x, hi, lo), NEVER),
+        Spelling("np.clip(x, nan, hi, out=x)", lambda x: _clip_in_place(x, nan, hi), NEVER),
+        Spelling("np.clip(x, lo, None, out=x)", lambda x: _clip_in_place(x, lo, None), NEVER),
         Spelling("np.clip(x, lo, None)", lambda x: np.clip(x, lo, None), NEVER),
         Spelling("np.clip(x, None, hi)", lambda x: np.clip(x, None, hi), NEVER),
         Spelling("np.clip(x, min=lo)", lambda x: np.clip(x, min=lo), NEVER),
@@ -636,10 +788,10 @@ def clip_cases() -> Iterator[Case]:
         for n, spelling in itertools.product((0, *LAYOUT_SIZES), spellings):
             for variant in variants_for(dtype, n):
                 expect = expectation(kernel, spelling, variant, n)
-                # An in-place call on an array NumPy has to buffer reaches the
-                # loop with separate buffers, which the kernel may take.
-                if spelling.kind == NEVER and spelling.normalises and kernel and variant.name not in IN_PLACE_UNBUFFERED:
-                    expect = ANY
+                # A call that writes into a read-only array raises, in NumPy
+                # and with hotkernels alike, before any loop runs.
+                if any(marker in spelling.text for marker in _CLIP_IN_PLACE_MARKERS) and not variant.writeable:
+                    expect = None
                 # NumPy converts integers to float64 for float bounds, and the
                 # float64 loop may then take the converted data.
                 if dtype == "i64" and spelling.kind != NEVER:

@@ -429,9 +429,21 @@ PyObject *hk_try_argext(PyObject *array, bool want_max);
 // least one element, or contiguous int64 with 1 to CLIP_I64_MAX_N elements;
 // each bound is an object that leaves the result in the array's element type
 // and converts to it exactly as NumPy converts it, with lo <= hi after the
-// conversion. A caller whose NumPy operation needs more, such as no `out`,
-// tests that first. In hook_function.c.
-PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi);
+// conversion. `out` is the caller's `out` argument, NULL when it was not
+// given: absent or None gives a new array, the array itself (float32 and
+// float64, writeable) clips it in place and returns it, and anything else is
+// NumPy's. A caller whose NumPy operation needs more tests that first. In
+// hook_function.c.
+PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi, PyObject *out);
+
+// Clip the `n` elements at `data` to [lo, hi] in place with the clip kernel
+// `kernel` (HK_CLIP_F32 or HK_CLIP_F64; for float32 the bounds are float32
+// values held as doubles). The kernels are wrong when their output is their
+// input (issue 7), so each run of the array is copied to a buffer on the
+// stack and the kernel clips the copy back over the run: every kernel call
+// sees two buffers that do not overlap. Leaves the floating-point flags as the kernels leave them. Needs
+// no interpreter lock. In hook_function.c.
+void hk_clip_in_place(hk_kernel kernel, void *data, size_t n, double lo, double hi);
 
 // The elements of `x` where `mask` is True, as a new one-dimensional array:
 // the compress kernels. `x` is contiguous float32, float64 or int64 (which
