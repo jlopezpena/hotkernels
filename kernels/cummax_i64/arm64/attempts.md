@@ -140,3 +140,19 @@ two cycles, at every size from 1,024 up, on both distributions. NumPy takes
 - **Kept:** yes
 - **Notes:** 1.13x at 16 on both (5.3 ns to 4.7), 1.07x at 64 and 1.04x at
   256 `rising`, 1.01x at 64 `random`.
+
+## 10. Every general block in the vector registers, M brought in late
+
+- **Idea:** attempt 6 again with the cost of its chain taken out. The block's
+  prefix maximum uses the Sklansky steps of attempt 9; M (kept in v31 in
+  both lanes, not moved over from x3) is brought into vector 3 before the
+  last step, which carries it on to 4 to 7, and into vectors 0 to 2 one by
+  one. So the chain from block to block is two maxima and a `dup` from lane
+  1 of vector 7, and a block is 24 maxima (48 vector operations) and a `dup`
+  against 56 `cmp`/`csel`. x3 is updated from lane 1 off the chain, for the
+  branches and the tail.
+- **check:** pass
+- **compare:** significantly faster, 1.020x [1.018 – 1.021]
+- **Kept:** yes
+- **Notes:** `random`: 1.27x at 64 (21.1 ns to 16.6), 1.09x at 256, 1.07x at
+  1,024, 0.99x at 16,384. `rising`: 1.03x at 4,096, nothing elsewhere.
