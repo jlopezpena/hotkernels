@@ -204,15 +204,19 @@ _cummax_i64:
     ldr     x3, [x0]                // M
     subs    x2, x2, #16
     b.lo    Ltail
-    mov     x8, x3
     FIRST_BLOCK
-    b       Lgeneral_next
+    // After the first block: rising if its last element is M, else flat,
+    // since random data has most of its new maxima early.
+    b.lo    Ltail
+    ldur    x9, [x0, #-8]
+    cmp     x3, x9
+    b.eq    Lrising
+    b       Lflat
 
     // ---- General: one block, then choose how to try the next.
 Lgeneral:
     mov     x8, x3                  // M before the block
     GENERAL_BLOCK
-Lgeneral_next:
     b.lo    Ltail
     cmp     x3, x8
     b.eq    Lflat_enter

@@ -156,3 +156,52 @@ two cycles, at every size from 1,024 up, on both distributions. NumPy takes
 - **Kept:** yes
 - **Notes:** `random`: 1.27x at 64 (21.1 ns to 16.6), 1.09x at 256, 1.07x at
   1,024, 0.99x at 16,384. `rising`: 1.03x at 4,096, nothing elsewhere.
+
+## 11. Enter the rising loop after a general block only if the block rose
+
+- **Idea:** outside the judge (a loop timer over one array, see the end of
+  this log), data with a new maximum at a random half of the elements runs at
+  0.33 ns per element at 4,096 but 0.69 at 2,000,000, slower than the naive
+  C's 0.63: every block is general, its last element is M half the time, so
+  the branch into the rising loop goes either way at random once the array is
+  too long for the predictor to learn, and the rising test then fails. The
+  first step of the general block already compares every element with the
+  one before it; `orr` those eight masks, `umaxv`, `fmov` to w10, and try the
+  rising loop only if none was true (the first block keeps the old rule).
+- **check:** pass
+- **compare:** significantly slower, 0.996x [0.994 – 0.998]
+- **Kept:** no
+- **Notes:** outside the judge the random-half data at 2,000,000 went from
+  0.69 to 0.33 ns per element, but 1 0 2 1 3 2 ... (every block general,
+  never rising) went from 0.28 to 0.33 for the nine extra vector operations.
+  In the judge 0.92x at 64 `random` and 0.97x at 256; neither distribution
+  has data that this helps. Not kept under the one rule; the case it fixes
+  is listed under "Where it stands".
+
+## 12. Try the flat loop after every general block that is not rising
+
+- **Idea:** after a general block in which M changed and whose last element
+  is not M, try the flat test rather than another general block, since in
+  random data a new maximum is usually alone.
+- **check:** pass
+- **compare:** significantly faster, 1.009x [1.006 – 1.011]
+- **Kept:** no
+- **Notes:** 1.13x at 64 and 1.05x at 256 `random`, nothing else. But it
+  makes every block of data that is neither flat nor rising pay a flat test
+  that fails: outside the judge 1 0 2 1 3 2 ... went from 0.28 to 0.37 ns
+  per element and the random-half data from 0.34 to 0.38 at 16,384 and 0.69
+  to 0.75 at 2,000,000. The gain is all in the first blocks, which attempt
+  13 takes without that cost.
+
+## 13. After the first block, the flat loop unless the block ends on M
+
+- **Idea:** attempt 12 for the first block only. After it, the rising loop
+  if its last element is M, the flat loop otherwise; the general loop keeps
+  its rule (flat only if M did not change), so data that is neither flat nor
+  rising pays one failed flat test, not one per block.
+- **check:** pass
+- **compare:** significantly faster, 1.018x [1.017 – 1.019]
+- **Kept:** yes
+- **Notes:** `random` 1.07x at 16, 1.12x at 64, 1.04x at 256; `rising` 1.07x
+  at 16, 1.05x at 64, 1.03x at 256, 1.02x at 1,024. At 16 the first block
+  no longer saves M for a comparison afterwards.
