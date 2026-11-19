@@ -256,6 +256,20 @@ def _nonzero(function: Callable[[np.ndarray], tuple]) -> bool:
     return bool(np.array_equal(indices, np.arange(0, PROBE_N, PROBE_STRIDE)))
 
 
+def _where() -> bool:
+    """Probe the function hook: `np.where(mask, a, b)` on float64, with a mask True at every PROBE_STRIDE-th position.
+
+    The two arrays differ at every position, so an element taken from the
+    wrong one fails the probe.
+    """
+    a = np.arange(PROBE_N, dtype=np.float64)
+    b = -a - 1.0
+    expected = b.copy()
+    expected[::PROBE_STRIDE] = a[::PROBE_STRIDE]
+    result = np.where(_stride_mask(), a, b)
+    return result.dtype == np.float64 and bool(np.array_equal(result, expected))
+
+
 def _cumsum(dtype: type) -> bool:
     """Probe the method hook: `x.cumsum()` on ones, whose running sum is exact in every type."""
     return bool(np.array_equal(np.ones(PROBE_N, dtype).cumsum(), np.arange(1, PROBE_N + 1).astype(dtype)))
@@ -374,7 +388,10 @@ HOOKS: tuple[Hook, ...] = (
     )),
     Hook("function.putmask", FUNCTION, (Probe("maskfill_f64", partial(_maskfill, _putmask)),)),
     Hook("function.copyto", FUNCTION, (Probe("maskfill_f64", partial(_maskfill, _copyto)),)),
-    Hook("function.where", FUNCTION, (Probe("nonzero_bool", partial(_nonzero, np.where)),)),
+    Hook("function.where", FUNCTION, (
+        Probe("nonzero_bool", partial(_nonzero, np.where)),
+        Probe("where_f64", _where),
+    )),
     Hook("function.clip", FUNCTION, (
         Probe("clip_f32", partial(_clip, np.float32)),
         Probe("clip_f64", partial(_clip, np.float64)),
@@ -443,4 +460,5 @@ KERNELS: tuple[KernelInfo, ...] = (
     # column the report keeps to 19 characters.
     KernelInfo("searchsorted_right_f64", "  side='right'", "float64", "searchsorted", ("method.searchsorted",)),
     KernelInfo("interp_f64", "np.interp", "float64", "interp", ("function.interp",)),
+    KernelInfo("where_f64", "np.where(c, a, b)", "float64", "where", ("function.where",)),
 )

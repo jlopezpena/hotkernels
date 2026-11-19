@@ -228,6 +228,7 @@ The hook for an operation does not depend on the architecture. The "Kernels" col
 | `np.putmask(x, mask, v)`, `np.copyto(x, v, where=mask)` | The same 1 | Function | As for `x[mask] = v`, with `x` of any shape. `np.putmask` needs only the sizes to match; `np.copyto` needs the same shape and no `casting` |
 | `nonzero` | 1 | Method | 1-D contiguous boolean array |
 | `np.where(mask)` | The same 1 | Function | One argument, a 1-D contiguous boolean array. `np.where` calls NumPy's C code for `nonzero` directly, so the method hook does not see it |
+| `np.where(mask, a, b)` | 1 | Function | Three positional arguments: a contiguous boolean array of at least one dimension, and two contiguous arrays of its exact shape, both float64 or both int64 (which the float64 kernel moves as bit patterns); or, for float64, one such array and a Python float, a Python int a double holds exactly or an `np.float64` on the other side. The result is a new array, so it cannot overlap an input. The condition is read for bytes other than 0 and 1 first. A scalar side is spread over a buffer on the stack and the kernel runs a block at a time. Counted as its own operation, `where` |
 | `searchsorted` | 2 | Method | The array one-dimensional, contiguous float64; the needles a contiguous float64 array of any shape or a Python number; `side` absent, `'left'` or `'right'`, each side with its own kernel ([searchsorted-right-design.md](searchsorted-right-design.md)); no `sorter` |
 | `cumsum` | 4 | Method | Contiguous, no `axis`, `dtype` or `out`. The two float kernels only with `inexact=True`. A boolean array, which has a kernel of its own and gives `np.intp`, is read for bytes other than 0 and 1 first |
 | `astype` | 1 | Method | Contiguous `uint8` to `float32`, other arguments at their defaults |
@@ -244,7 +245,7 @@ The function forms of the mask operations (`np.compress`, `np.extract`, `np.putm
 
 - **They flatten.** `np.compress` without an axis, `np.extract` and `np.putmask` read their arrays in C order whatever the shape, so a contiguous array of any shape is one flat buffer to the kernel. `np.copyto` broadcasts the mask against `x` instead, and a mask of another shape, even of the same size, is NumPy's to broadcast or refuse.
 - **`np.compress(mask, x, out=o)` is NumPy's.** The compress kernels write scratch output, and a scratch kernel must never see a buffer the caller owns.
-- **Only the masked operation is counted.** A call left to NumPy counts under "Left to NumPy" when it is the operation the kernel serves. `np.copyto` without `where` is a plain copy, and `np.where(mask, x, y)` a selection between two arrays; both pass through the hook without being counted.
+- **Only the masked operation is counted.** A call left to NumPy counts under "Left to NumPy" when it is the operation the kernel serves. `np.copyto` without `where` is a plain copy and passes through the hook without being counted. `np.where(mask, x, y)`, a selection between two arrays, has a kernel of its own since the second shortlist and is counted under `where`.
 
 From Python, with `uv run delivery time` on the Apple M1 Pro, NumPy 2.5.5, half the mask selected. The machine was running other work (load average about 7), so the figures are rough. The run now in `delivery/results/`, made at a load average of 2.0, has all five within a few percent of them:
 

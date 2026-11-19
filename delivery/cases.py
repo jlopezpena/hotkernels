@@ -1658,6 +1658,238 @@ def interp_cases() -> Iterator[Case]:
                            np.interp, expect)
 
 
+# ------------------------------------------------------------------- where
+
+# Element types np.where(c, a, b) is taken for when `a` and `b` are both
+# arrays of it, with the kernel that takes it: int64 elements are moved by the
+# float64 kernel as bit patterns.
+_WHERE_KERNELS = {"f64": "where_f64", "i64": "where_f64"}
+# Element types of two arrays that np.where leaves to NumPy.
+_WHERE_NEIGHBOURS = ("f32", "u64", "i32", "u8", "bool")
+# Argument name of the condition, which gives it random data of its own.
+_CONDITION = "mask"
+
+
+def _signalling_nan() -> np.float64:
+    """Return an np.float64 holding a signalling NaN with a payload, which the result must keep bit for bit."""
+    unsigned, signalling, _ = _UNUSUAL_NANS[8]
+    return np.array([signalling], unsigned).view(np.float64)[0]
+
+
+# Scalars given as `a` or `b` beside a float64 array: (text, maker, taken).
+# Taken are those that leave NumPy's result float64 and that it stores
+# exactly: a Python float, a Python int a double holds exactly, an
+# np.float64. The rest change the result's type or value, or raise.
+_WHERE_SCALARS: tuple[tuple[str, Callable[[], object], bool], ...] = (
+    ("1.5", lambda: 1.5, True),
+    ("nan", lambda: float("nan"), True),
+    ("-0.0", lambda: -0.0, True),
+    ("-inf", lambda: float("-inf"), True),
+    ("0", lambda: 0, True),
+    ("-2**53", lambda: -(2**53), True),
+    ("np.float64(-0.0)", lambda: np.float64(-0.0), True),
+    ("np.float64(signalling NaN)", _signalling_nan, True),
+    ("2**53 + 1", lambda: 2**53 + 1, False),
+    ("10**400", lambda: 10**400, False),
+    ("True", lambda: True, False),
+    ("np.float32(1.5)", lambda: np.float32(1.5), False),
+    ("np.int64(3)", lambda: np.int64(3), False),
+    ("1j", lambda: 1j, False),
+    ("np.array(1.5)", lambda: np.array(1.5), False),
+    ("None", lambda: None, False),
+)
+
+
+def _where(c, a, b):
+    """Return `np.where(c, a, b)`."""
+    return np.where(c, a, b)
+
+
+def _built_each(*makers: Callable[[], object]) -> tuple:
+    """Build the arguments of a case, one maker per argument, in order."""
+    return tuple(maker() for maker in makers)
+
+
+def _given(value: object) -> object:
+    """Return `value`: a maker of an argument that is the same object every time, such as a constant."""
+    return value
+
+
+def _unusual_nans_reversed(n: int) -> np.ndarray:
+    """Return the float64 array of `unusual_nans`, back to front, so that its NaNs fall elsewhere."""
+    return unusual_nans("f64", n)[::-1].copy()
+
+
+def _where_value_cases() -> Iterator[Case]:
+    """Yield `np.where(c, a, b)` over every value class at every size, all three plain arrays.
+
+    Both sides get the same value class (with data of their own), so the
+    sweep covers each class on each side. Then every class of the condition,
+    the NaNs the judge does not make, and each scalar taken, on each side.
+    """
+    for dtype, kernel in _WHERE_KERNELS.items():
+        for n in VALUE_SIZES:
+            condition = partial(values, "bool", n, arg=_CONDITION)
+            sides = zip(value_arrays(dtype, (n,), "a"), value_arrays(dtype, (n,), "b"))
+            for (_, _, label, a_maker), (_, _, _, b_maker) in sides:
+                yield Case("where", f"np.where(c, a, b) {dtype} {label} and b alike",
+                           partial(_built_each, condition, a_maker, b_maker), _where, kernel)
+            a_maker = partial(values, dtype, n, arg="a")
+            b_maker = partial(values, dtype, n, arg="b")
+            for mask_label, mask_maker in _mask_makers(n):
+                yield Case("where", f"np.where(c, a, b) {dtype} n={n} c={mask_label.split('=', 1)[1]}",
+                           partial(_built_each, mask_maker, a_maker, b_maker), _where, kernel)
+    for n in VALUE_SIZES:
+        condition = partial(values, "bool", n, arg=_CONDITION)
+        yield Case("where", f"np.where(c, a, b) f64 n={n} a and b=signalling and negative NaNs",
+                   partial(_built_each, condition, partial(unusual_nans, "f64", n), partial(_unusual_nans_reversed, n)),
+                   _where, "where_f64")
+        array = partial(values, "f64", n, arg="a")
+        for text, scalar, taken in _WHERE_SCALARS:
+            if not taken:
+                continue
+            yield Case("where", f"np.where(c, a, {text}) f64 n={n}", partial(_built_each, condition, array, scalar),
+                       _where, "where_f64")
+            yield Case("where", f"np.where(c, {text}, b) f64 n={n}", partial(_built_each, condition, scalar, array),
+                       _where, "where_f64")
+
+
+def _where_layout_cases() -> Iterator[Case]:
+    """Yield `np.where(c, a, b)` with each of the three arguments in every layout, the others plain.
+
+    Only plain one-dimensional arrays are taken. A two-dimensional array beside
+    one-dimensional ones is NumPy's to broadcast or refuse, and a
+    zero-dimensional condition is broadcast.
+    """
+    spelling = Spelling("np.where(c, a, b)", _where, any_shape=False)
+    for dtype in (*_WHERE_KERNELS, *_WHERE_NEIGHBOURS):
+        kernel = _WHERE_KERNELS.get(dtype)
+        for n in (0, *LAYOUT_SIZES):
+            plain = {
+                "c": partial(values, "bool", n, arg=_CONDITION),
+                "a": partial(values, dtype, n, arg="a"),
+                "b": partial(values, dtype, n, arg="b"),
+            }
+            for arg, arg_dtype, name in (("c", "bool", _CONDITION), ("a", dtype, "a"), ("b", dtype, "b")):
+                for variant in variants_for(arg_dtype, n):
+                    makers = {**plain, arg: partial(_variant_of, arg_dtype, n, variant, name)}
+                    yield Case("where", f"np.where(c, a, b) {dtype} n={n} {arg}={variant.name}",
+                               partial(_built_each, makers["c"], makers["a"], makers["b"]), _where,
+                               expectation(kernel, spelling, variant, n))
+
+
+def _where_shape_cases(dtype: str, kernel: str) -> Iterator[Case]:
+    """Yield `np.where(c, a, b)` with arrays of more than one dimension, and shapes that broadcast.
+
+    Arrays of one shape and C order are taken whatever their number of
+    dimensions. Shapes that differ are NumPy's to broadcast or refuse.
+
+    Args:
+        dtype: Element type of `a` and `b`, as a spec name.
+        kernel: The kernel that takes the call for that type.
+
+    Yields:
+        The cases.
+    """
+    n = ORDINARY_N
+    c = partial(values, "bool", n, arg=_CONDITION)
+    a = partial(values, dtype, n, arg="a")
+    b = partial(values, dtype, n, arg="b")
+    shapes = (
+        ("all two-dimensional", _reshaped(c), _reshaped(a), _reshaped(b), kernel),
+        ("all three-dimensional", _cube(c), _cube(a), _cube(b), kernel),
+        ("all two-dimensional, Fortran order", _reshaped(c, "F"), _reshaped(a, "F"), _reshaped(b, "F"), None),
+        ("c two-dimensional, Fortran order", _reshaped(c, "F"), _reshaped(a), _reshaped(b), None),
+        ("b over the rows of two-dimensional c and a", _reshaped(c), _reshaped(a), lambda: b()[:COLUMNS].copy(), None),
+        ("c of one column against two-dimensional a and b", lambda: c()[: n // COLUMNS].reshape(-1, 1).copy(),
+         _reshaped(a), _reshaped(b), None),
+        ("c of one row against two-dimensional a and b", lambda: c()[:COLUMNS].copy(), _reshaped(a), _reshaped(b), None),
+        ("a and b of one element", c, lambda: a()[:1].copy(), lambda: b()[:1].copy(), None),
+        ("c two-dimensional, a and b of the same size and one dimension", _reshaped(c), a, b, None),
+        ("all empty and two-dimensional", lambda: np.zeros((0, COLUMNS), np.bool_),
+         lambda: np.zeros((0, COLUMNS), np_dtype(dtype)), lambda: np.zeros((0, COLUMNS), np_dtype(dtype)), kernel),
+    )
+    for text, c_maker, a_maker, b_maker, expect in shapes:
+        yield Case("where", f"np.where(c, a, b) {dtype} {text}", partial(_built_each, c_maker, a_maker, b_maker),
+                   _where, expect)
+    if dtype == "f64":
+        yield Case("where", "np.where(c, a, nan) f64 c and a two-dimensional",
+                   partial(_built_each, _reshaped(c), _reshaped(a), partial(_given, float("nan"))), _where, kernel)
+        yield Case("where", "np.where(c, 0, b) f64 c and b three-dimensional",
+                   partial(_built_each, _cube(c), partial(_given, 0), _cube(b)), _where, kernel)
+        yield Case("where", "np.where(c, a, nan) f64 c two-dimensional, a of one dimension",
+                   partial(_built_each, _reshaped(c), a, partial(_given, float("nan"))), _where, None)
+
+
+# Calls of np.where on plain float64 arrays, written other ways: (text,
+# call, taken). The call receives the condition and two float64 arrays.
+_WHERE_SPELLINGS: tuple[tuple[str, Callable, bool], ...] = (
+    ("np.where(c, a, a)", lambda c, a, b: np.where(c, a, a), True),
+    ("np.where(c, b, a)", lambda c, a, b: np.where(c, b, a), True),
+    ("np.where(c, x=a, y=b)", lambda c, a, b: np.where(c, x=a, y=b), False),
+    ("np.where(c, a)", lambda c, a, b: np.where(c, a), False),
+    ("np.where(c, a, b, b)", lambda c, a, b: np.where(c, a, b, b), False),
+    ("np.where(c.astype(int), a, b)", lambda c, a, b: np.where(c.astype(np.int64), a, b), False),
+    ("np.where(c.view(np.uint8), a, b)", lambda c, a, b: np.where(c.view(np.uint8), a, b), False),
+    ("np.where(c, c, c)", lambda c, a, b: np.where(c, c, c), False),
+    ("np.where(c, 1.0, 0.0)", lambda c, a, b: np.where(c, 1.0, 0.0), False),
+    ("np.where(c, 0, nan)", lambda c, a, b: np.where(c, 0, float("nan")), False),
+    ("np.where(c, a, b.astype(np.float32))", lambda c, a, b: np.where(c, a, b.astype(np.float32)), False),
+    ("np.where(c, a.astype(np.float32), b)", lambda c, a, b: np.where(c, a.astype(np.float32), b), False),
+    ("np.where(c, a.astype(np.int64), b)", lambda c, a, b: np.where(c, a.astype(np.int64), b), False),
+    ("np.where(c, a.astype(np.int64), 0)", lambda c, a, b: np.where(c, a.astype(np.int64), 0), False),
+    ("np.where(c, 1.5, b.astype(np.int64))", lambda c, a, b: np.where(c, 1.5, b.astype(np.int64)), False),
+    ("np.where(c, a, b.astype('>f8'))", lambda c, a, b: np.where(c, a, b.astype(">f8")), False),
+)
+
+
+def where_cases() -> Iterator[Case]:
+    """Yield the cases of `np.where(c, a, b)`.
+
+    float64 and int64 pairs are taken, the int64 ones by the float64 kernel
+    moving bit patterns, and so are float64 arrays beside a scalar that keeps
+    the result float64. Everything else, and a condition holding a byte other
+    than 0 or 1, is NumPy's.
+    """
+    yield from _where_value_cases()
+    yield from _where_layout_cases()
+    for dtype, kernel in _WHERE_KERNELS.items():
+        yield from _where_shape_cases(dtype, kernel)
+    for n in (0, *LAYOUT_SIZES):
+        condition = partial(values, "bool", n, arg=_CONDITION)
+        floats = partial(values, "f64", n, arg="a")
+        others = partial(values, "f64", n, arg="b")
+        for text, call, taken in _WHERE_SPELLINGS:
+            yield Case("where", f"{text} f64 n={n}", partial(_built_each, condition, floats, others), call,
+                       "where_f64" if taken else None)
+        for dtype in _WHERE_KERNELS:
+            array = partial(values, dtype, n, arg="a")
+            for text, scalar, taken in _WHERE_SCALARS:
+                # Beside an int64 array no scalar is taken: a float changes the
+                # result's type, and an int is NumPy's to fit.
+                expect = "where_f64" if taken and dtype == "f64" else None
+                yield Case("where", f"np.where(c, a, {text}) {dtype} n={n}",
+                           partial(_built_each, condition, array, scalar), _where, expect)
+                yield Case("where", f"np.where(c, {text}, b) {dtype} n={n}",
+                           partial(_built_each, condition, scalar, array), _where, expect)
+        if n:
+            for byte in BAD_MASK_BYTES:
+                bad = partial(_bad_mask, n, byte)
+                for dtype in _WHERE_KERNELS:
+                    yield Case("where", f"np.where(c, a, b) {dtype} n={n} c bytes are {byte}",
+                               partial(_built_each, bad, partial(values, dtype, n, arg="a"),
+                                       partial(values, dtype, n, arg="b")), _where, None)
+                yield Case("where", f"np.where(c, a, nan) f64 n={n} c bytes are {byte}",
+                           partial(_built_each, bad, floats, partial(_given, float("nan"))), _where, None)
+                # With a scalar the binding checks the condition block by block;
+                # this one is clean until its last element.
+                late = partial(_late_bad_mask, n, byte)
+                yield Case("where", f"np.where(c, nan, b) f64 n={n} c bytes are {byte} at the end only",
+                           partial(_built_each, late, partial(_given, float("nan")), others), _where, None)
+                yield Case("where", f"np.where(c, a, b) f64 n={n} c bytes are {byte} at the end only",
+                           partial(_built_each, late, floats, others), _where, None)
+
+
 # Every operation that has a hook, with its exact cases.
 OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "argmax": partial(argext_cases, "argmax"),
@@ -1675,6 +1907,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "isin": isin_cases,
     "searchsorted": searchsorted_cases,
     "interp": interp_cases,
+    "where": where_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the

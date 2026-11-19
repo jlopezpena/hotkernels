@@ -235,6 +235,6 @@ The binding runs without guard pages. A wrong length passed to a correct kernel 
 
 ## Where that leaves things
 
-Of the 24 kernels, 22 are installed by `install()` and the other 2 with `install(inexact=True)`. `searchsorted` and `interp` were bound late: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. The last kernel added is the right side of the search, which `np.digitize` asks for by default. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
+Of the 25 kernels, 23 are installed by `install()` and the other 2 with `install(inexact=True)`. `searchsorted` and `interp` were bound late: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. The last kernel added is the right side of the search, which `np.digitize` asks for by default. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
 
 The last chapter collects every number, and is candid about which of them mean less than they appear to.
