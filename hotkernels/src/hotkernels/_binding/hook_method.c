@@ -487,15 +487,55 @@ static hk_kernel accumulate_kernel(PyObject *ufunc, PyObject *array) {
     return HK_KERNEL_COUNT;
 }
 
+// True when np.fmax.accumulate of the `n` doubles at `values` is left to
+// NumPy: the array holds a signalling NaN, a negative zero, or NaNs of more
+// than one bit pattern.
+//
+// cumfmax_f64 ignores every NaN; NumPy ignores a quiet one and answers a
+// signalling one with a quiet NaN, through the C library's fmax. The other two
+// are where NumPy's own answer depends on its build: which zero a running
+// maximum of zeros of both signs is, and which NaN an output is while every
+// element so far is NaN. NumPy's x86-64 and ARM64 builds give a different sign
+// for the zero (seen in CI on Apple Silicon), and the kernel reproduces one
+// build. Both conditions are broader than needed, since a negative zero
+// matters only where a zero is the running maximum, and are kept simple.
+//
+// One pass with no branch. A NaN is the one value that differs from itself,
+// and a zero the one that equals 0.0: `nan` and `zero` are all ones for such
+// an element. `set` and `clear` gather the bits set and clear in some NaN,
+// so the NaNs share one pattern exactly when no bit is in both, and one is
+// signalling when the quiet bit is among the clear ones. `zeros` gathers the
+// bits of the zeros, and its sign bit is set when one is negative. The
+// compares are the quiet kind: they raise the invalid-operation flag for a
+// signalling NaN only, whose call is NumPy's. The bits are copied out with
+// memcpy, which the compiler turns into a plain load.
+static bool fmax_accumulate_left_to_numpy(const double *values, size_t n) {
+    // The quiet bit of a NaN, the top bit of the fraction.
+    const uint64_t quiet = 0x0008000000000000ULL;
+    // 64-bit masks, as wide as an element: with bools the compiler leaves the
+    // loop scalar.
+    uint64_t set = 0, clear = 0, zeros = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t bits;
+        memcpy(&bits, &values[i], sizeof bits);
+        const uint64_t nan = values[i] != values[i] ? ~0ULL : 0;
+        const uint64_t zero = values[i] == 0.0 ? ~0ULL : 0;
+        set |= bits & nan;
+        clear |= ~bits & nan;
+        zeros |= bits & zero;
+    }
+    return (clear & quiet) != 0 || (set & clear) != 0 || (zeros >> 63) != 0;
+}
+
 // np.maximum.accumulate(x) or np.fmax.accumulate(x) on a one-dimensional
 // contiguous array with at least one element, `axis` the first, and `dtype`
 // and `out` absent or None. The parameters are NumPy's, which takes all four
 // by position or by keyword. The result is a new array of the input's type
 // and length, so it cannot overlap the input, which both kernels require.
 //
-// cumfmax_f64 ignores every NaN; NumPy ignores a quiet one and answers a
-// signalling one with a quiet NaN, through the C library's fmax. So a float64
-// array is read for signalling NaNs first, and one that holds any is NumPy's.
+// A float64 array is read first (fmax_accumulate_left_to_numpy), and one
+// that holds a signalling NaN, a negative zero, or NaNs of several patterns
+// is NumPy's.
 static HK_NOINLINE PyObject *try_accumulate(PyObject *ufunc, PyObject *const *args, Py_ssize_t nargs,
                                             PyObject *kwnames) {
     enum { ARRAY, AXIS, DTYPE, OUT, PARAMETERS };
@@ -520,19 +560,19 @@ static HK_NOINLINE PyObject *try_accumulate(PyObject *ufunc, PyObject *const *ar
         return NULL;
     }
     void *out = PyArray_DATA((PyArrayObject *)result);
-    // True when the input holds a signalling NaN and the call is passed on.
-    bool signalling = false;
+    // True when the float64 input is NumPy's and the call is passed on.
+    bool left = false;
     {
         HK_BEGIN_NOGIL(n)
         if (kernel == HK_CUMMAX_I64) {
             cummax_i64(PyArray_DATA(x), out, (size_t)n);
         } else {
-            signalling = hk_has_signalling_nan(PyArray_DATA(x), (size_t)n);
-            if (!signalling) cumfmax_f64(PyArray_DATA(x), out, (size_t)n);
+            left = fmax_accumulate_left_to_numpy(PyArray_DATA(x), (size_t)n);
+            if (!left) cumfmax_f64(PyArray_DATA(x), out, (size_t)n);
         }
         HK_END_NOGIL
     }
-    if (signalling) {
+    if (left) {
         Py_DECREF(result);
         return NULL;
     }
