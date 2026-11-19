@@ -13,3 +13,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** n/a (first version). `run`: 1.03x [1.03 – 1.04] over the naive C overall, 4.01x over NumPy.
 - **Kept:** yes
 - **Notes:** uniform codes 1.10x–1.13x from 1,024 up (0.31 ns per element against 0.35); four values 0.97x from 1,024 up (0.95 ns against 0.93), where both wait for the counters; 0.89x at 16 elements with 64 counters (18.9 ns against 16.8).
+
+## 2. Four tables of 32-bit counters on the stack, from 8 elements per counter
+
+- **Idea:** attempt 3 of `bincount_i16`: element k of each group of four is counted in table k of `bins` 32-bit counters below the stack pointer (at most 16 KB, 4 to 1,024 counters), the four summed and widened over `counts` at the end. Each element keeps its own test against `bins`. n < 2^32.
+- **check:** pass
+- **compare:** significantly faster, 1.343x [1.342 – 1.345]
+- **Kept:** yes
+- **Notes:** four values 2.24x–2.36x with 64 counters from 1,024 up (0.42 ns per element against 0.95), 2.33x–2.53x with 1,000 counters from 16,384 up. Uniform codes 1.07x–1.10x from 65,536 up (0.28 ns per element), but 0.98x at 1,024 with 64 counters and 0.95x at 16,384 with 1,000, where the set-up is not repaid.
