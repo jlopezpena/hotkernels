@@ -144,7 +144,7 @@ empyrical-reloaded 0.7.3: twelve statistics, alpha and beta, cumulative returns,
 **Why it does not gain.** Two reasons, each about half the run.
 
 - **46.5% never reaches NumPy.** empyrical calls bottleneck for its NaN-aware reductions. hotkernels hooks NumPy, so these calls reach no hook and `report()` cannot show them ([#192](https://github.com/sofeikov/hotkernels/issues/192)).
-- **38% is accumulation down the columns of a matrix,** which hotkernels takes only on one-dimensional arrays. NumPy walks each column with a stride of a row. The same work done a row at a time is six times faster even from Python: 0.69 ms against 4.29 ms for `fmax`, 0.65 ms against 4.34 ms for the product, on 253 × 4,789. At that speed the application would be about 1.45x faster ([#187](https://github.com/sofeikov/hotkernels/issues/187)).
+- **38% is accumulation down the columns of a matrix,** which hotkernels took only on one-dimensional arrays when this was recorded. NumPy walks each column with a stride of a row. The same work done a row at a time is six times faster even from Python: 0.69 ms against 4.29 ms for `fmax`, 0.65 ms against 4.34 ms for the product, on 253 × 4,789. At that speed the application would be about 1.45x faster ([#187](https://github.com/sofeikov/hotkernels/issues/187)). Since served by loops of the binding ([accumulate-rows-design.md](accumulate-rows-design.md)): 1.57x in a run of this application on the same machine at a load average of about 4, against 1.01x before the change in the same conditions.
 
 ## What the five say together
 
