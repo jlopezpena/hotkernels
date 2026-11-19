@@ -14,6 +14,9 @@ import typer
 
 import hotkernels
 
+from . import app_profile as P
+from . import app_timing as A
+from . import apps as applications
 from . import check as C
 from . import demo as D
 from . import numpy_suite
@@ -32,6 +35,8 @@ EXIT_FAILED = 1
 SHOWN_FAILURES = 5
 # Recorded timings, committed to the repository: one JSON file and one report per machine.
 RESULTS = Path(__file__).resolve().parent / "results"
+# What the file names of a recorded run of `delivery apps` end with.
+APPS_SUFFIX = "-apps"
 # Load average above which a timing run is marked as taken on a busy machine.
 BUSY_LOAD = 1.0
 # A kernel-taking call counts as slower than NumPy below this speedup. The
@@ -151,6 +156,49 @@ def demo() -> None:
     outcome = D.run()
     log.info("%s", render("demo.txt.j2", demo=outcome).rstrip("\n"))
     raise typer.Exit(EXIT_OK if outcome.identical and outcome.speedup > 1 else EXIT_FAILED)
+
+
+@app.command()
+def apps(
+    only: Optional[str] = typer.Option(None, help="Run one application, for example `mlp_train`."),
+    profile: bool = typer.Option(False, help="Also sample where the time goes. macOS only."),
+    record: bool = typer.Option(False, help="Write the results to delivery/results/."),
+) -> None:
+    """Run whole applications with and without hotkernels, and say where their time goes.
+
+    Needs the libraries of the `apps` dependency group: `uv run --group apps
+    delivery apps`. Only meaningful on native hardware and an idle machine.
+
+    Args:
+        only: Application to restrict the run to.
+        profile: Whether to sample each application's native stacks both ways.
+        record: Whether to write a JSON file and a Markdown report.
+    """
+    if profile and not P.available():
+        log.info("no `%s` on this system: times and counts only", P.SAMPLER)
+        profile = False
+    meta = T.describe_machine() | {"libraries": A.library_versions()}
+    names = [name for name in applications.NAMES if only in (None, name)]
+    skipped = {name: applications.missing(name) for name in names if applications.missing(name)}
+    items = []
+    for name in names:
+        if name in skipped:
+            continue
+        log.info("running %s", name)
+        items.append({"timing": A.measure(name), "profile": P.profile(name) if profile else None})
+    passed = bool(items) and all(item["timing"].identical for item in items)
+    context = {"meta": meta, "items": items, "skipped": skipped, "busy_load": BUSY_LOAD, "rounds": A.ROUNDS,
+               "passed": passed}
+    log.info("%s", render("apps.txt.j2", **context).rstrip("\n"))
+    if record:
+        RESULTS.mkdir(exist_ok=True)
+        stem = (_slug(meta["cpu"]) or "unknown-machine") + APPS_SUFFIX
+        rows = [{"timing": A.as_row(item["timing"]),
+                 "profile": P.as_row(item["profile"]) if item["profile"] else None} for item in items]
+        (RESULTS / f"{stem}.json").write_text(json.dumps({"meta": meta, "rows": rows}, indent=2) + "\n")
+        (RESULTS / f"{stem}.md").write_text(render("apps.md.j2", **context))
+        log.info("recorded in %s", RESULTS / f"{stem}.md")
+    raise typer.Exit(EXIT_OK if passed else EXIT_FAILED)
 
 
 @app.command(name="numpy-tests")
