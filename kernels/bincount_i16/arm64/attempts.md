@@ -51,3 +51,19 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.030x [1.021 – 1.039]
 - **Kept:** yes
 - **Notes:** uniform codes with 1,000 counters 1.10x–1.13x from 16,384 up (0.246 ns per element against 0.276); 64 counters 1.14x–1.15x at 1,024 and 4,096 (below the pair path). Four values unchanged within noise: there the wait for the counters, not the instructions, sets the speed.
+
+## 7. Eight tables instead of four on the table path
+
+- **Idea:** with four values, element k and element k + 4 share a table and often a counter; eight tables put the same counter eight elements apart. Up to 32 KB of stack for 1,024 counters. Eight table bases need every free integer register, so `bins` lives in `v31` during the loop and the stack frame size in `d30`.
+- **check:** pass
+- **compare:** significantly faster, 1.014x [1.013 – 1.015]
+- **Kept:** no: it wins one table by losing another
+- **Notes:** four values with 1,000 counters 1.11x–1.17x from 16,384 up (0.27 ns per element against 0.31), but uniform codes with 1,000 counters 0.95x–0.98x and 64 counters 0.95x at 1,024 (clearing and summing twice as much).
+
+## 8. Eight tables only where a sample of the data repeats
+
+- **Idea:** attempt 7 only when at least 32 of the first 256 elements equal the element four places on (the one that shares their table of four), from 8,192 elements: uniform codes over 64 values have about 4 such in 256, four values about 64. Taken from the x86-64 kernel's sample. First written as one loop for both, with tables 4 to 7 the same memory as 0 to 3 on data that does not repeat: uniform codes lost 3% with 1,000 counters and 4% at 1,024 elements with 64 (0.97x and 0.96x), from the loop's changed registers alone. Kept as a separate loop, the four-table loop exactly as before.
+- **check:** pass
+- **compare:** significantly faster, 1.019x [1.016 – 1.022]
+- **Kept:** yes
+- **Notes:** four values with 1,000 counters 1.11x–1.17x from 16,384 up (0.27 ns per element at 1,048,576 against 0.31); every other table 1.00x.

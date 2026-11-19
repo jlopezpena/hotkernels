@@ -16,6 +16,14 @@
 // It is taken from this many elements per counter, where clearing and
 // summing the tables is repaid.
 .set TABLES_MIN_PER_BIN, 8
+// Eight tables instead of four when at least SAMPLE_REPEATS of the first
+// SAMPLE elements equal the element four places on, which goes to the same
+// table of four: one in eight. Uniform codes over 64 values have about 4 in
+// 256, four distinct values about 64. The sample is taken from SAMPLE_MIN_N
+// elements.
+.set SAMPLE, 256
+.set SAMPLE_REPEATS, 32
+.set SAMPLE_MIN_N, 8192
 
 // The pair path is for at most this many counters: codes of six bits.
 .set PAIR_CODES, 64
@@ -71,6 +79,40 @@
     COUNTT  x11, x4, w15
     COUNTT  x12, x5, w14
     COUNTT  x13, x16, w15
+.endm
+
+// Count the four elements of the word in \w, each known to be below bins,
+// in the tables at \b0 to \b3 (eight-table path).
+.macro TABLE8 w, b0, b1, b2, b3
+    and     x11, \w, #0xffff
+    ubfx    x12, \w, #16, #16
+    ubfx    x13, \w, #32, #16
+    lsr     x14, \w, #48
+    ldr     w15, [\b0, x11, lsl #2]
+    ldr     w3, [\b1, x12, lsl #2]
+    add     w15, w15, #1
+    add     w3, w3, #1
+    str     w15, [\b0, x11, lsl #2]
+    str     w3, [\b1, x12, lsl #2]
+    ldr     w15, [\b2, x13, lsl #2]
+    ldr     w3, [\b3, x14, lsl #2]
+    add     w15, w15, #1
+    add     w3, w3, #1
+    str     w15, [\b2, x13, lsl #2]
+    str     w3, [\b3, x14, lsl #2]
+.endm
+
+// The same for four elements that are not all below bins: each is
+// sign-extended and tested.
+.macro TABLE8S w, b0, b1, b2, b3
+    sxth    x11, \w
+    sbfx    x12, \w, #16, #16
+    sbfx    x13, \w, #32, #16
+    asr     x14, \w, #48
+    COUNTT  x11, \b0, w15
+    COUNTT  x12, \b1, w15
+    COUNTT  x13, \b2, w15
+    COUNTT  x14, \b3, w15
 .endm
 
 // Count the sign-extended element in \reg into counts, if it is below bins.
@@ -176,6 +218,25 @@ Ldone:
     // cleared and never counted. counts is not cleared: the sum of the four
     // tables is stored over it. The counters cannot overflow: n < 2^32.
 Ltables:
+    cmp     x2, #SAMPLE_MIN_N
+    b.lo    Lfour
+    // How many of the first SAMPLE elements equal the one four places on.
+    movi    v2.2d, #0
+    mov     x11, x0
+    add     x12, x0, #SAMPLE * 2
+Lsample:
+    ldr     q0, [x11]
+    ldr     q1, [x11, #8]
+    cmeq    v0.8h, v0.8h, v1.8h
+    sub     v2.8h, v2.8h, v0.8h     // a match is -1
+    add     x11, x11, #16
+    cmp     x11, x12
+    b.lo    Lsample
+    addv    h2, v2.8h
+    fmov    w11, s2
+    cmp     w11, #SAMPLE_REPEATS
+    b.hs    Leight
+Lfour:
     add     x17, x3, #3
     and     x17, x17, #0xfffffffffffffffc
     lsl     x17, x17, #2            // bytes of one table, a multiple of 16
@@ -254,6 +315,108 @@ Lslow16:                            // one of the sixteen is not below bins
     TABLE4S x8
     TABLE4S x9
     b       Lnext16
+
+    // ---- Eight tables ----------------------------------------------------
+    // As the four tables, for data that repeats: element k of each group of
+    // eight is counted in table k.
+Leight:
+    add     x9, x3, #3
+    and     x9, x9, #0xfffffffffffffffc
+    lsl     x9, x9, #2              // bytes of one table, a multiple of 16
+    lsl     x11, x9, #3
+    sub     sp, sp, x11
+    add     x4, sp, x9              // tables 1 to 7
+    add     x5, x4, x9
+    add     x6, x5, x9
+    add     x7, x6, x9
+    add     x8, x7, x9
+    add     x16, x8, x9
+    add     x17, x16, x9
+    // Clear the tables, 64 bytes per step: eight times a multiple of 16.
+    fmov    d30, x11                // kept for the end: no integer register is free
+    movi    v0.2d, #0
+    mov     x10, sp
+    add     x9, sp, x11
+L8_cleartable:
+    stp     q0, q0, [x10]
+    stp     q0, q0, [x10, #32]
+    add     x10, x10, #64
+    cmp     x10, x9
+    b.lo    L8_cleartable
+
+    // Sixteen elements per step. One vector test says whether all sixteen
+    // are below bins, read as unsigned 16-bit numbers, where a negative
+    // element is at least 32768 and bins at most 1024; if they are, each is
+    // taken out of its word unsigned and counted with no test of its own.
+    dup     v31.8h, w3
+    subs    x2, x2, #16             // at least sixteen elements: n >= 8 * bins
+L8_tables16:
+    ldp     q0, q1, [x0]
+    cmhs    v0.8h, v0.8h, v31.8h
+    cmhs    v1.8h, v1.8h, v31.8h
+    orr     v0.16b, v0.16b, v1.16b
+    umaxv   h0, v0.8h
+    fmov    w9, s0
+    cbnz    w9, L8_slow16
+    // bins is restored from v31 where it is needed: x3 is a scratch
+    // register in the counting below.
+    ldp     x9, x10, [x0]
+    TABLE8  x9, sp, x4, x5, x6
+    TABLE8  x10, x7, x8, x16, x17
+    ldp     x9, x10, [x0, #16]
+    TABLE8  x9, sp, x4, x5, x6
+    TABLE8  x10, x7, x8, x16, x17
+L8_next16:
+    add     x0, x0, #32
+    subs    x2, x2, #16
+    b.hs    L8_tables16
+    umov    w3, v31.h[0]            // bins, at most 1024
+
+    // counts[v] = the tables' counters v, four counters per step; the
+    // last step ends exactly at bins and may overlap the one before.
+    mov     x9, #0                  // counter index
+    sub     x10, x3, #4             // the last step's index
+L8_sum:
+    cmp     x9, x10
+    csel    x9, x9, x10, lo
+    lsl     x11, x9, #2
+    ldr     q0, [sp, x11]
+    ldr     q1, [x4, x11]
+    ldr     q2, [x5, x11]
+    ldr     q3, [x6, x11]
+    ldr     q4, [x7, x11]
+    ldr     q5, [x8, x11]
+    ldr     q6, [x16, x11]
+    ldr     q7, [x17, x11]
+    add     v0.4s, v0.4s, v1.4s
+    add     v2.4s, v2.4s, v3.4s
+    add     v4.4s, v4.4s, v5.4s
+    add     v6.4s, v6.4s, v7.4s
+    add     v0.4s, v0.4s, v2.4s
+    add     v4.4s, v4.4s, v6.4s
+    add     v0.4s, v0.4s, v4.4s
+    uxtl    v16.2d, v0.2s
+    uxtl2   v17.2d, v0.4s
+    add     x12, x1, x9, lsl #3
+    stp     q16, q17, [x12]
+    add     x9, x9, #4
+    cmp     x9, x3
+    b.lo    L8_sum
+    fmov    x9, d30
+    add     sp, sp, x9
+    ands    x2, x2, #15             // 0 to 15 elements left, into counts
+    b.eq    Ldone
+    b       Lone
+
+L8_slow16:                          // one of the sixteen is not below bins
+    umov    w3, v31.h[0]            // bins, at most 1024
+    ldp     x9, x10, [x0]
+    TABLE8S x9, sp, x4, x5, x6
+    TABLE8S x10, x7, x8, x16, x17
+    ldp     x9, x10, [x0, #16]
+    TABLE8S x9, sp, x4, x5, x6
+    TABLE8S x10, x7, x8, x16, x17
+    b       L8_next16
 
     // ---- The pair table ---------------------------------------------------
     // Four elements are read in one 8-byte word. If each is in 0..63, which
