@@ -105,11 +105,62 @@ _cumfmax_f64:
     // ---- General, while each block changes M. v29 = M before the block.
 Lgeneral:
     LOAD
+Lgeneral_loaded:
     mov     v29.16b, v31.16b
     GENERAL
     b.lo    Ltail
     fcmp    d29, d31                // unordered, and so general, while M is NaN
+    b.eq    Lflat
+    ldur    d28, [x0, #-8]
+    fcmp    d28, d31                // the block ends on M
     b.ne    Lgeneral
+
+    // ---- Rising: the element before the block is M, and no element of the
+    //      block is below the one before it (a NaN fails the test): the
+    //      block is a copy. v31 is not kept up to date here.
+Lrising:
+    LOAD
+    ldur    q16, [x0, #-8]
+    ext     v17.16b, v0.16b, v1.16b, #8
+    ldur    q18, [x0, #24]
+    ext     v19.16b, v2.16b, v3.16b, #8
+    ldur    q20, [x0, #56]
+    ext     v21.16b, v4.16b, v5.16b, #8
+    ldur    q22, [x0, #88]
+    ext     v23.16b, v6.16b, v7.16b, #8
+    fcmge   v16.2d, v0.2d, v16.2d
+    fcmge   v17.2d, v1.2d, v17.2d
+    fcmge   v18.2d, v2.2d, v18.2d
+    fcmge   v19.2d, v3.2d, v19.2d
+    fcmge   v20.2d, v4.2d, v20.2d
+    fcmge   v21.2d, v5.2d, v21.2d
+    fcmge   v22.2d, v6.2d, v22.2d
+    fcmge   v23.2d, v7.2d, v23.2d
+    and     v16.16b, v16.16b, v17.16b
+    and     v18.16b, v18.16b, v19.16b
+    and     v20.16b, v20.16b, v21.16b
+    and     v22.16b, v22.16b, v23.16b
+    and     v16.16b, v16.16b, v18.16b
+    and     v20.16b, v20.16b, v22.16b
+    and     v16.16b, v16.16b, v20.16b
+    uminv   s16, v16.4s
+    fmov    w9, s16
+    cbz     w9, Lrising_fail
+    stp     q0, q1, [x1]
+    stp     q2, q3, [x1, #32]
+    stp     q4, q5, [x1, #64]
+    stp     q6, q7, [x1, #96]
+    add     x0, x0, #128
+    add     x1, x1, #128
+    subs    x2, x2, #16
+    b.hs    Lrising
+    sub     x9, x0, #8
+    ld1r    {v31.2d}, [x9]
+    b       Ltail
+Lrising_fail:
+    sub     x9, x0, #8
+    ld1r    {v31.2d}, [x9]
+    b       Lgeneral_loaded
 
     // ---- Flat: the block's maximum against M.
 Lflat:

@@ -26,3 +26,17 @@ Apple M1 Pro, macOS, native.
 - **compare:** significantly faster, 1.099x [1.083 – 1.115]: `random` 1.16x, `some_nan` 1.14x (1.1x to 1.4x from 256 up), `rising` 1.01x.
 - **Kept:** yes
 - **Notes:** outside the judge (a C loop timing the kernel on 4,096 elements in the first-level cache) a flat block takes 7.6 cycles at 3.228 GHz, a general one 10.2. Without its stores a flat block takes 3.2 cycles, four `stp` of M alone 4.1, and a plain copy of 128 bytes (four `ldp`, four `stp`) 5.1 to 5.6: this core's first-level cache moves about 48 bytes per cycle read and written together, and the stores are the larger part of the flat block's cost.
+
+## 4. Flat test: `fcmgt` against M and `umaxv` in place of `fmaxnmp`, `fmaxnm` and `fcmp`
+
+- **Idea:** the tree's two lanes compared with M as a vector, the mask reduced with `umaxv` and moved to an integer register; a NaN lane compares false, which is right once M is a number, as it is in the flat loop. A shorter path to the branch.
+- **check:** pass
+- **compare:** no significant difference, 1.000x [0.999 – 1.002]
+- **Kept:** no
+
+## 5. A rising loop: a block that never falls and starts on M is a copy
+
+- **Idea:** as in `cummax_i64`. After a general block that does not leave M as it was, if the block's last element is M, try the next as rising: every element `fcmge` the one before it (half the shifted vectors from `ldur`, half from `ext`, as `cummax_i64` found best), the masks `and`ed and `uminv`. A NaN compares false and fails the test, which is what makes `fcmge` and not `fcmgt`-the-other-way the test here. The block is then the input, stored as it is. A block that fails goes the general way with its vectors already loaded; M is reloaded from the element before it.
+- **check:** pass
+- **compare:** significantly faster, 1.049x [1.041 – 1.057]: `rising` 1.16x (1.23x at 256, 1.10x to 1.26x from 4,096 up), `random` and `some_nan` 1.00x, apart from 0.99x and 0.97x at 64.
+- **Kept:** yes
