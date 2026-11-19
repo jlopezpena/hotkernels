@@ -9,6 +9,9 @@
 // it has its own function hook. `np.argmax(x)` and `np.clip(x, lo, hi)` have
 // one as well, and arrive here only when it passed them on.
 //
+// `np.any(m, axis=1)` does not arrive here either: for a plain ndarray it calls
+// `np.logical_or.reduce` itself, and it has a function hook of its own.
+//
 // Most of the hooked methods are ndarray's. Two are the ufunc type's:
 // `accumulate` and `reduceat`, which every ufunc object shares, so
 // `np.maximum.accumulate(x)` and `np.add.accumulate(x)` reach the same entry
@@ -21,7 +24,7 @@
 
 // The methods that are hooked, as indices into `methods`.
 enum { M_ASTYPE, M_SUM, M_NONZERO, M_CUMSUM, M_SEARCHSORTED, M_ARGMAX, M_ARGMIN, M_CLIP, M_ACCUMULATE, M_REDUCEAT,
-       M_COUNT };
+       M_ANY, M_COUNT };
 
 // The type whose method table holds a hooked method. The ufunc type is reached
 // through NumPy's table of pointers, which is filled only when the module is
@@ -798,6 +801,118 @@ static PyObject *method_reduceat(PyObject *self, PyObject *const *args, Py_ssize
     return ((hk_fast_keywords)(void (*)(void))methods[M_REDUCEAT].original)(self, args, nargs, kwnames);
 }
 
+// --------------------------------------------------------------------- any
+
+// Bytes of the matrix that are checked and then reduced at a time: a whole
+// number of rows, and one row when a row is longer. Each block is read twice,
+// so it is a third of the smallest first-level data cache the kernels run on
+// (48 KiB on the x86-64 performance cores), as for np.sum on a mask.
+#define ANY_ROWS_BLOCK 16384
+
+// out[r] = whether row r of the `rows` rows of `cols` bytes at `m` holds a
+// non-zero byte, block by block: each block's bytes are checked for values
+// other than 0 and 1 (hk_mask_is_clean) just before the kernel reads them
+// from the first-level cache. Returns false at the first block with such a
+// byte, having written some of `out`; the caller then drops it.
+//
+// Compiled for the kernels' level, so that the check inlined here is AVX2
+// code: the kernel takes about 0.013 ns per element on rows of 22, and the
+// check compiled for any x86-64 would cost about as much again (see
+// hk_has_signalling_nan for the rule this follows). No Python object is
+// touched here; it runs with the interpreter lock released.
+static HK_TARGET_KERNEL_LEVEL bool any_rows_blocks(const uint8_t *m, bool *out, size_t rows, size_t cols) {
+    // A matrix that fits in one block is one block, without the division,
+    // which is a few nanoseconds of a call on a small matrix.
+    const size_t block_rows = rows * cols <= ANY_ROWS_BLOCK ? rows
+                              : cols < ANY_ROWS_BLOCK      ? ANY_ROWS_BLOCK / cols
+                                                           : 1;
+    for (size_t done = 0; done < rows; done += block_rows) {
+        const size_t count = rows - done < block_rows ? rows - done : block_rows;
+        const uint8_t *block = m + done * cols;
+        if (!hk_mask_is_clean(block, count * cols)) return false;
+        // The kernel writes exactly `count` results: n is a whole number of
+        // rows, so there is no partial row for it to skip.
+        any_rows_bool((const bool *)block, out + done, count * cols, cols);
+    }
+    return true;
+}
+
+// m.any(axis=1) for a two-dimensional boolean array, by either spelling: the
+// caller has tested that `mask` is a plain ndarray of bool with two
+// dimensions (hk_is_bool_matrix) and that `axis` was 1 or -1 with no other
+// argument. Shared with the function hook for np.any(m, axis=1).
+//
+// The result is a new one-dimensional boolean array of one element per row,
+// as NumPy's is. The kernel needs C order and at least one column; with zero
+// columns NumPy's answer is all False and the call is NumPy's. Zero rows are
+// taken: the kernel writes nothing. The new array cannot overlap the mask,
+// which the kernel requires.
+//
+// Every byte is checked to be 0 or 1 before the kernel reads it. NumPy takes
+// any non-zero byte as True, and on one of the kernel's paths (fewer than 32
+// elements, rows of other than four) a byte above 1 changes the results of
+// the rows beside it; a mask that holds one is NumPy's.
+//
+// The mask is read twice, by the check and by the kernel, and the lock is
+// released for large ones all the same, as for the other mask kernels: a
+// thread that changes the mask between the two reads can at worst make the
+// result of a row wrong. The kernel stays inside its buffers whatever the
+// bytes.
+HK_NOINLINE PyObject *hk_try_any_rows(PyObject *mask) {
+    PyArrayObject *m = (PyArrayObject *)mask;
+    if (!PyArray_IS_C_CONTIGUOUS(m)) return NULL;
+    npy_intp rows = PyArray_DIM(m, 0);
+    const npy_intp cols = PyArray_DIM(m, 1);
+    if (cols < 1) return NULL;
+    PyObject *result = PyArray_SimpleNew(1, &rows, NPY_BOOL);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    bool clean;
+    {
+        HK_BEGIN_NOGIL(rows * cols)
+        clean = any_rows_blocks(PyArray_DATA(m), PyArray_DATA((PyArrayObject *)result), (size_t)rows,
+                                (size_t)cols);
+        HK_END_NOGIL
+    }
+    if (!clean) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    hk_take(HK_ANY_ROWS_BOOL);
+    return result;
+}
+
+// The work of method_any once the array is a boolean matrix: the arguments
+// must be `axis` alone, by position or by keyword, the Python int 1 or -1.
+// The method passes its arguments to NumPy's `_methods._any`, whose
+// parameters are axis, dtype, out, keepdims and where; any of the others,
+// even at its default, leaves the call to NumPy.
+static HK_NOINLINE PyObject *try_any(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    const Py_ssize_t keywords = kwnames == NULL ? 0 : PyTuple_GET_SIZE(kwnames);
+    if (nargs + keywords != 1) return NULL;
+    if (keywords == 1 && !hk_text_is(PyTuple_GET_ITEM(kwnames, 0), "axis")) return NULL;
+    // A keyword's value follows the positional arguments, so either way the
+    // one argument is args[0].
+    if (!hk_is_last_axis(args[0])) return NULL;
+    return hk_try_any_rows(self);
+}
+
+// m.any(axis=1). `m.any()` with no argument is one of the commonest NumPy
+// calls there is and has no kernel: it goes on at the first test, uncounted.
+// So does any call on an array that is not a plain boolean one of two
+// dimensions. A call on such an array with arguments that is not taken is
+// counted.
+static PyObject *method_any(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    if ((nargs != 0 || kwnames != NULL) && hk_is_bool_matrix(self)) {
+        PyObject *result = try_any(self, args, nargs, kwnames);
+        if (result != NULL) return result;
+        hk_pass(HK_OP_ANY);
+    }
+    return ((hk_fast_keywords)(void (*)(void))methods[M_ANY].original)(self, args, nargs, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 // Shorthand for one entry of `methods`: the method `name` of type `owner`,
@@ -819,6 +934,7 @@ static hk_method methods[M_COUNT] = {
                                method_accumulate),
     [M_REDUCEAT] = HK_METHOD("reduceat", OWNER_UFUNC, accumulate_prepare, METH_FASTCALL | METH_KEYWORDS,
                              method_reduceat),
+    [M_ANY] = HK_METHOD("any", OWNER_NDARRAY, NULL, METH_FASTCALL | METH_KEYWORDS, method_any),
 };
 
 // The type object of `owner`, and its name for messages.
@@ -876,5 +992,6 @@ hk_hook hk_method_hooks[] = {
     {"method.clip", method_apply, method_remove, M_CLIP, false},
     {"ufunc.accumulate", method_apply, method_remove, M_ACCUMULATE, false},
     {"ufunc.reduceat", method_apply, method_remove, M_REDUCEAT, false},
+    {"method.any", method_apply, method_remove, M_ANY, false},
     {NULL, NULL, NULL, 0, false},
 };

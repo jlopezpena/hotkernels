@@ -51,6 +51,10 @@ PROBE_FILL = 2.5
 # kernel was timed for.
 PROBE_RUN = 16
 
+# Columns of the matrix the any(axis=1) probes reduce: the width the kernel
+# was timed for. PROBE_N is a whole number of such rows' worth or more.
+PROBE_COLS = 22
+
 # Element count of the sorted array the search probes look in. It differs
 # from PROBE_N so that a kernel which confused its two lengths would fail.
 PROBE_TABLE_N = 37
@@ -356,6 +360,38 @@ def _fmax_reduceat() -> bool:
     return result.dtype == np.float64 and result.tolist() == expected
 
 
+def _any_rows(reduce: Callable[[np.ndarray], np.ndarray]) -> bool:
+    """Probe an any(axis=1) hook on a boolean matrix of PROBE_COLS columns.
+
+    Every PROBE_STRIDE-th row holds one True, at a column that moves from row
+    to row; the others hold none. A kernel that reduced the wrong elements or
+    along the wrong axis fails.
+
+    Args:
+        reduce: Takes the matrix and returns NumPy's `m.any(axis=1)` for it.
+
+    Returns:
+        Whether the result is a one-dimensional boolean array with True at
+        exactly the rows that hold one.
+    """
+    rows = PROBE_N // PROBE_COLS
+    m = np.zeros((rows, PROBE_COLS), np.bool_)
+    marked = np.arange(0, rows, PROBE_STRIDE)
+    m[marked, marked % PROBE_COLS] = True
+    result = reduce(m)
+    return result.dtype == np.bool_ and bool(np.array_equal(result, np.arange(rows) % PROBE_STRIDE == 0))
+
+
+def _any_method(m: np.ndarray) -> np.ndarray:
+    """Return `m.any(axis=1)`."""
+    return m.any(axis=1)
+
+
+def _any_function(m: np.ndarray) -> np.ndarray:
+    """Return `np.any(m, axis=1)`."""
+    return np.any(m, axis=1)
+
+
 def _astype() -> bool:
     """Probe the method hook: `x.astype(np.float32)` on bytes."""
     result = np.full(PROBE_N, PROBE_BYTE, np.uint8).astype(np.float32)
@@ -470,6 +506,7 @@ HOOKS: tuple[Hook, ...] = (
         Probe("clip_f32", partial(_clip, np.float32)),
         Probe("clip_f64", partial(_clip, np.float64)),
     )),
+    Hook("function.any", FUNCTION, (Probe("any_rows_bool", partial(_any_rows, _any_function)),)),
     Hook("method.astype", METHOD, (Probe("cast_u8_f32", _astype),)),
     Hook("method.sum", METHOD, (Probe("sum_u8", _sum_method),)),
     Hook("method.nonzero", METHOD, (Probe("nonzero_bool", partial(_nonzero, _nonzero_method)),)),
@@ -501,6 +538,7 @@ HOOKS: tuple[Hook, ...] = (
         Probe("cumfmax_f64", _cumfmax),
     )),
     Hook("ufunc.reduceat", METHOD, (Probe("fmax_reduce_f64", _fmax_reduceat),)),
+    Hook("method.any", METHOD, (Probe("any_rows_bool", partial(_any_rows, _any_method)),)),
     Hook("index.get", INDEXING, (
         Probe("compress_f32", partial(_compress, np.float32)),
         Probe("compress_f64", partial(_compress, np.float64)),
@@ -545,4 +583,5 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("cummax_i64", "maximum.accumulate", "int64", "accumulate", ("ufunc.accumulate",)),
     KernelInfo("cumfmax_f64", "fmax.accumulate", "float64", "accumulate", ("ufunc.accumulate",)),
     KernelInfo("fmax_reduce_f64", "fmax.reduceat", "float64", "reduceat", ("ufunc.reduceat",)),
+    KernelInfo("any_rows_bool", "m.any(axis=1)", "bool", "any", ("method.any", "function.any")),
 )
