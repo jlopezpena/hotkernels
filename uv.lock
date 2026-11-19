@@ -171,6 +171,7 @@ name = "hotkernels-judge"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "bottleneck" },
     { name = "hotkernels" },
     { name = "jinja2" },
     { name = "markdown-it-py" },
@@ -199,6 +200,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bottleneck", specifier = ">=1.4" },
     { name = "hotkernels", directory = "hotkernels" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "markdown-it-py", specifier = ">=3.0" },
