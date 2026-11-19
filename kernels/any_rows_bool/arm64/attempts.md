@@ -188,3 +188,21 @@ throughout, with other kernel runs in progress.
   (0.28 ns a row), 3 5.6x to 5.7x, 5 7.5x to 7.9x, 8 3.6x to 3.8x (36 µs against 135 µs at
   1,048,576), 12 7.6x to 7.9x, 15 10.8x to 11.4x. Width 8 from Python is 23x to 39x faster than
   NumPy. Width 2 could take `umaxp` like width 4; left, as it is already 2.8x over the C.
+
+## 15. Widths above 64: 64 bytes per step and an exit at the first True
+
+- **Idea:** NumPy's reduction stops at a row's first True; the chunk loop of attempt 1 read every
+  row to its end and reduced it with `umaxv`. Now a row goes 64 bytes per step (two `ldp`, three
+  `orr`, one `umaxp` to 8 bytes, `fmov` to a general register, `cbz`) and ends at the first step
+  that holds a True; its last 64 bytes end at the row's end and overlap the step before.
+- **check:** pass
+- **compare:** no significant difference, 1.000x [1.000 – 1.001]
+- **Kept:** yes, on the timer: the judge times no such width.
+- **Notes:** against the naive C at 4,096 / 1,048,576 elements: width 65 2.16x / 1.13x (3%
+  True), 2.02x / 2.17x (50%), 1.54x / 1.45x (all False); width 100 5.22x / 3.24x, 4.80x /
+  4.40x, 3.59x / 3.26x; width 1,000 7.78x / 5.93x, 7.76x / 6.73x, and 1.05x / 1.04x all False,
+  where there is no exit and both read every byte. From Python at 1,048,576 elements: width 65
+  2.8x to 6.1x faster than NumPy, 100 2.3x to 6.5x, 1,000 1.04x all False but 0.63x (3% True,
+  14.7 µs against 9.3 µs) and 0.66x (50%): the kernel takes about 2.2 µs there, and the rest is
+  the binding's read of every byte for values other than 0 and 1, which NumPy's early exit does
+  not pay. That read is the binding's, not the kernel's.

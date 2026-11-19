@@ -363,23 +363,42 @@ Lmid64_few:
     add     x4, x4, #16
     FEW     ROW64
 Lgeneric:
-    sub     x7, x3, #16                 // start of a row's last chunk
-Lrow:
-    ldr     q0, [x0, x7]
-    mov     x6, #0
-Lchunk:
-    cmp     x6, x7
-    b.hs    Lrow_end
-    ldr     q1, [x0, x6]
+    // Rows of more than 64, one at a time, 64 bytes per step, and a row ends
+    // at the first step that holds a True: its four vectors are or'ed, one
+    // `umaxp` halves them to 8 bytes, and those go to a general register to
+    // test. The last 64 bytes end at the row's end and overlap the step
+    // before.
+    sub     x7, x3, #64                 // where a row's last 64 bytes start
+Llong_row:
+    mov     x6, x0
+    add     x10, x0, x7
+Llong_step:
+    cmp     x6, x10
+    b.hs    Llong_last
+    ldp     q0, q1, [x6]
+    ldp     q2, q3, [x6, #32]
+    add     x6, x6, #64
     orr     v0.16b, v0.16b, v1.16b
-    add     x6, x6, #16
-    b       Lchunk
-Lrow_end:
+    orr     v2.16b, v2.16b, v3.16b
+    orr     v0.16b, v0.16b, v2.16b
+    umaxp   v0.16b, v0.16b, v0.16b
+    fmov    x9, d0
+    cbz     x9, Llong_step
+    mov     w9, #1
+    b       Llong_store
+Llong_last:
+    ldp     q0, q1, [x10]
+    ldp     q2, q3, [x10, #32]
+    orr     v0.16b, v0.16b, v1.16b
+    orr     v2.16b, v2.16b, v3.16b
+    orr     v0.16b, v0.16b, v2.16b
     umaxv   b0, v0.16b
-    str     b0, [x1], #1
+    fmov    w9, s0
+Llong_store:
+    strb    w9, [x1], #1
     add     x0, x0, x3
     subs    x4, x4, #1
-    b.ne    Lrow
+    b.ne    Llong_row
     b       Ldone
 Lshort:
     // Rows of 1 to 15 other than 4. A row is reduced in a general register:
