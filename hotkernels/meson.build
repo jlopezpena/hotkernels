@@ -6,7 +6,7 @@
 #
 # No language is declared here: C is added only where the extension is built,
 # so the package builds on any other platform without a compiler.
-project('hotkernels', version: '0.2.0', meson_version: '>=1.1',
+project('hotkernels', version: '0.3.0', meson_version: '>=1.1',
         default_options: ['buildtype=release'])
 
 fs = import('fs')
