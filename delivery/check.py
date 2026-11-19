@@ -260,7 +260,7 @@ INSTALLATION = "install and uninstall"
 _HOOKED_OBJECTS = ("argmax", "argmin", "count_nonzero", "sum", "histogram", "bincount", "isin", "interp", "clip",
                    "compress", "extract", "putmask", "copyto", "where")
 _HOOKED_METHODS = ("astype", "sum", "nonzero", "cumsum", "searchsorted", "argmax", "argmin", "clip")
-_HOOKED_UFUNC_METHODS = ("accumulate",)
+_HOOKED_UFUNC_METHODS = ("accumulate", "reduceat")
 # The hooks behind the clip ufunc's loop, which also take every call the
 # function and method hooks of clip take.
 _CLIP_LOOP_HOOKS = ("loop.clip.f32", "loop.clip.f64")

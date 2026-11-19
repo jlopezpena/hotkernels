@@ -58,6 +58,10 @@ RANGE = (-3.0, 3.0)
 # Largest value of the "narrow" isin data, and its eight test values.
 ISIN_SPAN = 1000
 ISIN_TEST = [1, 50, 999, 0, 7, 500, 501, 2]
+# Length of the runs of the timed np.fmax.reduceat, and the share of its
+# elements that are NaN.
+REDUCEAT_RUN = 16
+REDUCEAT_NAN = 0.05
 # Length of the sorted array in the search statements that hold it fixed while
 # the number of needles grows: the shape of a lookup in a small table.
 SMALL_TABLE = 1000
@@ -139,6 +143,22 @@ def _spread_ints(n: int) -> tuple:
     """Build int64 values drawn from the whole range of the type, so that a new maximum is rare after the start."""
     info = np.iinfo(np.int64)
     return (_rng(n).integers(info.min, info.max, n, dtype=np.int64, endpoint=True),)
+
+
+def _runs(n: int, nan: float) -> tuple:
+    """Build normally distributed float64 values and the starts of runs of REDUCEAT_RUN elements.
+
+    Args:
+        n: Element count.
+        nan: Share of the elements that are NaN, all of one bit pattern.
+
+    Returns:
+        (values, starts), the starts an int64 array beginning at 0.
+    """
+    rng = _rng(n)
+    x = rng.standard_normal(n)
+    x[rng.random(n) < nan] = np.nan
+    return x, np.arange(0, n, REDUCEAT_RUN, dtype=np.int64)
 
 
 def _bytes(n: int) -> tuple:
@@ -305,6 +325,8 @@ TAKEN: tuple[Timed, ...] = (
     Timed("accumulate", "np.maximum.accumulate(x)", "int64", _spread_ints, np.maximum.accumulate, "cummax_i64"),
     Timed("accumulate", "np.fmax.accumulate(x)", "float64", partial(_floats, np.float64), np.fmax.accumulate,
           "cumfmax_f64"),
+    Timed("reduceat", "np.fmax.reduceat(x, starts)", f"float64, runs of {REDUCEAT_RUN}, {REDUCEAT_NAN:.0%} NaN",
+          partial(_runs, nan=REDUCEAT_NAN), np.fmax.reduceat, "fmax_reduce_f64"),
     Timed("cumsum", "np.cumsum(mask)", "bool, half selected", partial(_mask, HALF), np.cumsum, "cumsum_bool"),
     Timed("cumsum", "np.cumsum(x)", "float32", partial(_floats, np.float32), np.cumsum, "cumsum_f32", inexact=True),
     Timed("cumsum", "np.cumsum(x)", "float64", partial(_floats, np.float64), np.cumsum, "cumsum_f64", inexact=True),
@@ -342,6 +364,8 @@ LEFT: tuple[Timed, ...] = (
     Timed("accumulate", "np.add.accumulate(x)", "int64", partial(_ints, np.int64), np.add.accumulate, None),
     Timed("accumulate", "np.maximum.accumulate(x)", "float64", partial(_floats, np.float64), np.maximum.accumulate,
           None),
+    Timed("reduceat", "np.add.reduceat(x, starts)", f"float64, runs of {REDUCEAT_RUN}",
+          partial(_runs, nan=0.0), np.add.reduceat, None),
     Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0), density=False)", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE, density=False), None),
     Timed("bincount", "np.bincount(x)", "int64", partial(_ints, np.int64), np.bincount, None),
     Timed("isin", "np.isin(x, nine_values)", "int64", _narrow_ints, lambda x: np.isin(x, ISIN_TEST + [3]), None),

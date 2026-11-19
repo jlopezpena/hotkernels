@@ -30,6 +30,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
+
 #include "kernels.h"
 
 // ---------------------------------------------------------------- counters
@@ -44,7 +48,7 @@ typedef enum {
     HK_CAST_U8_F32, HK_SUM_U8, HK_COUNT_NONZERO_I64, HK_COUNT_NONZERO_F64,
     HK_HISTOGRAM_F64, HK_BINCOUNT_U8, HK_ISIN_I64,
     HK_SEARCHSORTED_F64, HK_SEARCHSORTED_RIGHT_F64, HK_INTERP_F64,
-    HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64,
+    HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64, HK_FMAX_REDUCE_F64,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -55,7 +59,7 @@ typedef enum {
     HK_OP_ARGMAX, HK_OP_ARGMIN, HK_OP_CLIP, HK_OP_COMPRESS, HK_OP_MASKFILL,
     HK_OP_NONZERO, HK_OP_CUMSUM, HK_OP_ASTYPE, HK_OP_SUM, HK_OP_COUNT_NONZERO,
     HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN, HK_OP_SEARCHSORTED, HK_OP_INTERP,
-    HK_OP_WHERE, HK_OP_ACCUMULATE,
+    HK_OP_WHERE, HK_OP_ACCUMULATE, HK_OP_REDUCEAT,
     HK_OPERATION_COUNT
 } hk_operation;
 
@@ -174,6 +178,66 @@ static inline bool hk_has_nan(const double *values, size_t n) {
     bool seen = false;
     for (size_t i = 0; i < n; i++) seen |= values[i] != values[i];
     return seen;
+}
+
+// Code that runs only for a kernel may use the instructions the kernels need.
+// The x86-64 kernels are written for the x86-64-v3 level, and install()
+// refuses a processor without it, so such a function may be compiled for
+// AVX2, which the rest of the binding, compiled for any x86-64, is not. Such
+// a function is not inlined into a caller compiled for any x86-64, so it is
+// one that loops over an array. ARM64 has one level and needs no attribute.
+#if defined(__x86_64__)
+#define HK_TARGET_KERNEL_LEVEL __attribute__((target("avx2")))
+#else
+#define HK_TARGET_KERNEL_LEVEL
+#endif
+
+// True when any of the `n` doubles at `values` is a signalling NaN: a NaN
+// whose quiet bit, the top bit of the fraction, is clear. NumPy answers a
+// signalling NaN in np.fmax with a quiet NaN, where a kernel that ignores NaN
+// skips it.
+//
+// A NaN is the one value that differs from itself. `nan` is all ones for a
+// NaN and zero otherwise, and `clear` gathers the bits that are clear in some
+// NaN: there is a signalling NaN exactly when the quiet bit is among them.
+// The loop has no branch, and with AVX2 the compiler makes it a compare and
+// two logical instructions per four elements: about 0.05 ns per element on
+// the Intel Core i5-14600KF in the first-level cache. A first version found
+// a NaN by comparing magnitudes as integers, which SSE2 cannot do in one
+// instruction, at 0.17 ns per element, and 0.08 with AVX2. The compare raises
+// the invalid-operation flag for a signalling NaN, never for a quiet one, and
+// a call that holds a signalling NaN goes to NumPy. The bits are copied out
+// with memcpy, which the compiler turns into a plain load.
+static inline HK_TARGET_KERNEL_LEVEL bool hk_has_signalling_nan(const double *values, size_t n) {
+    // The quiet bit of a NaN.
+    const uint64_t quiet = 0x0008000000000000ULL;
+    uint64_t clear = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t bits;
+        memcpy(&bits, &values[i], sizeof bits);
+        const uint64_t nan = values[i] != values[i] ? ~0ULL : 0;
+        clear |= ~bits & nan;
+    }
+    return (clear & quiet) != 0;
+}
+
+// Clear the floating-point status flags a kernel may have set. NumPy's own
+// loops leave none behind, and a kernel's vmaxpd sets the invalid-operation
+// flag for every NaN operand, quiet ones included. On x86-64 the kernels use
+// only SSE and AVX instructions, whose flags are the low six bits of MXCSR,
+// and the register is written only when one is set: about 1 ns, where the C
+// library's feclearexcept, which also saves and reloads the x87 state, takes
+// about 46 ns (Intel Core i5-14600KF), a fifth of a call on 16 elements.
+static inline void hk_clear_float_flags(void) {
+#if defined(__x86_64__)
+    // The six exception flags of MXCSR: invalid, denormal, divide by zero,
+    // overflow, underflow and precision.
+    const unsigned int flags = 0x3f;
+    const unsigned int csr = _mm_getcsr();
+    if (csr & flags) _mm_setcsr(csr & ~flags);
+#else
+    feclearexcept(FE_ALL_EXCEPT);
+#endif
 }
 
 // Convert a Python float or a Python int to a double, as NumPy does when such
