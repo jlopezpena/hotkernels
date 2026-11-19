@@ -16,6 +16,9 @@
 //
 // The loop loads and multiplies the next block between widening the current
 // one and storing it. The work is the same; on this core the order is faster.
+//
+// Under 16 elements, and for the 0 to 15 left after the blocks, one element
+// at a time, as the reference does it.
 .section __TEXT,__const
 .p2align 4
 Lspread:

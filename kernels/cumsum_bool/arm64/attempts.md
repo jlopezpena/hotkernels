@@ -93,7 +93,25 @@ Final `judge run` (locked, not recorded, with another kernel run timing on the m
 
 The run before it, minutes earlier, read 2.90x [2.87 – 2.91] overall: the same figures up to 16,384 and 2.85x, 1.96x, 2.51x, 2.06x and 2.06x from 65,536 up, where the other run shares the second-level cache. The `compare` runs above had 1,048,576 at 122 to 128 us and 4,194,304 at 511 to 620 us. The figures from 65,536 up want a quiet machine.
 
-**The second table, output 16 bytes behind the input within a page.** The kernel is slower there at the two smallest sizes it times, in both runs: 427.4 ns against 408.9 ns at 4,096, 0.96x [0.95 – 0.96] (0.94x [0.93 – 0.96] in the run before), and 1.6 us against 1.5 us at 16,384, 0.98x [0.97 – 0.98] (0.99x). At 4,194,304 and 16,777,216 it read 0.99x and 1.00x; from 65,536 to 1,048,576 its own "apart" column was 20% to 140% off the first table's in these runs (7.3 us, 62.2 us and 319.4 us), so those rows say nothing. The loop already loads the next block ahead of the current block's stores. No attempt was aimed at this table.
+**The recorded run** (`uv run judge run cumsum_bool --record`, locked, at a load average of about 11 with other kernel runs and their checks on the machine): 3.20x [3.17 – 3.21] over naive C overall, 37.6x [37.38 – 37.83] over NumPy.
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup [95%] |
+|---|---|---|---|---|---|
+| 16 | 2.4 ns | 7.2 ns | 3.07x [3.06 – 3.07] | 1.2 us | 508x |
+| 64 | 7.6 ns | 22.9 ns | 3.04x [3.01 – 3.06] | 1.3 us | 172x |
+| 256 | 26.1 ns | 97.7 ns | 3.74x [3.72 – 3.76] | 1.8 us | 67.6x |
+| 1,024 | 109.0 ns | 396.5 ns | 3.64x [3.60 – 3.68] | 3.6 us | 32.9x |
+| 4,096 | 401.1 ns | 1.6 us | 3.88x [3.85 – 3.90] | 10.5 us | 26.2x |
+| 16,384 | 1.8 us | 6.3 us | 3.52x [3.39 – 3.72] | 40.2 us | 22.4x |
+| 65,536 | 6.7 us | 25.8 us | 3.87x [3.83 – 3.90] | 159.1 us | 23.9x |
+| 262,144 | 32.9 us | 100.1 us | 3.04x [3.03 – 3.07] | 621.0 us | 18.9x |
+| 1,048,576 | 154.6 us | 405.7 us | 2.62x [2.58 – 2.65] | 2.50 ms | 16.2x |
+| 4,194,304 | 616.6 us | 1.62 ms | 2.63x [2.52 – 2.67] | 9.95 ms | 16.1x |
+| 16,777,216 | 2.59 ms | 6.57 ms | 2.53x [2.45 – 2.56] | 41.30 ms | 15.9x |
+
+It is the third of three recorded one after another, and the one kept. The first read 3.09x [3.08 – 3.10], with 3.19x, 2.96x and 2.97x at 16,384, 65,536 and 262,144; the second 3.18x [3.16 – 3.19] under the judge's noisy-machine warning (the reference loop changed by 3.0% during the run).
+
+**The second table, output 16 bytes behind the input within a page.** The kernel is slower there at the two smallest sizes it times, in both runs: 427.4 ns against 408.9 ns at 4,096, 0.96x [0.95 – 0.96] (0.94x [0.93 – 0.96] in the run before), and 1.6 us against 1.5 us at 16,384, 0.98x [0.97 – 0.98] (0.99x). At 4,194,304 and 16,777,216 it read 0.99x and 1.00x; from 65,536 to 1,048,576 its own "apart" column was 20% to 140% off the first table's in these runs (7.3 us, 62.2 us and 319.4 us), so those rows say nothing. The loop already loads the next block ahead of the current block's stores. No attempt was aimed at this table. In the recorded run, on a busier machine, the kernel is not slower there at any size: 416.5 ns against 438.3 ns at 4,096, 1.05x [1.04 – 1.07], 1.18x at 16,384, 1.02x to 1.14x from 65,536 up; the two columns are the same code, so the spread between them is what that run can tell apart.
 
 Not tried, or not kept, and why:
 
