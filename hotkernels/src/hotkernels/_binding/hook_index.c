@@ -69,11 +69,13 @@ HK_NOINLINE PyObject *hk_try_compress(PyObject *array, PyObject *selector) {
     return result;
 }
 
-// x[mask] for one-dimensional `x` and a one-dimensional boolean mask. With
-// more dimensions `x[mask]` selects rows, or needs the shapes to match, and
-// is left to NumPy.
+// x[mask] for a boolean mask of the shape of `x`, of any number of
+// dimensions: NumPy then reads both in C order and returns the selected
+// elements as one dimension, which is what the kernel does with two
+// contiguous buffers. A mask of fewer dimensions selects rows, and one of
+// another shape is an error or a different selection; both are NumPy's.
 static inline PyObject *try_compress(PyObject *self, PyObject *index) {
-    if (PyArray_NDIM((PyArrayObject *)self) != 1 || PyArray_NDIM((PyArrayObject *)index) != 1) return NULL;
+    if (!hk_same_shape((PyArrayObject *)self, (PyArrayObject *)index)) return NULL;
     return hk_try_compress(self, index);
 }
 
@@ -114,9 +116,10 @@ HK_NOINLINE bool hk_try_maskfill(PyObject *array, PyObject *selector, PyObject *
     return true;
 }
 
-// x[mask] = v for one-dimensional `x` and a one-dimensional boolean mask.
+// x[mask] = v for a boolean mask of the shape of `x`, of any number of
+// dimensions. As for x[mask] above, any other mask is NumPy's.
 static inline bool try_maskfill(PyObject *self, PyObject *index, PyObject *value) {
-    if (PyArray_NDIM((PyArrayObject *)self) != 1 || PyArray_NDIM((PyArrayObject *)index) != 1) return false;
+    if (!hk_same_shape((PyArrayObject *)self, (PyArrayObject *)index)) return false;
     return hk_try_maskfill(self, index, value);
 }
 

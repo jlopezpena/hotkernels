@@ -136,6 +136,18 @@ static inline bool hk_is_flat_1d(PyObject *obj, int type_num) {
     return hk_is_flat(obj, type_num) && PyArray_NDIM((PyArrayObject *)obj) == 1;
 }
 
+// True when two arrays have the same number of dimensions and the same
+// length along each.
+static inline bool hk_same_shape(PyArrayObject *a, PyArrayObject *b) {
+    const int dimensions = PyArray_NDIM(a);
+    if (dimensions != PyArray_NDIM(b)) return false;
+    const npy_intp *a_shape = PyArray_DIMS(a), *b_shape = PyArray_DIMS(b);
+    for (int i = 0; i < dimensions; i++) {
+        if (a_shape[i] != b_shape[i]) return false;
+    }
+    return true;
+}
+
 // True when the `a_bytes` bytes at `a` and the `b_bytes` bytes at `b` share
 // no byte.
 static inline bool hk_disjoint(const char *a, size_t a_bytes, const char *b, size_t b_bytes) {
