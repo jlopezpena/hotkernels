@@ -139,3 +139,13 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
 - **compare:** significantly faster, 1.012x [1.011 – 1.012]; rows of 4 at 16 elements 1.33x
   (2.6 ns to 1.9 ns), rows of 22 at 64 elements 1.08x (one test fewer before its path).
 - **Kept:** yes
+
+## 12. Rows of 16 to 32 in the second-level cache: masked pairs with ordinary loads
+
+- **Idea:** the form of attempt 10 (one pair of loads at the row's start, the second half
+  masked, positions moved per row) with `ldp` in place of `ldnp`, from 131,072 elements, in case
+  the pair at the row's start suits the second-level cache better than two overlapping loads.
+- **check:** pass
+- **compare:** significantly slower, 0.998x [0.997 – 0.999]; rows of 22 0.99x from 262,144 to
+  4,194,304 and 0.95x at 16,777,216 (where it replaced `ldnp`).
+- **Kept:** no
