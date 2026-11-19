@@ -71,3 +71,28 @@ Apple M1 Pro, macOS, native.
 - **check:** pass
 - **compare:** significantly faster, 1.027x [1.026 – 1.028]: 1.20x at 16, 1.04x to 1.11x at 64, 1.02x to 1.06x at 256.
 - **Kept:** yes
+
+## 10. Rising test: every shifted vector from `ldur`
+
+- **Idea:** the four shifted vectors made with `ext` loaded instead, taking four operations off the floating-point pipes, which the test's compares and `and`s keep busy.
+- **check:** pass
+- **compare:** significantly slower, 0.987x [0.977 – 0.998]: `rising` 0.96x (0.87x at 64), the others 1.00x. As on `cummax_i64` (its attempt 17), half and half is better.
+- **Kept:** no
+
+## 11. Prefetch the input 1,024 bytes ahead in the flat and rising loops
+
+- **Idea:** one `prfm pldl1keep` per block, eight blocks ahead, for the sizes beyond the caches.
+- **check:** pass
+- **compare:** significantly slower, 0.986x [0.984 – 0.988]: 1.00x to 1.01x from 1,048,576 up, 0.92x to 0.96x from 16,384 to 262,144 on `some_nan`. This core's own prefetchers already follow a forward stream.
+- **Kept:** no
+
+## Where it stands
+
+`uv run judge run cumfmax_f64 --unlocked` at the end of the run, with another kernel run and CI jobs on the machine: 14.0x [13.83 – 14.13] over the naive C and 28.4x [27.94 – 28.57] over NumPy; `random` 14.3x, `rising` 14.1x, `some_nan` 13.7x. 5.3x at 16 elements, 12x to 14x at 64, 20x to 25x from 256 to 16,384 (0.10 to 0.12 ns per element, the speed of a copy in the first-level cache), 14x to 15x at 65,536 and 262,144, 9x to 14x from 1,048,576 up, where the figures are noisy. The naive C takes 2.5 ns per element on this machine at every size. With the output 16 bytes behind its input the kernel is no slower: 1.24x [1.23 – 1.24] over the same placement apart.
+
+**Outside the domain** (a script against `np.fmax.accumulate` on this machine, NumPy 2.5.5, arrays of 1 to 80 elements; no change made for it):
+
+- `-0.0`: 1,035 of 3,000 arrays of zeros of both signs and `-1.0` differ. The flat test takes `fmaxnm(T, M) == M` as "nothing changes", and `+0.0 == -0.0`; the rising test takes `-0.0 >= +0.0` as rising and copies the input. Both can leave a `-0.0` where NumPy's `fmaxnm` chain has `+0.0`.
+- NaNs of several bit patterns: 371 of 3,000 differ, and 1,796 of 2,000 arrays that start with a run of NaNs of mixed patterns. In the all-NaN prefix the kernel gives the later NaN where NumPy keeps `x[0]`'s: `fmaxnm` of two NaNs returns its first operand, and the prefix steps put the later element first. Swapping the operands of those steps would likely match NumPy here at no cost; it was not tried, being outside the spec.
+- One NaN pattern, `0xfff8...` (negative): no difference in 3,000 arrays, so the default-NaN mode is off and `fmaxnm` passes the pattern through.
+- A signalling NaN: 2,619 of 3,000 differ. NumPy's output becomes a quiet NaN and the maximum so far is forgotten; the kernel mostly ignores it (in a flat block or once quietened inside a prefix step) and may give a quiet NaN where a scalar step meets it directly.
