@@ -2371,6 +2371,246 @@ def reduceat_cases() -> Iterator[Case]:
                              partial(_invalid_flag_after, _fmax_reduceat))
 
 
+# ------------------------------------------------------------------- any
+
+# Row widths of the any(axis=1) sweep: either side of each vector and block
+# size the kernel may work in (8, 16, 32 and 64 bytes), its own paths (rows of
+# 4 have one), the width it was timed for, and two long rows.
+ANY_COLS = (1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 22, 31, 32, 33, 63, 64, 65, 100, 1000)
+# Row counts of the sweep. A further count per width puts the matrix above
+# the size from which the binding releases the interpreter lock
+# (_any_large_rows).
+ANY_ROWS = (1, 2, 3, 100)
+# Element count from which the binding releases the interpreter lock
+# (HK_NOGIL_MIN_N in binding.h).
+NOGIL_MIN_N = 8192
+# Width and row count of the matrix whose only bad byte is its last: more
+# than two of the blocks of 16,384 bytes in which the binding checks a matrix.
+ANY_LATE_COLS = 22
+ANY_LATE_ROWS = 2000
+# Every how many rows the matrix with some rows True holds one, and the step
+# by which that True moves along the columns from one such row to the next.
+ANY_MARKED_EVERY = 3
+ANY_MARKED_STEP = 5
+# Width and row count of the matrices of the layouts and spellings sweep.
+ANY_LAYOUT_SHAPES = ((3, 7), (100, 22), (1000, 22))
+
+
+def _any_large_rows(cols: int) -> int:
+    """Return the fewest rows of `cols` elements that the binding runs without the interpreter lock."""
+    return NOGIL_MIN_N // cols + 1
+
+
+def _any_matrix(maker: Callable[[], np.ndarray], cols: int) -> np.ndarray:
+    """Return `maker`'s elements as a C-ordered matrix of `cols` columns.
+
+    Args:
+        maker: Builds a one-dimensional array whose length `cols` divides.
+        cols: Elements per row, at least 1.
+
+    Returns:
+        The matrix, of its own memory.
+    """
+    return maker().reshape(-1, cols).copy()
+
+
+def _any_random(rows: int, cols: int, dtype: str = "bool") -> np.ndarray:
+    """Return random elements of `dtype` as a C-ordered matrix of `rows` by `cols`."""
+    return values(dtype, rows * cols, arg="mask").reshape(rows, cols).copy()
+
+
+def _any_sparse(rows: int, cols: int) -> np.ndarray:
+    """Return a boolean matrix of `rows` by `cols` in which some rows hold a True and the others none.
+
+    Random data of a few hundred elements has a True in nearly every row,
+    which a kernel that reduced the wrong elements could still match.
+    """
+    m = np.zeros((rows, cols), np.bool_)
+    marked = np.arange(0, rows, ANY_MARKED_EVERY)
+    m[marked, (marked * ANY_MARKED_STEP) % cols] = True
+    return m
+
+
+def _any_bad(rows: int, cols: int, byte: int) -> np.ndarray:
+    """Return a boolean matrix whose True elements are stored as `byte`, not 1.
+
+    NumPy takes any non-zero byte as True. On one of the kernel's paths a
+    byte above 1 changes the results of the rows beside it, so the binding
+    must keep such a matrix away from the kernel.
+    """
+    return _bad_mask(rows * cols, byte).reshape(rows, cols)
+
+
+def _any_late_bad(byte: int) -> np.ndarray:
+    """Return a boolean matrix of zeros whose last element is stored as `byte`: clean until its last block."""
+    return _late_bad_mask(ANY_LATE_ROWS * ANY_LATE_COLS, byte).reshape(ANY_LATE_ROWS, ANY_LATE_COLS)
+
+
+def _any_out(m):
+    """Run `m.any(axis=1, out=o)` into a new array of the right length and return `o`."""
+    return m.any(axis=1, out=np.empty(np.shape(m)[0], np.bool_))
+
+
+def _any_function_out(m):
+    """Run `np.any(m, axis=1, out=o)` into a new array of the right length and return `o`."""
+    return np.any(m, axis=1, out=np.empty(np.shape(m)[0], np.bool_))
+
+
+def _any_where(m):
+    """Run `m.any(axis=1, where=w)` with a `where` that leaves out the first column."""
+    where = np.ones(np.shape(m), np.bool_)
+    where[:, 0] = False
+    return m.any(axis=1, where=where)
+
+
+# The spellings of any(axis=1) that take the kernel, first the two the sweep
+# over every value runs.
+_ANY_TAKING: tuple[tuple[str, Callable], ...] = (
+    ("m.any(axis=1)", lambda m: m.any(axis=1)),
+    ("np.any(m, axis=1)", lambda m: np.any(m, axis=1)),
+    ("m.any(axis=-1)", lambda m: m.any(axis=-1)),
+    ("m.any(1)", lambda m: m.any(1)),
+    ("m.any(-1)", lambda m: m.any(-1)),
+    ("np.any(m, axis=-1)", lambda m: np.any(m, axis=-1)),
+    ("np.any(m, 1)", lambda m: np.any(m, 1)),
+    ("np.any(m, -1)", lambda m: np.any(m, -1)),
+)
+# Spellings of the same operation, or of one beside it, that must stay with NumPy.
+_ANY_NEVER: tuple[tuple[str, Callable], ...] = (
+    ("m.any()", lambda m: m.any()),
+    ("np.any(m)", np.any),
+    ("m.any(axis=0)", lambda m: m.any(axis=0)),
+    ("np.any(m, axis=0)", lambda m: np.any(m, axis=0)),
+    ("m.any(axis=None)", lambda m: m.any(axis=None)),
+    ("np.any(m, axis=None)", lambda m: np.any(m, axis=None)),
+    ("m.any(axis=(1,))", lambda m: m.any(axis=(1,))),
+    ("np.any(m, axis=(1,))", lambda m: np.any(m, axis=(1,))),
+    ("m.any(axis=np.int64(1))", lambda m: m.any(axis=np.int64(1))),
+    ("np.any(m, axis=np.int64(1))", lambda m: np.any(m, axis=np.int64(1))),
+    ("m.any(axis=1, keepdims=True)", lambda m: m.any(axis=1, keepdims=True)),
+    ("np.any(m, axis=1, keepdims=True)", lambda m: np.any(m, axis=1, keepdims=True)),
+    ("m.any(axis=1, keepdims=False)", lambda m: m.any(axis=1, keepdims=False)),
+    ("m.any(1, None)", lambda m: m.any(1, None)),
+    ("np.any(m, 1, None)", lambda m: np.any(m, 1, None)),
+    ("m.any(axis=1, out=o)", _any_out),
+    ("np.any(m, axis=1, out=o)", _any_function_out),
+    ("m.any(axis=1, where=w)", _any_where),
+    ("np.any(a=m, axis=1)", lambda m: np.any(a=m, axis=1)),
+    ("m.any(axis=2)", lambda m: m.any(axis=2)),
+    ("m.all(axis=1)", lambda m: m.all(axis=1)),
+    ("np.all(m, axis=1)", lambda m: np.all(m, axis=1)),
+    ("np.logical_or.reduce(m, axis=1)", lambda m: np.logical_or.reduce(m, axis=1)),
+)
+# Ways a boolean matrix can be laid out or wrapped, built from a C-ordered
+# one, and whether the kernel takes it.
+_ANY_LAYOUTS: tuple[tuple[str, Callable[[np.ndarray], object], str | None], ...] = (
+    ("contiguous", np.copy, "any_rows_bool"),
+    ("readonly", _readonly, "any_rows_bool"),
+    ("fortran", np.asfortranarray, None),
+    ("strided rows", lambda m: np.repeat(m, 2, axis=0)[::2], None),
+    ("strided columns", lambda m: np.repeat(m, 2, axis=1)[:, ::2], None),
+    ("transposed", lambda m: np.ascontiguousarray(m.T).T, None),
+    ("subclass", lambda m: m.copy().view(_Subclass), None),
+    ("memmap", _memmap, None),
+    ("masked_array", lambda m: np.ma.array(m.copy()), ANY),
+    ("list", lambda m: m.tolist(), None),
+)
+
+
+def _any_laid_out(build: Callable[[np.ndarray], object], rows: int, cols: int) -> object:
+    """Return a random boolean matrix of `rows` by `cols` as `build` lays it out."""
+    return build(_any_random(rows, cols))
+
+
+def _any_cube(rows: int, cols: int) -> np.ndarray:
+    """Return a random boolean matrix of `rows` by `cols` as a C-ordered array of shape (rows, 1, cols)."""
+    return _any_random(rows, cols).reshape(rows, 1, cols)
+
+
+def _any_flat(rows: int, cols: int) -> np.ndarray:
+    """Return the elements of a random boolean matrix of `rows` by `cols` as one dimension."""
+    return _any_random(rows, cols).ravel()
+
+
+def _any_case(label: str, maker: Callable[[], object], call: Callable, expect: str | None) -> Case:
+    """Return one case of `any`, its one argument built by `maker`."""
+    return Case("any", label, partial(_made, maker), call, expect)
+
+
+def _any_value_cases() -> Iterator[Case]:
+    """Yield every boolean value class at every width and row count, for the two main spellings.
+
+    Positional classes put their element first, in the middle and last of
+    the matrix's elements, and so in its first, a middle and its last row.
+    """
+    for cols in ANY_COLS:
+        for rows in (*ANY_ROWS, _any_large_rows(cols)):
+            for _, _, label, maker in value_arrays("bool", (rows * cols,), arg="m"):
+                shape = f"{rows}x{cols} {label.split(' ', 1)[1]}"
+                for text, call in _ANY_TAKING[:2]:
+                    yield _any_case(f"{text} bool {shape}", partial(_any_matrix, maker, cols), call,
+                                    "any_rows_bool")
+            yield _any_case(f"m.any(axis=1) bool {rows}x{cols} some rows", partial(_any_sparse, rows, cols),
+                            _ANY_TAKING[0][1], "any_rows_bool")
+        for text, call in _ANY_TAKING[:2]:
+            yield _any_case(f"{text} bool 0x{cols}", partial(_any_random, 0, cols), call, "any_rows_bool")
+
+
+def _any_layout_cases() -> Iterator[Case]:
+    """Yield every spelling, every layout and every element type beside bool, at a few shapes."""
+    for rows, cols in ANY_LAYOUT_SHAPES:
+        shape = f"{rows}x{cols}"
+        matrix = partial(_any_random, rows, cols)
+        for text, call in _ANY_TAKING:
+            yield _any_case(f"{text} bool {shape}", matrix, call, "any_rows_bool")
+        for text, call in _ANY_NEVER:
+            yield _any_case(f"{text} bool {shape}", matrix, call, None)
+        for name, build, expect in _ANY_LAYOUTS:
+            for text, call in _ANY_TAKING[:2]:
+                yield _any_case(f"{text} bool {shape} layout={name}", partial(_any_laid_out, build, rows, cols), call,
+                                expect)
+        for dtype in ("u8", "i64", "f64"):
+            for text, call in _ANY_TAKING[:2]:
+                yield _any_case(f"{text} {dtype} {shape}", partial(_any_random, rows, cols, dtype), call, None)
+        for text, call in _ANY_TAKING[:2]:
+            yield _any_case(f"{text} bool {shape} as 3-D", partial(_any_cube, rows, cols), call, None)
+            yield _any_case(f"{text} bool {rows * cols} in 1-D", partial(_any_flat, rows, cols), call, None)
+    for text, call in _ANY_TAKING[:2] + _ANY_NEVER[:2]:
+        for rows in (0, 3):
+            yield _any_case(f"{text} bool {rows}x0", partial(_any_random, rows, 0), call, None)
+        yield _any_case(f"{text} bool 0x0", partial(_any_random, 0, 0), call, None)
+
+
+def _any_bad_byte_cases() -> Iterator[Case]:
+    """Yield matrices holding bytes other than 0 and 1, which must stay with NumPy.
+
+    The widths and row counts include matrices of fewer than 32 elements of
+    a width other than 4, the path on which such a byte would change the
+    results of other rows.
+    """
+    for byte in BAD_MASK_BYTES:
+        for cols in (1, 3, 4, 7, 22, 33, 100):
+            for rows in (1, 3, 100):
+                for text, call in _ANY_TAKING[:2]:
+                    yield _any_case(f"{text} bool {rows}x{cols} mask bytes are {byte}",
+                                    partial(_any_bad, rows, cols, byte), call, None)
+        for text, call in _ANY_TAKING[:2]:
+            yield _any_case(f"{text} bool {ANY_LATE_ROWS}x{ANY_LATE_COLS} last mask byte is {byte}",
+                            partial(_any_late_bad, byte), call, None)
+
+
+def any_cases() -> Iterator[Case]:
+    """Yield the cases of `m.any(axis=1)` and `np.any(m, axis=1)` on boolean matrices.
+
+    The kernel takes a plain, C-ordered, two-dimensional boolean array with
+    at least one column whose bytes are all 0 or 1, with `axis` 1 or -1 as a
+    Python int and no other argument; see the binding's hk_try_any_rows.
+    """
+    yield from _any_value_cases()
+    yield from _any_layout_cases()
+    yield from _any_bad_byte_cases()
+
+
 # Every operation that has a hook, with its exact cases.
 OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "argmax": partial(argext_cases, "argmax"),
@@ -2391,6 +2631,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "where": where_cases,
     "accumulate": accumulate_cases,
     "reduceat": reduceat_cases,
+    "any": any_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the

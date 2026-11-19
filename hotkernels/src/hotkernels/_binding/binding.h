@@ -48,7 +48,7 @@ typedef enum {
     HK_CAST_U8_F32, HK_SUM_U8, HK_COUNT_NONZERO_I64, HK_COUNT_NONZERO_F64,
     HK_HISTOGRAM_F64, HK_BINCOUNT_U8, HK_ISIN_I64,
     HK_SEARCHSORTED_F64, HK_SEARCHSORTED_RIGHT_F64, HK_INTERP_F64,
-    HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64, HK_FMAX_REDUCE_F64,
+    HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64, HK_FMAX_REDUCE_F64, HK_ANY_ROWS_BOOL,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -59,7 +59,7 @@ typedef enum {
     HK_OP_ARGMAX, HK_OP_ARGMIN, HK_OP_CLIP, HK_OP_COMPRESS, HK_OP_MASKFILL,
     HK_OP_NONZERO, HK_OP_CUMSUM, HK_OP_ASTYPE, HK_OP_SUM, HK_OP_COUNT_NONZERO,
     HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN, HK_OP_SEARCHSORTED, HK_OP_INTERP,
-    HK_OP_WHERE, HK_OP_ACCUMULATE, HK_OP_REDUCEAT,
+    HK_OP_WHERE, HK_OP_ACCUMULATE, HK_OP_REDUCEAT, HK_OP_ANY,
     HK_OPERATION_COUNT
 } hk_operation;
 
@@ -140,6 +140,24 @@ static inline bool hk_is_flat(PyObject *obj, int type_num) {
 // As hk_is_flat, and one-dimensional.
 static inline bool hk_is_flat_1d(PyObject *obj, int type_num) {
     return hk_is_flat(obj, type_num) && PyArray_NDIM((PyArrayObject *)obj) == 1;
+}
+
+// True when `obj` is exactly an ndarray, not a subclass, of booleans with two
+// dimensions: the arrays whose any(axis=1) has a kernel. Byte order and
+// layout are left to the hook to test.
+static inline bool hk_is_bool_matrix(PyObject *obj) {
+    return hk_is_plain_array(obj) && PyArray_TYPE((PyArrayObject *)obj) == NPY_BOOL &&
+           PyArray_NDIM((PyArrayObject *)obj) == 2;
+}
+
+// True when `axis` names the last axis of a two-dimensional array as a
+// Python int: 1 or -1. None, a tuple, a bool and NumPy integers are NumPy's
+// to interpret.
+static inline bool hk_is_last_axis(PyObject *axis) {
+    if (!PyLong_CheckExact(axis)) return false;
+    int overflow = 0;
+    const long value = PyLong_AsLongAndOverflow(axis, &overflow);
+    return overflow == 0 && (value == 1 || value == -1);
 }
 
 // True when two arrays have the same number of dimensions and the same
@@ -310,6 +328,13 @@ PyObject *hk_try_compress(PyObject *x, PyObject *mask);
 // the one-element tuple NumPy's nonzero returns: the nonzero_bool kernel. In
 // hook_method.c.
 PyObject *hk_try_nonzero(PyObject *mask);
+
+// Whether each row of a boolean matrix holds a True, as the new
+// one-dimensional boolean array NumPy's `m.any(axis=1)` returns: the
+// any_rows_bool kernel. The caller has tested hk_is_bool_matrix and the
+// arguments; the layout and the mask's bytes are tested here. In
+// hook_method.c.
+PyObject *hk_try_any_rows(PyObject *mask);
 
 // Set the elements of `x` where `mask` is True to `value`, in place: the
 // maskfill kernel. `x` is contiguous, writable float64 and `mask` a

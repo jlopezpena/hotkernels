@@ -46,6 +46,9 @@ MAX_CALLS = 200_000
 SEED = 7
 # Columns of the two-dimensional arrays timed. Every timed size is a multiple of it.
 TIMED_COLUMNS = 4
+# Columns of the timed boolean matrices of any(axis=1): the width its kernel
+# was timed for by the judge.
+ANY_COLUMNS = 22
 # Share of a mask that is True in the two mask distributions.
 HALF = 0.5
 FEW = 0.05
@@ -189,6 +192,22 @@ def _mask(share: float, n: int) -> tuple:
     return (_rng(n).random(n) < share,)
 
 
+def _matrix(share: float, n: int) -> tuple:
+    """Build a boolean matrix of ANY_COLUMNS columns that is True for `share` of its elements.
+
+    Args:
+        share: Probability that an element is True, from 0 to 1.
+        n: Element count asked for. The matrix has `n // ANY_COLUMNS` rows,
+            and one when that is none, so it holds about `n` elements, and
+            ANY_COLUMNS at the smallest size.
+
+    Returns:
+        (matrix,), C-ordered.
+    """
+    rows = max(n // ANY_COLUMNS, 1)
+    return (_rng(n).random((rows, ANY_COLUMNS)) < share,)
+
+
 def _narrow_ints(n: int) -> tuple:
     """Build int64 values close together, where isin's test values match often."""
     return (_rng(n).integers(0, ISIN_SPAN, n),)
@@ -328,6 +347,10 @@ TAKEN: tuple[Timed, ...] = (
     Timed("reduceat", "np.fmax.reduceat(x, starts)", f"float64, runs of {REDUCEAT_RUN}, {REDUCEAT_NAN:.0%} NaN",
           partial(_runs, nan=REDUCEAT_NAN), np.fmax.reduceat, "fmax_reduce_f64"),
     Timed("cumsum", "np.cumsum(mask)", "bool, half selected", partial(_mask, HALF), np.cumsum, "cumsum_bool"),
+    Timed("any", "m.any(axis=1)", f"bool, {ANY_COLUMNS} columns, few True", partial(_matrix, FEW),
+          lambda m: m.any(axis=1), "any_rows_bool"),
+    Timed("any", "np.any(m, axis=1)", f"bool, {ANY_COLUMNS} columns, few True", partial(_matrix, FEW),
+          lambda m: np.any(m, axis=1), "any_rows_bool"),
     Timed("cumsum", "np.cumsum(x)", "float32", partial(_floats, np.float32), np.cumsum, "cumsum_f32", inexact=True),
     Timed("cumsum", "np.cumsum(x)", "float64", partial(_floats, np.float64), np.cumsum, "cumsum_f64", inexact=True),
     Timed("astype", "x.astype(np.float32)", "uint8", _bytes, lambda x: x.astype(np.float32), "cast_u8_f32"),
@@ -363,6 +386,9 @@ LEFT: tuple[Timed, ...] = (
     Timed("cumsum", "np.cumsum(x)", "float64, exact kernels only", partial(_floats, np.float64), np.cumsum, None),
     Timed("accumulate", "np.add.accumulate(x)", "int64", partial(_ints, np.int64), np.add.accumulate, None),
     Timed("accumulate", "np.maximum.accumulate(x)", "float64", partial(_floats, np.float64), np.maximum.accumulate,
+          None),
+    Timed("any", "m.any()", "bool, one-dimensional", partial(_mask, HALF), lambda m: m.any(), None),
+    Timed("any", "m.any(axis=0)", f"bool, {ANY_COLUMNS} columns", partial(_matrix, FEW), lambda m: m.any(axis=0),
           None),
     Timed("reduceat", "np.add.reduceat(x, starts)", f"float64, runs of {REDUCEAT_RUN}",
           partial(_runs, nan=0.0), np.add.reduceat, None),

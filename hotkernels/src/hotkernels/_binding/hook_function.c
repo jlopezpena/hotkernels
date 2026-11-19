@@ -23,7 +23,7 @@
 // The functions that are hooked, as indices into `functions`.
 enum {
     F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN, F_INTERP,
-    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP,
+    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP, F_ANY,
     F_COUNT
 };
 
@@ -948,6 +948,38 @@ static PyObject *call_where(HK_VECTORCALL_PARAMETERS) {
     return functions[F_WHERE].original(callable, args, nargsf, kwnames);
 }
 
+// --------------------------------------------------------------------- any
+
+// np.any(m, axis=1) for a two-dimensional boolean array: the array and the
+// axis, the Python int 1 or -1, by position or the axis as `axis=`, and
+// nothing else. For a plain ndarray np.any calls np.logical_or.reduce itself
+// and never reaches the method, so it needs this hook as well; the work is
+// the method hook's (hk_try_any_rows). The parameters are a, axis, out,
+// keepdims and, by keyword only, where.
+static HK_NOINLINE PyObject *try_any(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    const Py_ssize_t keywords = kwnames == NULL ? 0 : PyTuple_GET_SIZE(kwnames);
+    if (nargs < 1 || nargs + keywords != 2) return NULL;
+    if (keywords == 1 && !hk_text_is(PyTuple_GET_ITEM(kwnames, 0), "axis")) return NULL;
+    // A keyword's value follows the positional arguments, so either way the
+    // axis is args[1].
+    if (!hk_is_last_axis(args[1])) return NULL;
+    return hk_try_any_rows(args[0]);
+}
+
+// `np.any(m)` with the array alone is one of the commonest NumPy calls and
+// has no kernel: it goes on at the first test, uncounted, as does any call
+// whose first argument is not a plain boolean array of two dimensions. A call
+// on such an array with more arguments that is not taken is counted.
+static PyObject *call_any(HK_VECTORCALL_PARAMETERS) {
+    const Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    if ((nargs > 1 || kwnames != NULL) && nargs >= 1 && hk_is_bool_matrix(args[0])) {
+        PyObject *result = try_any(args, nargs, kwnames);
+        if (result != NULL) return result;
+        hk_pass(HK_OP_ANY);
+    }
+    return functions[F_ANY].original(callable, args, nargsf, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_function functions[F_COUNT] = {
@@ -965,6 +997,7 @@ static hk_function functions[F_COUNT] = {
     [F_COPYTO] = {"copyto", call_copyto, NULL, NULL, NULL},
     [F_WHERE] = {"where", call_where, NULL, NULL, NULL},
     [F_CLIP] = {"clip", call_clip, prepare_clip, NULL, NULL},
+    [F_ANY] = {"any", call_any, NULL, NULL, NULL},
 };
 
 // Return the address of the call pointer inside a callable object, or NULL
@@ -1029,5 +1062,6 @@ hk_hook hk_function_hooks[] = {
     {"function.copyto", function_apply, function_remove, F_COPYTO, false},
     {"function.where", function_apply, function_remove, F_WHERE, false},
     {"function.clip", function_apply, function_remove, F_CLIP, false},
+    {"function.any", function_apply, function_remove, F_ANY, false},
     {NULL, NULL, NULL, 0, false},
 };
