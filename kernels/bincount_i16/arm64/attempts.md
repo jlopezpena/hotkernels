@@ -11,3 +11,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** n/a (first version). `run`: 0.87x [0.87 – 0.87] of the naive C overall, 3.01x over NumPy.
 - **Kept:** yes
 - **Notes:** 1.09x–1.10x over the C on uniform codes from 4,096 up (0.38 ns per element against 0.41), 1.01x on four values (both wait for the counters). Slow where clearing counts: 1,000 counters at 16 elements 349 ns against 97 (one store per counter), 0.28x.
+
+## 2. Clear with 64-byte steps; eight elements per step from two 8-byte loads
+
+- **Idea:** the two things attempt 1 lost: clear the counters with `stp q0, q0` 64 bytes per step, the last step ending exactly at the end of `counts` (one store each below eight counters); and read eight elements per step with one `ldp` of two words, each element taken out with `sxth`/`sbfx`/`asr`, then compared and counted with its own branch.
+- **check:** pass
+- **compare:** significantly faster, 1.588x [1.585 – 1.591]
+- **Kept:** yes
+- **Notes:** uniform codes 1.35x from 4,096 up (0.28 ns per element), four values 1.41x (0.96 ns per element: the wait for the counters is less, but still more than three times the uniform cost), 1,000 counters at 16 elements 3.76x (91 ns, level with the C's `memset`).
