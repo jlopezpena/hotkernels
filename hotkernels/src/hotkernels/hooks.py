@@ -249,6 +249,25 @@ def _round_method(x: np.ndarray, decimals: int) -> np.ndarray:
     return x.round(decimals)
 
 
+def _median() -> bool:
+    """Probe the function hook: `np.median(x)` on SMALL_PROBE_N and SMALL_PROBE_N - 1 halves in descending order.
+
+    The even count's median is the mean of its two middle elements and the
+    odd count's its middle element, so a loop that took the wrong element,
+    or did not sort, fails. Halves of small whole numbers and their means are
+    exact.
+
+    Returns:
+        Whether both medians are np.float64 and right.
+    """
+    answers = []
+    for n in (SMALL_PROBE_N, SMALL_PROBE_N - 1):
+        x = np.arange(n, 0, -1) * 0.5
+        result = np.median(x)
+        answers.append(type(result) is np.float64 and float(result) == (n + 1) * 0.25)
+    return all(answers)
+
+
 def _stride_mask() -> np.ndarray:
     """Return a boolean mask that is True at every PROBE_STRIDE-th position."""
     return np.arange(PROBE_N) % PROBE_STRIDE == 0
@@ -589,6 +608,7 @@ HOOKS: tuple[Hook, ...] = (
     Hook("function.any", FUNCTION, (Probe("any_rows_bool", partial(_any_rows, _any_function)),)),
     Hook("function.round", FUNCTION, (Probe("round_f64", partial(_round_with, np.round)),)),
     Hook("function.around", FUNCTION, (Probe("round_f64", partial(_round_with, np.around)),)),
+    Hook("function.median", FUNCTION, (Probe("median_f64", _median),)),
     Hook("method.astype", METHOD, (Probe("cast_u8_f32", _astype),)),
     Hook("method.sum", METHOD, (Probe("sum_u8", _sum_method),)),
     Hook("method.nonzero", METHOD, (Probe("nonzero_bool", partial(_nonzero, _nonzero_method)),)),
@@ -675,4 +695,5 @@ KERNELS: tuple[KernelInfo, ...] = (
     # A loop built into the binding, for short arrays.
     KernelInfo("round_f64", "np.round", "float64", "round", ("function.round", "function.around", "method.round"),
                builtin=True),
+    KernelInfo("median_f64", "np.median", "float64", "median", ("function.median",), builtin=True),
 )

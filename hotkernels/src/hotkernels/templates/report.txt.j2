@@ -29,7 +29,8 @@ not implement. It is counted per NumPy call and shown on its first row.
 {% set builtins = report.kernels | selectattr("builtin") | list %}
 {% if builtins %}
 Not counted on the first line, because they are loops built into hotkernels
-for short arrays rather than kernels: {% for kernel in builtins %}{{ kernel.numpy_call }} on {{ kernel.elements }}{{ ", " if not loop.last else "." }}{% endfor %}
+for short arrays rather than kernels:
+{% for kernel in builtins %}{{ kernel.numpy_call }} on {{ kernel.elements }}{{ ", " if not loop.last else "." }}{% endfor %}
 
 {% endif %}
 {% if not report.inexact %}
