@@ -46,9 +46,25 @@ _unique_i64:
     // ---- bits path: x8 = the set of values found.
     mov     x8, #0
     mov     x9, #1
+    mov     x7, #0
     cmp     x2, #CHUNK
     b.lo    Lbits_tail
 
+    // Labels from zero up: when 0 <= lo and lo + span <= 64, the elements
+    // are their own bit numbers, and the vector steps need no subtraction.
+    // The path then runs with lo = 0 and span = lo + span, and the set is
+    // shifted down by the real lo at the end (x7; 0 on the general path).
+    mov     x7, #0
+    mov     x6, #0                  // 1 on the path without subtraction
+    tbnz    x3, #63, Lbits_vector
+    add     x14, x3, x4
+    cmp     x14, #BITS_SPAN
+    b.hi    Lbits_vector
+    mov     x7, x3
+    mov     x3, #0
+    mov     x4, x14
+    mov     x6, #1
+Lbits_vector:
     dup     v31.2d, x3              // lo in both lanes
     dup     v30.2d, x9              // 1 in both lanes
     mov     x10, #0                 // start of the chunk, in elements
@@ -64,6 +80,7 @@ Lchunk:
     movi    v6.16b, #0
     movi    v7.16b, #0
     mov     x13, #(CHUNK / 8)
+    cbnz    x6, Lchunk_raw
 Lchunk_step:
     ldp     q16, q17, [x12]
     ldp     q18, q19, [x12, #32]
@@ -87,6 +104,27 @@ Lchunk_step:
     subs    x13, x13, #1
     b.ne    Lchunk_step
 
+    b       Lchunk_reduce
+Lchunk_raw:
+    ldp     q16, q17, [x12]
+    ldp     q18, q19, [x12, #32]
+    add     x12, x12, #64
+    ushl    v20.2d, v30.2d, v16.2d
+    ushl    v21.2d, v30.2d, v17.2d
+    ushl    v22.2d, v30.2d, v18.2d
+    ushl    v23.2d, v30.2d, v19.2d
+    orr     v4.16b, v4.16b, v16.16b
+    orr     v5.16b, v5.16b, v17.16b
+    orr     v6.16b, v6.16b, v18.16b
+    orr     v7.16b, v7.16b, v19.16b
+    orr     v0.16b, v0.16b, v20.16b
+    orr     v1.16b, v1.16b, v21.16b
+    orr     v2.16b, v2.16b, v22.16b
+    orr     v3.16b, v3.16b, v23.16b
+    subs    x13, x13, #1
+    b.ne    Lchunk_raw
+
+Lchunk_reduce:
     // The or of every d of the chunk, and of its sets.
     orr     v4.16b, v4.16b, v5.16b
     orr     v6.16b, v6.16b, v7.16b
@@ -148,6 +186,9 @@ Lbits_done:
     mov     x15, #-1
     lsr     x15, x15, x14
     and     x8, x8, x15
+    // Back from the path without subtraction: bit lo + d down to bit d.
+    lsr     x8, x8, x7
+    add     x3, x3, x7
     // Read the set out, lowest bit first: value lo + (number of the bit).
     mov     x0, #0
     cbz     x8, Lbits_ret
