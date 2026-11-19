@@ -110,6 +110,13 @@ HK_CLIP_LOOP(loop_clip_f64, LOOP_CLIP_F64, clip_f64, HK_CLIP_F64, double)
 // doubles: 4,096 bytes. Chosen from 0 to 8,192 bytes after a threaded matrix
 // product had read the output; 4,096 and 8,192 were the fastest.
 #define INPLACE_AHEAD 512
+// The fewest elements the hook takes: 128 KB of doubles, the size of the
+// M1's first-level data cache. On an array that small the cost the loop
+// removes does not arise (Accelerate does not thread a product whose matrix
+// is that small), and in the first-level cache NumPy's loop is up to 5%
+// faster than this one: 520 ns against 545 ns at 4,096 elements. From
+// 20,000 elements the two take the same time.
+#define INPLACE_MIN_N 16384
 
 // Defines `function(w, b, n)`, which sets w[i] = w[i] OP b[i] for i < n.
 // `vector` is the NEON operation on two lanes, `scalar` the same on one,
@@ -129,7 +136,8 @@ HK_CLIP_LOOP(loop_clip_f64, LOOP_CLIP_F64, clip_f64, HK_CLIP_F64, double)
 HK_INPLACE(add_inplace_f64, vaddq_f64, vadd_f64)
 HK_INPLACE(subtract_inplace_f64, vsubq_f64, vsub_f64)
 
-// The hook's loop for `function`: taken when the output is the first input,
+// The hook's loop for `function`: taken for INPLACE_MIN_N elements or more
+// when the output is the first input,
 // all three operands are contiguous, and the second input is the output or
 // shares no byte with it. NumPy copies an operand that partly overlaps the
 // output before calling a loop, so the last test only guards against a
@@ -141,7 +149,8 @@ HK_INPLACE(subtract_inplace_f64, vsubq_f64, vsub_f64)
                         void *data) {                                                        \
         const npy_intp n = dimensions[0];                                                     \
         const npy_intp size = (npy_intp)sizeof(double);                                       \
-        if (n > 0 && args[BINARY_OUT] == args[BINARY_IN1] && steps[BINARY_IN1] == size &&     \
+        if (n >= INPLACE_MIN_N && args[BINARY_OUT] == args[BINARY_IN1] &&                     \
+            steps[BINARY_IN1] == size &&                                                      \
             steps[BINARY_IN2] == size && steps[BINARY_OUT] == size) {                         \
             const size_t bytes = (size_t)n * sizeof(double);                                  \
             if (args[BINARY_IN2] == args[BINARY_OUT] ||                                       \

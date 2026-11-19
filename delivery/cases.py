@@ -4393,11 +4393,15 @@ INPLACE_KERNELS = {"add": "add_inplace_f64", "subtract": "subtract_inplace_f64"}
 INPLACE_UFUNCS = {"add": (np.add, operator.iadd), "subtract": (np.subtract, operator.isub)}
 # Element types beside float64 that the loops must leave to NumPy.
 INPLACE_NEIGHBOURS = ("f32", "i64")
+# The fewest elements the loops take: INPLACE_MIN_N in hook_loop.c.
+INPLACE_MIN_N = 16384
 # Sizes of the sweep over values: the general sweep, and the sizes around the
-# distance in doubles at which the loops prefetch (INPLACE_AHEAD in
-# hook_loop.c), below which they prefetch nothing.
-INPLACE_AHEAD = 512
-INPLACE_SIZES = tuple(sorted({*VALUE_SIZES, INPLACE_AHEAD + 15, INPLACE_AHEAD + 16, INPLACE_AHEAD + 17}))
+# limit, which is a multiple of the loops' step of 16 elements, so the sizes
+# above it also end in a part step.
+INPLACE_SIZES = tuple(sorted({*VALUE_SIZES, *(INPLACE_MIN_N + d for d in (-1, 0, 1, 15, 17))}))
+# Sizes of the sweep over layouts and spellings: empty, the general ones, and
+# the limit and one below it.
+INPLACE_LAYOUT_SIZES = (0, *LAYOUT_SIZES, INPLACE_MIN_N - 1, INPLACE_MIN_N)
 # The scalar of the case with a scalar operand, which steps by zero.
 INPLACE_SCALAR = 0.375
 # Layouts on which a plain call must be taken: NumPy hands the loop the
@@ -4422,13 +4426,10 @@ def _inplace_expect(operation: str, n: int) -> str | None:
         n: Element count.
 
     Returns:
-        The loop's name; None where the loops are not built or the array is
-        empty; ANY for one element, which NumPy may pass with steps of zero,
-        since the step of a dimension of one element means nothing.
+        The loop's name, or None where the loops are not built or the array
+        has fewer than INPLACE_MIN_N elements.
     """
-    if not ON_ARM64 or n == 0:
-        return None
-    return INPLACE_KERNELS[operation] if n > 1 else ANY
+    return INPLACE_KERNELS[operation] if ON_ARM64 and n >= INPLACE_MIN_N else None
 
 
 def _pair(dtype: str, n: int, w_class: str, b_class: str, w_variant: Variant = CONTIGUOUS,
@@ -4616,7 +4617,7 @@ def inplace_cases() -> Iterator[Case]:
             (f"rows {text[2:4]} b[:{COLUMNS}]", partial(_broadcast_row, operation), MAYBE),
         )
         for dtype in ("f64", *INPLACE_NEIGHBOURS):
-            for n in (0, *LAYOUT_SIZES):
+            for n in INPLACE_LAYOUT_SIZES:
                 for spelling_text, spelling_call, kind in spellings:
                     for variant in variants_for(dtype, n):
                         if variant.name in INPLACE_SKIPPED_LAYOUTS:
@@ -4634,7 +4635,7 @@ def inplace_cases() -> Iterator[Case]:
                                    partial(_pair, dtype, n, judge_cases.RANDOM, judge_cases.RANDOM, variant, variant),
                                    spelling_call, expect)
         yield Case("inplace", f"x @ w, then {text}, on {INPLACE_MATRIX[0]} x {INPLACE_MATRIX[1]}", _matrix_pair,
-                   partial(_after_product, operation), _inplace_expect(operation, INPLACE_MATRIX[0]))
+                   partial(_after_product, operation), _inplace_expect(operation, INPLACE_MATRIX[0] * INPLACE_MATRIX[1]))
         # Large enough for NumPy's elision of temporaries, which may then add
         # into the temporary in place.
         yield Case("inplace", f"(w * 1.0) {text[2]} b on {INPLACE_MATRIX[0]} x {INPLACE_MATRIX[1]}", _matrix_pair,

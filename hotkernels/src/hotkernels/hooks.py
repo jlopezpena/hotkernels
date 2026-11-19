@@ -39,6 +39,9 @@ ON_ARM64 = platform.machine() in ARM64_MACHINES
 INPLACE = "inplace"
 # Why the in-place loops are not installed on another architecture.
 INPLACE_ARM64_ONLY = "ARM64 only: see docs/gradient-step-findings.md"
+# Element count of the in-place probes: the fewest the loops take
+# (INPLACE_MIN_N in hook_loop.c).
+PROBE_INPLACE_N = 16384
 # Value the in-place probes add to or subtract from each element.
 PROBE_INPLACE_STEP = 0.375
 
@@ -274,7 +277,7 @@ def _clip(dtype: type) -> bool:
 
 def _inplace(plain: Callable[[np.ndarray, np.ndarray], np.ndarray],
              in_place: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> bool:
-    """Probe an in-place loop: `w += b` or `w -= b` on PROBE_N float64 elements.
+    """Probe an in-place loop: `w += b` or `w -= b` on PROBE_INPLACE_N float64 elements.
 
     The answer is computed first by the operator that makes a new array,
     which the in-place loops never take.
@@ -286,8 +289,8 @@ def _inplace(plain: Callable[[np.ndarray, np.ndarray], np.ndarray],
     Returns:
         Whether `w` holds the same values afterwards as the new array.
     """
-    w = np.arange(PROBE_N, dtype=np.float64)
-    b = np.full(PROBE_N, PROBE_INPLACE_STEP)
+    w = np.arange(PROBE_INPLACE_N, dtype=np.float64)
+    b = np.full(PROBE_INPLACE_N, PROBE_INPLACE_STEP)
     expected = plain(w, b)
     result = in_place(w, b)
     return result is w and bool(np.array_equal(w, expected))
