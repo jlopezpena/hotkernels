@@ -27,10 +27,13 @@ static hk_loop loops[2];
 static PyObject *clip_ufunc;
 
 // The kernel is taken when x and the output are contiguous, both bounds are
-// scalars with lo <= hi (which a NaN bound fails), and the output is not the
-// input. Everything else is NumPy's: strided operands, array bounds (NumPy
-// uses different arithmetic for them, issue 9), reversed or NaN bounds, and
-// in-place calls (the kernels are wrong in place on some data, issue 7).
+// scalars with lo <= hi (which a NaN bound fails), and the output is either
+// clear of the input or exactly the input. The kernels are wrong when their
+// output is their input (issue 7), so an in-place call is clipped through a
+// buffer of the binding's (hk_clip_in_place). Everything else is NumPy's:
+// strided operands, array bounds (NumPy uses different arithmetic for them,
+// issue 9), reversed or NaN bounds, and an output that overlaps the input
+// only in part.
 //
 // The kernels leave the invalid-operation flag set on NaN data. NumPy turns
 // status flags into warnings after a loop returns, and its own clip loop ends
@@ -46,9 +49,11 @@ static PyObject *clip_ufunc;
             memcpy(&lo, args[CLIP_LO], sizeof lo);                                            \
             memcpy(&hi, args[CLIP_HI], sizeof hi);                                            \
             const size_t bytes = (size_t)n * sizeof(c_type);                                  \
-            if (lo <= hi && hk_disjoint(args[CLIP_X], bytes, args[CLIP_OUT], bytes)) {        \
-                kernel((const c_type *)args[CLIP_X], (c_type *)args[CLIP_OUT], (size_t)n,     \
-                       lo, hi);                                                               \
+            const bool in_place = args[CLIP_X] == args[CLIP_OUT];                             \
+            if (lo <= hi && (in_place || hk_disjoint(args[CLIP_X], bytes, args[CLIP_OUT], bytes))) { \
+                if (in_place) hk_clip_in_place(kernel_id, args[CLIP_OUT], (size_t)n, lo, hi);  \
+                else kernel((const c_type *)args[CLIP_X], (c_type *)args[CLIP_OUT], (size_t)n, \
+                            lo, hi);                                                          \
                 feclearexcept(FE_ALL_EXCEPT);                                                 \
                 hk_take(kernel_id);                                                           \
                 return;                                                                       \
