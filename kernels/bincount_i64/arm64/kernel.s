@@ -27,7 +27,12 @@
 // row totals.
 .set PAIR_TABLE, PAIR_CODES * PAIR_CODES * 4
 .set ROW_TOTALS, PAIR_CODES * 4
-.set PAIR_TABLES, PAIR_TABLE
+// From this many elements, on data that repeats, a second pair table: the
+// first pair of each four is counted in the first, the second in the
+// second, so that neighbouring equal pairs do not wait for each other.
+// Space for both tables is always taken; the row totals are above them.
+.set TWO_PAIRS_MIN_N, 32768
+.set PAIR_TABLES, 2 * PAIR_TABLE
 
 // A sample of the data: whether at least SAMPLE_REPEATS of the first SAMPLE
 // elements equal the element four places on, which goes to the same table
@@ -188,6 +193,11 @@ _bincount_i64:
     cmp     x2, #PAIRS_MIN_N
     b.lo    Lnotpairs
     mov     x15, #1
+    cmp     x2, #TWO_PAIRS_MIN_N
+    b.lo    Lsingle
+    REPEATS
+    cmp     x11, #SAMPLE_REPEATS
+    cinc    x15, x15, hs            // 2: two pair tables
     b       Lsingle
 Lnotpairs:
     // The tables: 4 <= bins <= 1024, and either n >= 8 * bins, or n >= 2 *
@@ -360,6 +370,10 @@ Lpairs:
     sub     sp, sp, #(PAIR_TABLES >> 12), lsl #12
     sub     sp, sp, #ROW_TOTALS
     mov     x16, sp                 // the table of the second pairs
+    cmp     x15, #2
+    b.ne    1f
+    add     x16, sp, #(PAIR_TABLE >> 12), lsl #12
+1:
     movi    v0.2d, #0
     mov     x6, sp
     add     x7, x16, #(PAIR_TABLE >> 12), lsl #12
@@ -392,6 +406,22 @@ Lback4:
     subs    x2, x2, #4
     b.hs    Lpairs4
 
+    // Add the second table, if there is one, into the first.
+    mov     x6, sp
+    cmp     x16, x6
+    b.eq    Lmerged
+    mov     x7, x16
+Lmergepairs:
+    ld1     {v0.4s, v1.4s, v2.4s, v3.4s}, [x6]
+    ld1     {v4.4s, v5.4s, v6.4s, v7.4s}, [x7], #64
+    add     v0.4s, v0.4s, v4.4s
+    add     v1.4s, v1.4s, v5.4s
+    add     v2.4s, v2.4s, v6.4s
+    add     v3.4s, v3.4s, v7.4s
+    st1     {v0.4s, v1.4s, v2.4s, v3.4s}, [x6], #64
+    cmp     x6, x16
+    b.lo    Lmergepairs
+Lmerged:
     // Column totals in v16..v31, four columns each, and row totals stored
     // above the table, one row of 64 counters per step.
     movi    v16.2d, #0
