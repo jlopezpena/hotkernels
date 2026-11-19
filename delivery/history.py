@@ -17,7 +17,8 @@ import math
 import re
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from statistics import median
 
@@ -86,7 +87,7 @@ def head_commit(cwd: Path = ROOT) -> tuple[str, str]:
 
 def now_utc() -> datetime:
     """Return the current time in UTC, to the second."""
-    return datetime.now(timezone.utc).replace(microsecond=0)
+    return datetime.now(UTC).replace(microsecond=0)
 
 
 def run_meta(meta: dict, sizes: list[str], source: str, started: datetime, hotkernels_version: str) -> dict:
@@ -436,7 +437,7 @@ def changes(runs: list[Run], cwd: Path = ROOT) -> list[Change]:
         else:
             log.warning("history: commit %s is not in this repository; fetch main with its full history", commit[:_SHORT_COMMIT])
     found: dict[tuple[str, int], Change] = {}
-    for earlier, later in zip(present, present[1:]):
+    for earlier, later in pairwise(present):
         for change in _changes_between(earlier, later, cwd):
             found.setdefault((change.commit, change.pull_request), change)
     return sorted(found.values(), key=lambda c: c.date)
