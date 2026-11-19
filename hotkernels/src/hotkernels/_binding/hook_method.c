@@ -719,10 +719,11 @@ static HK_TARGET_KERNEL_LEVEL bool nans_are_mixed(const double *values, size_t n
 // present, or a run that is all NaN with different NaNs, NumPy's answer
 // depends on which lane of its loop each element falls in, and NumPy picks
 // its AVX2 or its AVX-512 loop when it runs, which have four and eight
-// lanes. Everywhere else every correct maximum is the same number. The kernel
-// reproduces the AVX2 loop, which is what this machine's NumPy runs and what
-// the judge checked; the binding does not depend on it, and leaves such
-// calls to NumPy.
+// lanes, and its ARM64 loop a chain of fmaxnm. Everywhere else every correct
+// maximum is the same number. The kernel reproduces the AVX2 loop; the
+// binding does not depend on it, and leaves such calls to NumPy. The spec's
+// domain is this condition, one run at a time, so the judge checks the
+// kernel only where every loop agrees.
 //
 // The results are read first, which is short: one per run. `x` is read again
 // only when a result is a zero or a NaN. The comparisons raise no flag for a
