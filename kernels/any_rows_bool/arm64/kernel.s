@@ -7,7 +7,7 @@
 //
 // The vector paths rely on the bytes being 0 or 1: the result byte is the
 // maximum of the row's bytes, stored as it is, so a byte above 1 would be
-// stored as itself (widths 1, 4 and 16 to 64, and the last 64 bytes of a
+// stored as itself (widths 1, 4 and 16 to 128, and the last 64 bytes of a
 // longer row). Widths 2, 3 and 5 to 15 compare with zero and write 0 or 1.
 // A byte above 1 never changes another row's result.
 //
@@ -25,7 +25,8 @@
 //   2..15    other than 4: a row in a general register, from two loads that
 //            start at its start and end at its end (8, 4, or 2 and 1 bytes),
 //            or'ed and compared with zero; four rows per step.
-//   65..     one row at a time, 64 bytes per step, ending at the first step
+//   65..128  as 33..64, with the row's first 64 bytes or'ed with its last 64.
+//   129..    one row at a time, 64 bytes per step, ending at the first step
 //            that holds a True; the last 64 end at the row's end.
 // The 16..64 paths take the rows left under a block as one more block that
 // ends at the last row, and matrices of under 16 rows in groups of 1, 2, 4
