@@ -258,7 +258,7 @@ INSTALLATION = "install and uninstall"
 # NumPy objects whose identity must survive install() and uninstall(): functions
 # of the numpy module, methods of ndarray, and methods of the ufunc type.
 _HOOKED_OBJECTS = ("argmax", "argmin", "count_nonzero", "sum", "histogram", "bincount", "isin", "interp", "clip",
-                   "compress", "extract", "putmask", "copyto", "where", "any", "round", "around")
+                   "compress", "extract", "putmask", "copyto", "where", "any", "round", "around", "median")
 _HOOKED_METHODS = ("astype", "sum", "nonzero", "cumsum", "searchsorted", "argmax", "argmin", "clip", "any", "round")
 _HOOKED_UFUNC_METHODS = ("accumulate", "reduceat")
 # The hooks behind the clip ufunc's loop, which also take every call the

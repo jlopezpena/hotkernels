@@ -23,7 +23,7 @@
 // The functions that are hooked, as indices into `functions`.
 enum {
     F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN, F_INTERP,
-    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP, F_ANY, F_ROUND, F_AROUND,
+    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP, F_ANY, F_ROUND, F_AROUND, F_MEDIAN,
     F_COUNT
 };
 
@@ -1226,6 +1226,129 @@ static PyObject *call_around(HK_VECTORCALL_PARAMETERS) {
     return call_round_with(callable, args, nargsf, kwnames, F_AROUND);
 }
 
+// ------------------------------------------------------------------ median
+//
+// np.median is a Python function: it partitions a copy of the array around
+// its middle with np.partition, and takes np.mean of the middle element, or
+// of the two middle elements for an even count. On the short arrays it is
+// called on that is nearly all of the call: about 4.8 us at 32 elements, for
+// a selection of a few dozen nanoseconds. So the function hook answers
+// np.median(x) on a short float64 array with a loop of the binding's own:
+// copy, sort, take the middle. No kernel serves it.
+//
+// NumPy's mean of the middle elements is their sum, from np.add.reduce,
+// divided by their count. For one element that is the element; for two it
+// is a + b, then / 2. The loop computes the same, so the result is the same
+// bits, with three exceptions, each sent to NumPy:
+//
+// - A NaN anywhere: NumPy's answer and its handling of it are its own.
+// - A flag NumPy would report from the sum or the division: a sum that
+//   overflows (NumPy warns), infinities of both signs (invalid, NumPy warns),
+//   or a division that underflows (NumPy is silent by default, and raises
+//   under np.errstate(under='raise')). Each is recognised from the numbers
+//   (median_raises) rather than from the status flags: the compiler may move
+//   inline arithmetic across a read of MXCSR, where it does not move a call
+//   that writes memory, which is how np.round's loop is fenced.
+// - A zero median when the array holds a negative zero. Which zeros end up
+//   in the middle depends on where NumPy's partition leaves equal elements,
+//   and np.add.reduce of a single -0.0 gives +0.0 in NumPy 2.5; neither is
+//   worth reproducing.
+//
+// Infinities of one sign are numbers here: their sum raises no flag.
+
+// Most elements of a float64 array whose median the binding's loop takes, and
+// the length of the buffer on the stack they are copied to: 1 KB. The sort
+// takes time in the square of the count, and NumPy's partition does not.
+// Measured from Python on the Intel Core i5-14600KF, on normally distributed
+// values, np.median(x) was 47x faster than NumPy at 16 elements, 13x at 64,
+// 3.2x at 128 and 0.86x at 256. On values in descending order, the sort's
+// worst case, it was 1.48x at 128: still ahead of NumPy.
+#define MEDIAN_F64_MAX_N 128
+
+// Sort the `n` doubles at `v`, none of them NaN, into ascending order: an
+// insertion sort, which on a few dozen elements is quicker than anything
+// that needs more bookkeeping. Comparisons of numbers raise no flag NumPy
+// reports.
+static void median_sort(double *v, size_t n) {
+    for (size_t i = 1; i < n; i++) {
+        const double value = v[i];
+        size_t j = i;
+        for (; j > 0 && v[j - 1] > value; j--) v[j] = v[j - 1];
+        v[j] = value;
+    }
+}
+
+// True when NumPy's mean of the middle elements raises a flag it reports.
+// `sum` is the sum of the two middle elements and `median` that divided by
+// two; for an odd count nothing is computed and nothing can be raised. The
+// sum overflows exactly when it is infinite and neither element is, and is
+// invalid exactly when it is a NaN, the elements being numbers. The division
+// underflows when its result is tiny and not exact; it is exact when twice
+// the result, which doubling computes exactly at that size, is the sum. A
+// result of exactly the smallest normal number counts as tiny, which takes
+// no position on whether the processor detects tininess before rounding or
+// after: such a call is NumPy's either way.
+static bool median_raises(double low, double high, double sum, double median) {
+    if (isnan(sum) || (isinf(sum) && !isinf(low) && !isinf(high))) return true;
+    return fabs(median) <= DBL_MIN && median * 2.0 != sum;
+}
+
+// True when one of the `n` doubles at `v` is a negative zero.
+static bool median_has_negative_zero(const double *v, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (v[i] == 0.0 && signbit(v[i])) return true;
+    }
+    return false;
+}
+
+// np.median(x) for a contiguous float64 array: the caller has tested the
+// type. Returns the np.float64 NumPy returns, or NULL with no exception set
+// for a call that is NumPy's. The array is read twice, for NaN and by the
+// copy; the lock stays held, as the array is short.
+static HK_NOINLINE PyObject *try_median(PyArrayObject *x) {
+    const npy_intp n = PyArray_SIZE(x);
+    // NumPy warns and answers NaN for an empty array.
+    if (n < 1 || n > MEDIAN_F64_MAX_N) return NULL;
+    const double *data = PyArray_DATA(x);
+    // A signalling NaN raises the invalid flag in this comparison; the call
+    // is then NumPy's, whose ufuncs clear the flags before they compute.
+    if (hk_has_nan(data, (size_t)n)) return NULL;
+    double sorted[MEDIAN_F64_MAX_N];
+    memcpy(sorted, data, (size_t)n * sizeof sorted[0]);
+    median_sort(sorted, (size_t)n);
+    const size_t half = (size_t)n / 2;
+    double median = sorted[half];
+    if (n % 2 == 0) {
+        // The two operations of NumPy's mean, in its order.
+        const double sum = sorted[half - 1] + sorted[half];
+        median = sum / 2.0;
+        if (median_raises(sorted[half - 1], sorted[half], sum, median)) return NULL;
+        // The sum may have raised the precision flag, which NumPy's own loops
+        // leave clear. The test above depends on the arithmetic, so this
+        // cannot run before it. A call passed on leaves the flags to NumPy,
+        // whose ufuncs clear them before they compute.
+        hk_clear_float_flags();
+    }
+    if (median == 0.0 && median_has_negative_zero(sorted, (size_t)n)) return NULL;
+    PyObject *result = hk_scalar(NPY_DOUBLE, (void *)&median);
+    if (result != NULL) hk_take(HK_MEDIAN_F64);
+    return result;
+}
+
+// np.median(x) with the array alone, by position. Its other parameters,
+// axis, out, overwrite_input and keepdims, are NumPy's even at their
+// defaults, and so is `a=` by keyword. The argument count and the array's
+// type are tested first, so that a call left to NumPy costs two comparisons
+// and a count. Every call not taken is counted.
+static PyObject *call_median(HK_VECTORCALL_PARAMETERS) {
+    if (PyVectorcall_NARGS(nargsf) == 1 && kwnames == NULL && hk_is_flat(args[0], NPY_DOUBLE)) {
+        PyObject *result = try_median((PyArrayObject *)args[0]);
+        if (result != NULL) return result;
+    }
+    hk_pass(HK_OP_MEDIAN);
+    return functions[F_MEDIAN].original(callable, args, nargsf, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_function functions[F_COUNT] = {
@@ -1246,6 +1369,7 @@ static hk_function functions[F_COUNT] = {
     [F_ANY] = {"any", call_any, NULL, NULL, NULL},
     [F_ROUND] = {"round", call_round, NULL, NULL, NULL},
     [F_AROUND] = {"around", call_around, NULL, NULL, NULL},
+    [F_MEDIAN] = {"median", call_median, NULL, NULL, NULL},
 };
 
 // Return the address of the call pointer inside a callable object, or NULL
@@ -1313,5 +1437,6 @@ hk_hook hk_function_hooks[] = {
     {"function.any", function_apply, function_remove, F_ANY, false},
     {"function.round", function_apply, function_remove, F_ROUND, false},
     {"function.around", function_apply, function_remove, F_AROUND, false},
+    {"function.median", function_apply, function_remove, F_MEDIAN, false},
     {NULL, NULL, NULL, 0, false},
 };

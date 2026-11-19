@@ -72,10 +72,11 @@ REDUCEAT_NAN = 0.05
 # small integers it clips, so that elements on both sides change.
 INT_LO, INT_HI = 2, 7
 # Largest element count each loop built into the binding takes: its limit in
-# the binding (CLIP_I64_MAX_N in hook_function.c, ROUND_F64_MAX_N in
-# hook_method.c).
+# the binding (CLIP_I64_MAX_N and MEDIAN_F64_MAX_N in hook_function.c,
+# ROUND_F64_MAX_N in hook_method.c).
 CLIP_I64_MAX_N = 4096
 ROUND_F64_MAX_N = 4096
+MEDIAN_F64_MAX_N = 128
 # Decimals of the timed np.round: the commonest in the program the second
 # shortlist came from.
 DECIMALS = 2
@@ -364,6 +365,8 @@ TAKEN: tuple[Timed, ...] = (
           max_n=ROUND_F64_MAX_N),
     Timed("round", "np.round(x)", "float64", partial(_floats, np.float64), np.round, "round_f64",
           max_n=ROUND_F64_MAX_N),
+    Timed("median", "np.median(x)", "float64", partial(_floats, np.float64), np.median, "median_f64",
+          max_n=MEDIAN_F64_MAX_N),
     Timed("compress", "x[mask]", "float32, half selected", partial(_masked, np.float32, HALF), lambda x, m: x[m], "compress_f32"),
     Timed("compress", "x[mask]", "float64, half selected", partial(_masked, np.float64, HALF), lambda x, m: x[m], "compress_f64"),
     Timed("compress", "x[mask]", "float64, few selected", partial(_masked, np.float64, FEW), lambda x, m: x[m], "compress_f64"),
@@ -426,6 +429,7 @@ LEFT: tuple[Timed, ...] = (
     Timed("clip", "np.clip(x[::2], -0.5, 0.5)", "float64, strided", partial(_floats, np.float64), lambda x: np.clip(x[::2], LO, HI), None),
     Timed("clip", "np.clip(x, -0.5, None)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, LO, None), None),
     Timed("round", "np.round(x, 2)", "float32", partial(_floats, np.float32), lambda x: np.round(x, DECIMALS), None),
+    Timed("median", "np.median(x)", "float32", partial(_floats, np.float32), np.median, None),
     Timed("astype", "x.astype(np.float64)", "uint8", _bytes, lambda x: x.astype(np.float64), None),
     Timed("sum", "np.sum(x)", "float64", partial(_floats, np.float64), np.sum, None),
     Timed("sum", "x.sum()", "float64", partial(_floats, np.float64), lambda x: x.sum(), None),

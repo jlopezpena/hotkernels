@@ -981,6 +981,158 @@ def round_cases() -> Iterator[Case]:
                            partial(_built, dtype, n, variant), spelling.call, expect)
 
 
+# ----------------------------------------------------------------- median
+
+# The largest float64 array the binding's own median loop takes:
+# MEDIAN_F64_MAX_N in hook_function.c. Above it the call is NumPy's.
+MEDIAN_F64_MAX_N = 128
+# Sizes of the sweep over values: every size of the general sweep up to the
+# limit and one beyond it, every size from 1 to 9 for the odd and even
+# cases, and the limit's neighbours. Above the limit nothing is built.
+MEDIAN_SIZES = tuple(sorted({*(n for n in VALUE_SIZES if n <= 2 * MEDIAN_F64_MAX_N), *range(1, 10),
+                             MEDIAN_F64_MAX_N - 1, MEDIAN_F64_MAX_N, MEDIAN_F64_MAX_N + 1}))
+# Sizes of the sweep over layouts and spellings: empty, a short one, the limit
+# and one above it, and the general ones.
+MEDIAN_LAYOUT_SIZES = (0, 16, MEDIAN_F64_MAX_N, MEDIAN_F64_MAX_N + 1, *LAYOUT_SIZES[1:])
+# Element types beside float64 that the loop must leave to NumPy.
+MEDIAN_NEIGHBOURS = ("f32", "i64", "i32")
+# Small arrays that probe each guard and the cases on either side of it, as
+# (label, values, whether the loop takes it). A zero median goes to NumPy
+# when a negative zero is present, wherever it is; sums that overflow or
+# meet infinities of both signs, and halves that underflow, go to NumPy,
+# which warns or raises; infinities of one sign are taken.
+_DBL_MAX, _DBL_MIN, _DBL_TRUE_MIN = 1.7976931348623157e308, 2.2250738585072014e-308, 5e-324
+MEDIAN_GUARDS = (
+    ("one -0.0", (-0.0,), False),
+    ("one 0.0", (0.0,), True),
+    ("-0.0 and 0.0", (-0.0, 0.0), False),
+    ("two -0.0", (-0.0, -0.0), False),
+    ("two 0.0", (0.0, 0.0), True),
+    ("-1 and 1, a zero median without -0.0", (-1.0, 1.0), True),
+    ("-1, -0.0, 0.0, 1: a zero median from both zeros", (-1.0, -0.0, 0.0, 1.0), False),
+    ("-1, -0.0, 1, 2: -0.0 beside a median of 0.5", (-1.0, -0.0, 1.0, 2.0), True),
+    ("-0.0 away from the middle", (-0.0, 1.0, 2.0, 3.0, 4.0), True),
+    ("0.0 and -0.0 with zero in the middle", (0.0, -0.0, 0.0), False),
+    ("the largest two", (_DBL_MAX, _DBL_MAX), False),
+    ("the largest and its negative", (_DBL_MAX, -_DBL_MAX), True),
+    ("the largest three", (_DBL_MAX, _DBL_MAX, _DBL_MAX), True),
+    ("inf and -inf", (np.inf, -np.inf), False),
+    ("inf and inf", (np.inf, np.inf), True),
+    ("-inf, -inf, 5", (-np.inf, -np.inf, 5.0), True),
+    ("inf and 1", (np.inf, 1.0), True),
+    ("the smallest subnormal and 0", (_DBL_TRUE_MIN, 0.0), False),
+    ("two smallest subnormals", (_DBL_TRUE_MIN, _DBL_TRUE_MIN), True),
+    ("three smallest subnormals and 0: an exact half", (_DBL_TRUE_MIN, _DBL_TRUE_MIN, _DBL_TRUE_MIN, 0.0), True),
+    ("two zeros and two smallest subnormals", (0.0, 0.0, _DBL_TRUE_MIN, _DBL_TRUE_MIN), False),
+    ("the smallest normal and 0", (_DBL_MIN, 0.0), True),
+    ("the smallest normal and the next: the sum rounds, the half is exact", (_DBL_MIN, np.nextafter(_DBL_MIN, 1.0)), True),
+    ("the smallest normal and the smallest subnormal: an inexact half", (_DBL_MIN, _DBL_TRUE_MIN), False),
+    ("twice the smallest normal and 0", (2 * _DBL_MIN, 0.0), True),
+    ("a NaN", (1.0, np.nan, 2.0), False),
+    ("only NaN", (np.nan,), False),
+)
+
+
+def _median_expect(x: np.ndarray) -> str | None:
+    """Say whether the binding's loop takes np.median on a plain contiguous float64 array.
+
+    Args:
+        x: The array, as the call receives it.
+
+    Returns:
+        "median_f64" when the array has 1 to MEDIAN_F64_MAX_N elements, no
+        NaN, a mean of its middle elements that raises no floating-point
+        error, and no negative zero when the median is a zero; else None.
+    """
+    n = x.size
+    if not 1 <= n <= MEDIAN_F64_MAX_N or np.isnan(x).any():
+        return None
+    middle = np.sort(x.ravel())[(n - 1) // 2:n // 2 + 1]
+    try:
+        with np.errstate(all="raise"):
+            median = middle[0] if n % 2 else (middle[0] + middle[1]) / np.float64(2)
+    except FloatingPointError:
+        return None
+    if median == 0 and np.signbit(x[x == 0]).any():
+        return None
+    return "median_f64"
+
+
+def _median_errstate(setting: str, x):
+    """Call `np.median(x)` with every floating-point error set to `setting`.
+
+    Args:
+        setting: A value np.errstate takes, such as "raise" or "warn".
+        x: The array.
+
+    Returns:
+        The median.
+    """
+    with np.errstate(all=setting):
+        return np.median(x)
+
+
+def _median_out(x):
+    """Call `np.median(x, out=o)` into a new zero-dimensional float64 array and return it."""
+    return np.median(x, out=np.empty((), np.float64))
+
+
+def median_cases() -> Iterator[Case]:
+    """Yield the cases of `np.median`.
+
+    The function hook runs the binding's own loop for `np.median(x)` with the
+    array alone, by position, a plain contiguous float64 array of any shape
+    with 1 to MEDIAN_F64_MAX_N elements and no NaN, when the mean of its
+    middle elements raises nothing NumPy reports and the median is not a
+    zero beside a negative zero. Every other call is NumPy's.
+    """
+    for n, _, label, maker in value_arrays("f64", MEDIAN_SIZES):
+        yield Case("median", f"np.median(x) f64 {label}", partial(_made, maker), np.median, _median_expect(maker()))
+        cube = n % 4 == 0 and n >= 4
+        if cube:
+            shaped = partial(np.reshape, maker(), (-1, 2, 2))
+            yield Case("median", f"np.median(x) f64 three dimensions {label}", partial(_made, shaped), np.median,
+                       _median_expect(maker()))
+    for label, numbers, taken in MEDIAN_GUARDS:
+        x = np.array(numbers, np.float64)
+        expect = "median_f64" if taken else None
+        make = partial(_made, x.copy)
+        yield Case("median", f"np.median(x) f64 {label}", make, np.median, expect)
+        for setting in ("raise", "warn", "ignore"):
+            yield Case("median", f"np.errstate(all={setting!r}) np.median(x) f64 {label}", make,
+                       partial(_median_errstate, setting), expect)
+    for n in (1, 2, 16, MEDIAN_F64_MAX_N):
+        yield Case("median", f"np.median(x) f64 n={n} x=signalling and negative NaNs",
+                   partial(_made, partial(unusual_nans, "f64", n)), np.median, None)
+    spellings = (
+        Spelling("np.median(x)", np.median),
+        Spelling("np.median(a=x)", lambda x: np.median(a=x), NEVER),
+        Spelling("np.median(x, None)", lambda x: np.median(x, None), NEVER),
+        Spelling("np.median(x, axis=None)", lambda x: np.median(x, axis=None), NEVER),
+        Spelling("np.median(x, axis=0)", lambda x: np.median(x, axis=0), NEVER),
+        Spelling("np.median(x, axis=-1)", lambda x: np.median(x, axis=-1), NEVER),
+        Spelling("np.median(x, out=o)", _median_out, NEVER),
+        Spelling("np.median(x, overwrite_input=True)", lambda x: np.median(x, overwrite_input=True), NEVER),
+        Spelling("np.median(x, overwrite_input=False)", lambda x: np.median(x, overwrite_input=False), NEVER),
+        Spelling("np.median(x, keepdims=True)", lambda x: np.median(x, keepdims=True), NEVER),
+        Spelling("np.median(x, keepdims=False)", lambda x: np.median(x, keepdims=False), NEVER),
+        Spelling("np.median(x, bogus=1)", lambda x: np.median(x, bogus=1), NEVER),
+        Spelling("np.nanmedian(x)", np.nanmedian, NEVER),
+        Spelling("np.percentile(x, 50)", lambda x: np.percentile(x, 50), NEVER),
+    )
+    for dtype in ("f64", *MEDIAN_NEIGHBOURS):
+        kernel = "median_f64" if dtype == "f64" else None
+        for n, spelling in itertools.product(MEDIAN_LAYOUT_SIZES, spellings):
+            for variant in variants_for(dtype, n):
+                expect = expectation(kernel, spelling, variant, n)
+                # The two-dimensional layouts hold the whole rows of n elements.
+                size = n // COLUMNS * COLUMNS if variant.dims == 2 else n
+                if expect == kernel and not 1 <= size <= MEDIAN_F64_MAX_N:
+                    expect = None
+                yield Case("median", f"{spelling.text} {dtype} n={n} layout={variant.name}",
+                           partial(_built, dtype, n, variant), spelling.call, expect)
+
+
 def _clip3(function, lo, hi, x):
     """Call `function(x, lo, hi)`."""
     return function(x, lo, hi)
@@ -3333,6 +3485,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "reduceat": reduceat_cases,
     "any": any_cases,
     "round": round_cases,
+    "median": median_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the
