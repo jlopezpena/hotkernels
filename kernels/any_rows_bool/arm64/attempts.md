@@ -79,3 +79,29 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
 - **compare:** significantly faster, 1.015x [1.013 – 1.016]; rows of 4 at 16 elements 1.63x
   (4.1 ns to 2.6 ns), nothing else moved.
 - **Kept:** yes
+
+## 7. Rows of 16 to 32: prefetch four blocks ahead
+
+- **Idea:** rows of 22 take 0.0155 ns a byte from 262,144 elements against 0.0105 in the
+  first-level cache, more than rows of 4 and 64 lose there. Four `prfm pldl1keep` per block, one
+  per four rows, 64 rows ahead, to start the second-level fetches earlier.
+- **check:** pass
+- **compare:** significantly slower, 0.974x [0.973 – 0.975]; rows of 22 0.92x, slower at every
+  size from 1,024 up: the prefetches take load slots from a loop already limited by its loads.
+- **Kept:** no
+
+## 8. Rows of 16 to 64, fewer than 16 rows in all: groups of 1, 2, 4 and 8 rows
+
+- **Idea:** in place of a `umaxv` and a one-byte store per row, the rows are taken by the bits
+  of their count: one row (`umaxv`, `str b`), two (two `umaxv`, two `str b`), four (a tree of
+  `umaxp`, `str s`), eight (a tree, `str d`). Each group's loads are independent of the others'.
+  The smallest group first, so one row takes one taken branch.
+- **check:** pass
+- **compare:** significantly faster, 1.010x [1.009 – 1.011]; rows of 22 at 256 elements (11
+  rows) 1.38x, rows of 64 at 256 elements (4 rows) 1.10x; rows of 22 at 64 elements (2 rows)
+  0.92x, 2.0 ns to 2.1 ns.
+- **Kept:** yes
+- **Notes:** a first version took the groups largest first: one row of 64 went from 1.9 ns to
+  2.9 ns behind three taken branches (0.997x, significantly slower). A pair of rows reduced by a
+  `umaxp` and three more `umaxp` of the vector with itself is a chain of four; two `umaxv` side
+  by side measured the same at two rows.

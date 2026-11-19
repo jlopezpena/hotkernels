@@ -46,7 +46,7 @@
 .endm
 
 // One row at x0 as ROW32 does it; x0 moves to the next row.
-.macro ROW32_ONE d
+.macro ROW32_ONE d, i
     ldr     q\d, [x0]
     ldr     q31, [x0, x7]
     add     x0, x0, x3
@@ -112,6 +112,64 @@
     umaxp   v0.16b, v0.16b, v2.16b
 .endm
 
+// Fewer than sixteen rows, x4 of them, one row after another: one row if bit
+// 0 of x4 is set, then two, four and eight by the higher bits, each group
+// reduced like a block (or the pair by two `umaxv`) and stored as 1, 2, 4
+// or 8 bytes. The smallest groups
+// come first so that one row, the most common short matrix, takes one branch.
+// Ends at Ldone.
+.macro FEW row
+    tbz     x4, #0, 1f
+    \row   22, 0
+    umaxv   b22, v22.16b
+    str     b22, [x1], #1
+    cmp     x4, #2
+    b.lo    Ldone
+1:
+    tbz     x4, #1, 2f
+    \row   20, 0
+    \row   21, 0
+    umaxv   b20, v20.16b                // two rows side by side: two
+    umaxv   b21, v21.16b                // reductions in parallel are
+    str     b20, [x1]                   // shorter than a chain of umaxp
+    str     b21, [x1, #1]
+    add     x1, x1, #2
+    cmp     x4, #4
+    b.lo    Ldone
+2:
+    tbz     x4, #2, 3f
+    \row   16, 0
+    \row   17, 0
+    umaxp   v16.16b, v16.16b, v17.16b
+    \row   18, 0
+    \row   19, 0
+    umaxp   v18.16b, v18.16b, v19.16b
+    umaxp   v16.16b, v16.16b, v18.16b   // 4 rows, 4 bytes each
+    umaxp   v16.16b, v16.16b, v16.16b
+    umaxp   v16.16b, v16.16b, v16.16b   // 1 byte each, in the low 4
+    str     s16, [x1], #4
+3:
+    tbz     x4, #3, Ldone
+    \row   0, 0
+    \row   1, 0
+    umaxp   v0.16b, v0.16b, v1.16b
+    \row   2, 0
+    \row   3, 0
+    umaxp   v2.16b, v2.16b, v3.16b
+    umaxp   v0.16b, v0.16b, v2.16b
+    \row   4, 0
+    \row   5, 0
+    umaxp   v4.16b, v4.16b, v5.16b
+    \row   6, 0
+    \row   7, 0
+    umaxp   v6.16b, v6.16b, v7.16b
+    umaxp   v4.16b, v4.16b, v6.16b
+    umaxp   v0.16b, v0.16b, v4.16b      // 8 rows, 2 bytes each
+    umaxp   v0.16b, v0.16b, v0.16b      // 1 byte each, in the low 8
+    str     d0, [x1]
+    b       Ldone
+.endm
+
 .text
 .globl _any_rows_bool
 .p2align 2
@@ -165,13 +223,7 @@ Lmid32:
     b       Ldone
 Lmid32_few:                             // fewer than 16 rows in all
     add     x4, x4, #16
-Lmid32_one:
-    ROW32_ONE 0
-    umaxv   b0, v0.16b
-    str     b0, [x1], #1
-    subs    x4, x4, #1
-    b.ne    Lmid32_one
-    b       Ldone
+    FEW     ROW32_ONE
 Lmid64:
     sub     x7, x3, #32
     add     x8, x0, x7                  // start of the row's last 32 bytes
@@ -194,13 +246,7 @@ Lmid64_loop:
     b       Ldone
 Lmid64_few:
     add     x4, x4, #16
-Lmid64_one:
-    ROW64   0
-    umaxv   b0, v0.16b
-    str     b0, [x1], #1
-    subs    x4, x4, #1
-    b.ne    Lmid64_one
-    b       Ldone
+    FEW     ROW64
 Lgeneric:
     sub     x7, x3, #16                 // start of a row's last chunk
 Lrow:
