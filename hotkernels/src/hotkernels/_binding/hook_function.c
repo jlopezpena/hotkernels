@@ -24,6 +24,7 @@
 enum {
     F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN, F_INTERP,
     F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP, F_ANY, F_ROUND, F_AROUND, F_MEDIAN,
+    F_UNIQUE,
     F_COUNT
 };
 
@@ -1635,6 +1636,183 @@ static PyObject *call_median(HK_VECTORCALL_PARAMETERS) {
     return functions[F_MEDIAN].original(callable, args, nargsf, kwnames);
 }
 
+// ------------------------------------------------------------------ unique
+
+// The widest range of values np.unique's kernel is always given, whatever the
+// element count: 256 values, whose table of int64 is the 2 KB a hook keeps on
+// the stack. Above it a range is taken only while it is no wider than the
+// array is long, so that the table costs at most about one more pass over as
+// many bytes as the array has. See docs/unique-design.md.
+#define UNIQUE_FREE_SPAN ((npy_intp)(HK_STACK_SCRATCH_BYTES / sizeof(int64_t)))
+
+// The range scan of np.unique keeps UNIQUE_SCAN_VECTORS running minima and
+// as many maxima, in vectors of the compiler's vector types: 16 bytes, NEON's
+// width, on ARM64 and 32, AVX2's, on x86-64. Comparing 64-bit lanes and
+// selecting is one cmgt and one bsl per two elements on ARM64, and one
+// vpcmpgtq and one vpblendvb per four on x86-64. Several independent chains
+// leave the loop bound by its loads rather than by the latency of one.
+#if defined(__aarch64__)
+#define UNIQUE_SCAN_VECTOR_BYTES 16
+#else
+#define UNIQUE_SCAN_VECTOR_BYTES 32
+#endif
+#define UNIQUE_SCAN_VECTORS 4
+typedef int64_t unique_i64xv __attribute__((vector_size(UNIQUE_SCAN_VECTOR_BYTES)));
+// Elements of one vector, and of the array one step of the scan reads.
+#define UNIQUE_SCAN_LANES (UNIQUE_SCAN_VECTOR_BYTES / sizeof(int64_t))
+#define UNIQUE_SCAN_STEP (UNIQUE_SCAN_VECTORS * UNIQUE_SCAN_LANES)
+
+// The smallest and the largest of the `n` int64 elements at `x`, n >= 1,
+// into `smallest` and `largest`. No branch on the data. The last step ends at
+// n and overlaps the one before it, which a minimum and a maximum do not
+// mind; fewer elements than a step are read one at a time. The vectors are
+// loaded with memcpy, which the compiler turns into unaligned loads, and a
+// lane is chosen with a mask, which it turns into a select (bsl, vpblendvb).
+static HK_TARGET_KERNEL_LEVEL void unique_range(const int64_t *x, size_t n, int64_t *smallest, int64_t *largest) {
+    int64_t lo = x[0], hi = x[0];
+    if (n >= UNIQUE_SCAN_STEP) {
+        unique_i64xv low[UNIQUE_SCAN_VECTORS], high[UNIQUE_SCAN_VECTORS];
+        for (size_t k = 0; k < UNIQUE_SCAN_VECTORS; k++) {
+            memcpy(&low[k], x + k * UNIQUE_SCAN_LANES, sizeof low[k]);
+            high[k] = low[k];
+        }
+        for (size_t i = 0;; i += UNIQUE_SCAN_STEP) {
+            if (i > n - UNIQUE_SCAN_STEP) i = n - UNIQUE_SCAN_STEP;
+            for (size_t k = 0; k < UNIQUE_SCAN_VECTORS; k++) {
+                unique_i64xv v;
+                memcpy(&v, x + i + k * UNIQUE_SCAN_LANES, sizeof v);
+                const unique_i64xv below = (unique_i64xv)(v < low[k]), above = (unique_i64xv)(v > high[k]);
+                low[k] = (v & below) | (low[k] & ~below);
+                high[k] = (v & above) | (high[k] & ~above);
+            }
+            if (i == n - UNIQUE_SCAN_STEP) break;
+        }
+        for (size_t k = 0; k < UNIQUE_SCAN_VECTORS; k++) {
+            for (size_t j = 0; j < UNIQUE_SCAN_LANES; j++) {
+                lo = low[k][j] < lo ? low[k][j] : lo;
+                hi = high[k][j] > hi ? high[k][j] : hi;
+            }
+        }
+    } else {
+        for (size_t i = 1; i < n; i++) {
+            lo = x[i] < lo ? x[i] : lo;
+            hi = x[i] > hi ? x[i] : hi;
+        }
+    }
+    *smallest = lo;
+    *largest = hi;
+}
+
+// np.unique(x) for an int64 array `x`, of any shape and at least one element,
+// C-contiguous: the unique_i64 kernel. Returns a new reference, or NULL with
+// no exception set for a call that is NumPy's.
+//
+// For an integer array every NumPy release from 2.3 answers this call with a
+// new one-dimensional array of the array's element type holding each
+// distinct element once, in ascending order: the hash path of _unique1d
+// sorts its result, and the sort path finds it in order. The array is read
+// once for its smallest and largest element. When the range between them is
+// narrow (UNIQUE_FREE_SPAN), the kernel marks the values present in a buffer
+// of one int64 per value of the range and writes the distinct values to its
+// front; they are copied into the result. A wide range is NumPy's, which then
+// costs it one read of the array more.
+//
+// The lock is released for the scan and the kernel from HK_NOGIL_MIN_N
+// elements. The kernel ignores elements outside the range it is given, so a
+// thread that writes the array between the two reads can change the values
+// found, never make the kernel write outside its buffer.
+static HK_NOINLINE PyObject *unique_values(PyArrayObject *x) {
+    const npy_intp n = PyArray_SIZE(x);
+    const int64_t *data = PyArray_DATA(x);
+    int64_t smallest, largest;
+    {
+        HK_BEGIN_NOGIL(n)
+        unique_range(data, (size_t)n, &smallest, &largest);
+        HK_END_NOGIL
+    }
+    // The width of the range less one, in unsigned arithmetic, where it
+    // cannot overflow: at most 2^64 - 1.
+    const uint64_t width = (uint64_t)largest - (uint64_t)smallest;
+    const npy_intp limit = n > UNIQUE_FREE_SPAN ? n : UNIQUE_FREE_SPAN;
+    if (width >= (uint64_t)limit) return NULL;
+    const npy_intp span = (npy_intp)width + 1;
+
+    int64_t on_stack[UNIQUE_FREE_SPAN];
+    int64_t *table = span <= UNIQUE_FREE_SPAN ? on_stack : malloc((size_t)span * sizeof(int64_t));
+    if (table == NULL) return NULL;
+    npy_intp count;
+    {
+        HK_BEGIN_NOGIL(n)
+        count = (npy_intp)unique_i64(data, table, (size_t)n, smallest, (size_t)span);
+        HK_END_NOGIL
+    }
+    PyObject *result = PyArray_SimpleNew(1, &count, PyArray_TYPE(x));
+    if (result != NULL) memcpy(PyArray_DATA((PyArrayObject *)result), table, (size_t)count * sizeof(int64_t));
+    if (table != on_stack) free(table);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    hk_take(HK_UNIQUE_I64);
+    return result;
+}
+
+// True when a flag of np.unique was not given or is False itself. Anything
+// else, 0 and None included, is NumPy's to interpret.
+static inline bool unique_flag_off(PyObject *flag) {
+    return flag == NULL || flag == Py_False;
+}
+
+// np.unique(ar) for an int64 ndarray `ar` of at least one dimension and one
+// element, with return_index, return_inverse and return_counts absent or
+// False, axis absent or None, equal_nan absent or a bool (it means nothing
+// for integers), and sorted absent or True. The parameters are those of NumPy
+// 2.3 to 2.5: five by position, equal_nan and sorted by keyword only.
+// sorted=False is NumPy's: its order is that of NumPy's hash set.
+//
+// An array of any layout is taken: one that is not C-contiguous is copied in
+// C order first, as NumPy's own flatten() copies every array.
+static HK_NOINLINE PyObject *try_unique(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { AR, RETURN_INDEX, RETURN_INVERSE, RETURN_COUNTS, AXIS, EQUAL_NAN, SORTED, PARAMETERS };
+    static const char *const names[PARAMETERS] = {
+        "ar", "return_index", "return_inverse", "return_counts", "axis", "equal_nan", "sorted",
+    };
+    // Parameters that may be given by position: all but the two keyword-only ones.
+    const Py_ssize_t positional = EQUAL_NAN;
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, positional, bound)) return NULL;
+    PyObject *array = bound[AR];
+    if (array == NULL || !hk_is_plain_array(array)) return NULL;
+    PyArrayObject *x = (PyArrayObject *)array;
+    if (PyArray_TYPE(x) != NPY_INT64 || !PyArray_ISNOTSWAPPED(x) || PyArray_NDIM(x) < 1 || PyArray_SIZE(x) < 1) {
+        return NULL;
+    }
+    if (!unique_flag_off(bound[RETURN_INDEX]) || !unique_flag_off(bound[RETURN_INVERSE]) ||
+        !unique_flag_off(bound[RETURN_COUNTS]) || !hk_is_absent(bound[AXIS])) {
+        return NULL;
+    }
+    if (bound[EQUAL_NAN] != NULL && !PyBool_Check(bound[EQUAL_NAN])) return NULL;
+    if (bound[SORTED] != NULL && bound[SORTED] != Py_True) return NULL;
+    if (PyArray_IS_C_CONTIGUOUS(x)) return unique_values(x);
+    PyObject *copy = PyArray_NewCopy(x, NPY_CORDER);
+    if (copy == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    PyObject *result = unique_values((PyArrayObject *)copy);
+    Py_DECREF(copy);
+    return result;
+}
+
+// np.unique: the kernel when the call meets its conditions; otherwise counted
+// and passed to NumPy unchanged.
+static PyObject *call_unique(HK_VECTORCALL_PARAMETERS) {
+    PyObject *result = try_unique(args, PyVectorcall_NARGS(nargsf), kwnames);
+    if (result != NULL) return result;
+    hk_pass(HK_OP_UNIQUE);
+    return functions[F_UNIQUE].original(callable, args, nargsf, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_function functions[F_COUNT] = {
@@ -1656,6 +1834,7 @@ static hk_function functions[F_COUNT] = {
     [F_ROUND] = {"round", call_round, NULL, NULL, NULL},
     [F_AROUND] = {"around", call_around, NULL, NULL, NULL},
     [F_MEDIAN] = {"median", call_median, NULL, NULL, NULL},
+    [F_UNIQUE] = {"unique", call_unique, NULL, NULL, NULL},
 };
 
 // Return the address of the call pointer inside a callable object, or NULL
@@ -1724,5 +1903,6 @@ hk_hook hk_function_hooks[] = {
     {"function.round", function_apply, function_remove, F_ROUND, false},
     {"function.around", function_apply, function_remove, F_AROUND, false},
     {"function.median", function_apply, function_remove, F_MEDIAN, false},
+    {"function.unique", function_apply, function_remove, F_UNIQUE, false},
     {NULL, NULL, NULL, 0, false},
 };

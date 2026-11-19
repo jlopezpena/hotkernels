@@ -632,6 +632,19 @@ def _bincount_codes(dtype: type) -> bool:
     return counts.dtype == np.intp and counts.tolist() == expected
 
 
+def _unique() -> bool:
+    """Probe the function hook: `np.unique` on PROBE_N int64 values with gaps, below zero and above it.
+
+    The elements are -3, 0 and 7 repeated, so a kernel that wrote every value
+    of the range, or lost the sign, or did not sort, fails.
+
+    Returns:
+        Whether the result is the int64 array [-3, 0, 7].
+    """
+    result = np.unique(np.resize(np.array([7, -3, 0], np.int64), PROBE_N))
+    return result.dtype == np.int64 and result.tolist() == [-3, 0, 7]
+
+
 def _isin() -> bool:
     """Probe the function hook: `np.isin` with two test values."""
     x = np.arange(PROBE_N, dtype=np.int64)
@@ -725,6 +738,7 @@ HOOKS: tuple[Hook, ...] = (
     Hook("function.round", FUNCTION, (Probe("round_f64", partial(_round_with, np.round)),)),
     Hook("function.around", FUNCTION, (Probe("round_f64", partial(_round_with, np.around)),)),
     Hook("function.median", FUNCTION, (Probe("median_f64", _median),)),
+    Hook("function.unique", FUNCTION, (Probe("unique_i64", _unique),)),
     Hook("method.astype", METHOD, (Probe("cast_u8_f32", _astype),)),
     Hook("method.sum", METHOD, (Probe("sum_u8", _sum_method),)),
     Hook("method.nonzero", METHOD, (Probe("nonzero_bool", partial(_nonzero, _nonzero_method)),)),
@@ -834,6 +848,7 @@ KERNELS: tuple[KernelInfo, ...] = (
                builtin=True),
     KernelInfo("fmax_reduce_f64", "fmax.reduceat", "float64", "reduceat", ("ufunc.reduceat",)),
     KernelInfo("any_rows_bool", "m.any(axis=1)", "bool", "any", ("method.any", "function.any")),
+    KernelInfo("unique_i64", "np.unique", "int64", "unique", ("function.unique",)),
     # A loop built into the binding, for short arrays.
     KernelInfo("round_f64", "np.round", "float64", "round", ("function.round", "function.around", "method.round"),
                builtin=True),
