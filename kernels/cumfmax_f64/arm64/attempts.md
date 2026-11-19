@@ -40,3 +40,11 @@ Apple M1 Pro, macOS, native.
 - **check:** pass
 - **compare:** significantly faster, 1.049x [1.041 – 1.057]: `rising` 1.16x (1.23x at 256, 1.10x to 1.26x from 4,096 up), `random` and `some_nan` 1.00x, apart from 0.99x and 0.97x at 64.
 - **Kept:** yes
+
+## 6. Blocks from x[0], not from x[1]
+
+- **Idea:** the blocks started at x[1] so that the element before each existed, which left 15 elements to the tail at every size the judge times and put every block 8 bytes off the buffers' alignment. Start them at x[0], with x[0] standing in for the element before the first block (it is M, so it changes nothing); below 16 elements, x[0] and then the tail from x[1] as before.
+- **check:** pass
+- **compare:** significantly faster, 1.174x [1.170 – 1.178]: 1.16x at 16, 1.04x to 1.07x at 64, 1.22x to 1.33x at 256, 1.34x to 1.73x at 1,024 and 4,096, 1.04x to 1.11x from 65,536 up.
+- **Kept:** yes
+- **Notes:** the gain at 1,024 and 4,096 is far more than the tail's: it is the alignment. A flat block now takes 0.106 ns per element at 4,096, 5.4 cycles per block, the speed of a copy in the first-level cache; with each `stp` of 32 bytes crossing a 64-byte line every other time it was 7.6. So an `out` that is not a multiple of 64 bytes (or at least 32) costs the kernel up to 1.7x in the first-level cache; the judge's timed buffers are aligned.

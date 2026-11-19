@@ -9,19 +9,26 @@
 // over x[0..i] gives NumPy's out[i], the all-NaN prefix included (x[0]'s
 // NaN until the first number).
 //
-// out[0] = x[0] = M, the running maximum, in both lanes of v31. Then blocks
-// of 16 elements, from x[1] on, so the element before each block exists.
-// A block goes one of two ways:
+// M, the running maximum, is in both lanes of v31, x[0] at first. Blocks of
+// 16 elements from x[0], so that the blocks keep the alignment of the
+// buffers; the first block uses x[0] where the others use the element
+// before them. A block goes one of three ways:
 //
 //   flat      the block's maximum, a tree of seven fmaxnm and a pairwise
 //             one, does not change M: the block is M sixteen times.
+//   rising    the element before the block is M and no element of the block
+//             is below the one before it: the block is a copy.
 //   general   a prefix maximum (GENERAL).
 //
-// The blocks start general and stay general while each changes M; after
-// one that does not, they are tried flat, and a block that fails the flat
-// test is done the general way with the next tried flat again.
+// The blocks start general and stay general while each changes M. After a
+// general block that does not change M, they are tried flat; after one that
+// ends on M, rising. A block that fails the flat test is done the general
+// way with the next tried flat again; one that fails the rising test is
+// done the general way.
 //
-// Fewer than 16 left: pairs, one vector at a time, then a single element.
+// Fewer than 16 left: pairs, one vector at a time against the element
+// before, then a single element. Fewer than 16 in all: x[0], then the same
+// from x[1].
 //
 // x2 counts the elements left minus 16 while blocks run.
 
@@ -44,8 +51,14 @@
 //   3. every vector against M, and the next M is M against the block's last
 //      lane: the chain from block to block is one fmaxnm.
 // Leaves the flags of the count: hs if another block follows.
-.macro GENERAL
+// With first=1 the block is x[0..15]: there is no element before it, and
+// x[0] (M, in v31) stands in for it.
+.macro GENERAL first=0
+.if \first
+    mov     v16.16b, v31.16b
+.else
     ldur    q16, [x0, #-8]
+.endif
     ldur    q17, [x0, #8]
     ldur    q18, [x0, #24]
     ldur    q19, [x0, #40]
@@ -97,10 +110,19 @@
 .p2align 2
 _cumfmax_f64:
     cbz     x2, Ldone
-    ld1r    {v31.2d}, [x0], #8      // M
+    ld1r    {v31.2d}, [x0]          // M = x[0]
+    subs    x2, x2, #16
+    b.lo    Lshort
+    LOAD
+    mov     v29.16b, v31.16b
+    GENERAL 1
+    b       Lgeneral_next
+Lshort:
+    // Fewer than 16 elements: x[0], then the tail from x[1].
     str     d31, [x1], #8
-    subs    x2, x2, #17
-    b.lo    Ltail
+    add     x0, x0, #8
+    sub     x2, x2, #1
+    b       Ltail
 
     // ---- General, while each block changes M. v29 = M before the block.
 Lgeneral:
@@ -108,6 +130,7 @@ Lgeneral:
 Lgeneral_loaded:
     mov     v29.16b, v31.16b
     GENERAL
+Lgeneral_next:
     b.lo    Ltail
     fcmp    d29, d31                // unordered, and so general, while M is NaN
     b.eq    Lflat
