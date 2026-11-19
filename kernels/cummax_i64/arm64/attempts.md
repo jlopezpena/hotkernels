@@ -58,3 +58,16 @@ two cycles, at every size from 1,024 up, on both distributions. NumPy takes
   loop runs at 0.135 ns per element at 4,096 (6.9 cycles per block). 2.0x to
   2.3x at 4,194,304 and 16,777,216, about 0.19 ns per element, which is the
   speed of a copy from memory.
+
+## 4. Rising test: half the shifted vectors from `ext`
+
+- **Idea:** the rising loop loads 12 vectors per block (eight for the block,
+  eight shifted back one element, as four `ldp` and eight `ldur`). The
+  shifted vector of the second register of each `ldp` pair is the `ext` of
+  the pair, so build those four with `ext` and load only the other four.
+- **check:** pass
+- **compare:** significantly faster, 1.03x [1.03 – 1.04]
+- **Kept:** yes
+- **Notes:** `rising` 1.14x to 1.16x from 256 to 16,384 (0.118 ns per
+  element at 4,096, 6.0 cycles per block against 6.9), 1.08x at 64, nothing
+  from 65,536 up; `random` unchanged.

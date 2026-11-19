@@ -123,13 +123,13 @@ Lrising:
     ldp     q4, q5, [x0, #64]
     ldp     q6, q7, [x0, #96]
     ldur    q16, [x0, #-8]
-    ldur    q17, [x0, #8]
+    ext     v17.16b, v0.16b, v1.16b, #8
     ldur    q18, [x0, #24]
-    ldur    q19, [x0, #40]
+    ext     v19.16b, v2.16b, v3.16b, #8
     ldur    q20, [x0, #56]
-    ldur    q21, [x0, #72]
+    ext     v21.16b, v4.16b, v5.16b, #8
     ldur    q22, [x0, #88]
-    ldur    q23, [x0, #104]
+    ext     v23.16b, v6.16b, v7.16b, #8
     cmgt    v16.2d, v16.2d, v0.2d   // an element below the one before it
     cmgt    v17.2d, v17.2d, v1.2d
     cmgt    v18.2d, v18.2d, v2.2d
