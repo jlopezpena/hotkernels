@@ -45,6 +45,8 @@ LIBRARY = BUILD / f"libnaive{SHARED_SUFFIX}"
 # The flags the judge uses for a kernel's naive.c on this platform, with more
 # warnings switched on.
 CFLAGS = [*C_FLAGS, "-Wextra"]
+# Libraries naive.c is linked with: the C mathematics library, for `hypot`.
+LINK_LIBRARIES = ["-lm"]
 
 # Element counts measured: one element (fixed cost only), then cache-resident
 # sizes through to data far larger than any cache.
@@ -73,6 +75,9 @@ NS_PER_S = 1e9
 
 # The reference loop: a float64 sum over an array that fits in the L1 cache.
 REFERENCE_N, REFERENCE_REPS, REFERENCE_RUNS, REFERENCE_SEED = 4096, 20000, 15, 0
+
+# NumPy's kind code for floating-point element types.
+FLOAT_KIND = "f"
 
 # ctypes type for each letter of a candidate's signature.
 CTYPES = {"p": ctypes.c_void_p, "i": ctypes.c_int64, "f": ctypes.c_float, "d": ctypes.c_double}
@@ -122,7 +127,7 @@ def build() -> ctypes.CDLL:
         covers both contenders.
     """
     BUILD.mkdir(parents=True, exist_ok=True)
-    subprocess.run([CC, *CFLAGS, "-shared", "-o", str(LIBRARY), str(NAIVE_C)], check=True)
+    subprocess.run([CC, *CFLAGS, "-shared", "-o", str(LIBRARY), str(NAIVE_C), *LINK_LIBRARIES], check=True)
     lib = ctypes.CDLL(str(LIBRARY))
     lib.survey_init()
     cores.claim()
@@ -267,9 +272,12 @@ def agrees(cand: Cand, env: dict) -> bool:
         True when the two agree, exactly or within the candidate's tolerance.
     """
     got, expect = eval(cand.got, env), eval(cand.expect, env)
+    # A NaN in the same place in both is agreement: `np.where(c, a, np.nan)`
+    # and the maxima that ignore NaN produce them. Only floats can hold one.
+    has_nan = np.asarray(expect).dtype.kind == FLOAT_KIND
     if cand.rtol is None:
-        return bool(np.array_equal(got, expect))
-    return bool(np.allclose(got, expect, rtol=cand.rtol))
+        return bool(np.array_equal(got, expect, equal_nan=has_nan))
+    return bool(np.allclose(got, expect, rtol=cand.rtol, equal_nan=has_nan))
 
 
 def output_page_gaps(cand: Cand, env: dict) -> list[int]:

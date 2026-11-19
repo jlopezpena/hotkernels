@@ -14,6 +14,12 @@ Every figure here is x86-64's, measured on an Intel Core i5-14600KF. No ARM64 fi
 - **Most of the recorded time is not in a loop at all.** `np.median`, `np.round` and `np.clip` on int64 took 63% of it, on arrays of about 30 elements, where NumPy's own call path is nearly the whole cost. These are hooks above NumPy's wrapper, as `np.clip` on floats already has, not assembly.
 - **What is not known.** The program's real runs were not recorded, only its tests, whose arrays hold tens of elements. So the list says which calls occur and with which element types, not how a real run's time divides. The order below is provisional until one is recorded.
 
+## What changed in the building
+
+This section is added to as the steps of [the order of work](#order-of-work) are built. Each entry says what was built, where it departs from the text below, and which open decision it settled.
+
+- **Step 1, the survey, on x86-64.** The candidates of rows 1 to 7 are the group `second shortlist` in `survey/candidates.py`, with their loops in `survey/naive.c`: `cumsum_bool`, `cummax_i64`, `cumfmax_f64`, `fmax_reduceat_f64`, `any_rows_bool`, `bincount_i16`, `hypot_f64` against the C library's `hypot` and against the square-root form, `where_i64`, and `np.where(c, a, np.nan)`. `where_f64`, `sum_bool` and `bincount_i64` were candidates already. The recorded run on the Intel Core i5-14600KF is [intel-core-i5-14600kf-second-shortlist.md](../survey/results/intel-core-i5-14600kf-second-shortlist.md). It agrees with [the table below](#numpy-against-naive-c) where the sizes are close, with one exception: `m.any(axis=1)` is 8x behind in the survey, not 20x. The script's loop had the row width of 22 written into it, which the compiler unrolled; the survey's takes the width as an argument, as a kernel must, and that loop costs 0.08 ns per element, not 0.03. The survey compares results with a NaN in the same place as equal, which the two candidates that produce NaN needed. ARM64 is not recorded yet ([issue 102](https://github.com/sofeikov/hotkernels/issues/102)).
+
 ## Where the candidates come from
 
 ### The program

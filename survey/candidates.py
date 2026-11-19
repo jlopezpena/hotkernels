@@ -21,6 +21,8 @@ STEPPED = "stepped slices"
 CONTROL = "control"
 # Operations beyond the phase 2 list.
 EXTRA, WIDER = "extra", "wider"
+# Operations taken from the calls of a program in use: docs/second-shortlist-design.md.
+SECOND = "second shortlist"
 
 # Mask densities measured: the worst case for a branch predictor, and a sparse mask.
 DENSITIES = (0.5, 0.05)
@@ -32,6 +34,16 @@ BINCOUNT_BINS = 256
 ADD_AT_BINS = 4096
 CORRELATE_TAPS = 8
 HISTOGRAM_BINS = 64
+# Second shortlist: the columns of the array reduced over rows, the length of
+# each run reduced by `reduceat`, the bins of the int16 bincount, and the share
+# of NaN in the inputs of the maxima that ignore it.
+ROW_COLUMNS = 22
+RUN_LENGTH = 16
+CODE_BINS = 64
+NAN_SHARE = 0.05
+# Share of True in the mask of `np.where(c, a, nan)`, which callers use to
+# blank the few elements that fail a test.
+MOSTLY_TRUE = 0.95
 # Relative tolerances for kernels whose NumPy counterpart orders floating-point
 # operations differently (pairwise sums, fused multiply-add).
 RTOL_F32_SUM = 1e-2
@@ -416,6 +428,61 @@ def _stepped_slices() -> list[Cand]:
     ]
 
 
+def _second_shortlist() -> list[Cand]:
+    """The candidates of docs/second-shortlist-design.md that had no survey row.
+
+    `np.where` on float64, `np.sum` of a mask and `np.bincount` on int64 are
+    measured by earlier groups.
+
+    Returns:
+        The candidates of this group, in measuring order.
+    """
+    with_nan = f"np.where(rng.random(n) < {NAN_SHARE}, np.nan, rng.random(n))"
+    pair = {"a": "rng.standard_normal(n)", "b": "rng.standard_normal(n)", "out": "np.empty(n)"}
+    pair_args = ("ptr(a)", "ptr(b)", "ptr(out)", "n")
+    return [
+        Cand("cumsum_bool", SECOND, "np.cumsum(mask)", "cumsum_bool", "ppi",
+             {"mask": "rng.random(n) < 0.5", "out": "np.empty(n, np.int64)"},
+             ("ptr(mask)", "ptr(out)", "n"), "out", "np.cumsum(mask)", out="out", alloc=True),
+        Cand("cummax_i64", SECOND, "np.maximum.accumulate(x)", "cummax_i64", "ppi",
+             {"x": _RANDOM["i64"], "out": "np.empty(n, np.int64)"},
+             ("ptr(x)", "ptr(out)", "n"), "out", "np.maximum.accumulate(x)", out="out", alloc=True),
+        Cand("cumfmax_f64", SECOND, "np.fmax.accumulate(x)", "cumfmax_f64", "ppi",
+             {"x": with_nan, "out": "np.empty(n)"},
+             ("ptr(x)", "ptr(out)", "n"), "out", "np.fmax.accumulate(x)", out="out", alloc=True),
+        Cand(f"fmax_reduceat_f64 runs of {RUN_LENGTH}", SECOND, "np.fmax.reduceat(x, starts)",
+             "fmax_reduceat_f64", "pppii",
+             {"x": with_nan, "starts": f"np.arange(0, n, {RUN_LENGTH}, dtype=np.int64)",
+              "out": "np.empty(len(starts))"},
+             ("ptr(x)", "ptr(starts)", "ptr(out)", "n", "len(starts)"),
+             "out", "np.fmax.reduceat(x, starts)", out="out", alloc=True),
+        Cand(f"any_rows_bool {ROW_COLUMNS} columns", SECOND, "m.any(axis=1)", "any_rows_bool", "ppii",
+             {"m": f"rng.random((max(n // {ROW_COLUMNS}, 1), {ROW_COLUMNS})) < 0.03",
+              "out": "np.empty(len(m), bool)"},
+             ("ptr(m)", "ptr(out)", "len(m)", str(ROW_COLUMNS)),
+             "out", "m.any(axis=1)", out="out", alloc=True, work="m.size"),
+        Cand(f"bincount_i16 {CODE_BINS} bins", SECOND, f"np.bincount(x, minlength={CODE_BINS})",
+             "bincount_i16", "pipi",
+             {"x": f"rng.integers(0, {CODE_BINS}, n).astype(np.int16)", "out": f"np.empty({CODE_BINS}, np.int64)"},
+             ("ptr(x)", "n", "ptr(out)", str(CODE_BINS)),
+             "out", f"np.bincount(x, minlength={CODE_BINS})", out="out", alloc=True),
+        # The C library's hypot is what NumPy calls, so the two agree exactly.
+        Cand("hypot_f64", SECOND, "np.hypot(a, b)", "hypot_f64", "pppi",
+             pair, pair_args, "out", "np.hypot(a, b)", out="out", alloc=True),
+        Cand("hypot_f64 (square-root form)", SECOND, "np.hypot(a, b)", "hypot_sqrt_f64", "pppi",
+             pair, pair_args, "out", "np.hypot(a, b)", rtol=RTOL_F64, out="out", alloc=True),
+        Cand("where_i64", SECOND, "np.where(c, a, b)", "where_i64", "ppppi",
+             {"c": "rng.random(n) < 0.5", "a": _RANDOM["i64"], "b": _RANDOM["i64"],
+              "out": "np.empty(n, np.int64)"},
+             ("ptr(c)", "ptr(a)", "ptr(b)", "ptr(out)", "n"),
+             "out", "np.where(c, a, b)", out="out", alloc=True),
+        Cand("where_f64 y=nan", SECOND, "np.where(c, a, np.nan)", "where_scalar_f64", "pppid",
+             {"c": f"rng.random(n) < {MOSTLY_TRUE}", "a": "rng.random(n)", "out": "np.empty(n)"},
+             ("ptr(c)", "ptr(a)", "ptr(out)", "n", "np.nan"),
+             "out", "np.where(c, a, np.nan)", out="out", alloc=True),
+    ]
+
+
 def candidates() -> list[Cand]:
     """List every candidate the survey measures.
 
@@ -423,5 +490,6 @@ def candidates() -> list[Cand]:
         All candidates of all groups, in measuring order.
     """
     groups = (_argmax, _controls, _mask_selection, _counting, _nonzero, _accumulations, _searching,
-              _clip, _any_all, _indexing, _membership_and_binning, _elementwise, _stepped_slices)
+              _clip, _any_all, _indexing, _membership_and_binning, _elementwise, _stepped_slices,
+              _second_shortlist)
     return [cand for group in groups for cand in group()]

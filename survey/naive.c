@@ -14,6 +14,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
@@ -25,6 +26,7 @@
 typedef float f32;
 typedef double f64;
 typedef int64_t i64;
+typedef int16_t i16;
 typedef uint8_t u8;
 
 #define NOINLINE __attribute__((noinline))
@@ -473,3 +475,96 @@ NOINLINE i64 nonzero_bool_branchless(const u8 *mask, i64 *out, i64 n) {
     return k;
 }
 BENCH_OUT(nonzero_bool_branchless, i64, (const u8 *mask, i64 *out0, i64 n, i64 fresh, i64 reps), (mask, out, n))
+
+// ================================================================ second shortlist
+// Candidates taken from the NumPy calls of a program in use. See
+// docs/second-shortlist-design.md.
+
+// np.cumsum(mask): a running count of the True elements, as int64.
+NOINLINE i64 cumsum_bool(const u8 *mask, i64 *out, i64 n) {
+    i64 s = 0;
+    for (i64 i = 0; i < n; i++) { s += mask[i]; out[i] = s; }
+    return 0;
+}
+BENCH_OUT(cumsum_bool, i64, (const u8 *mask, i64 *out0, i64 n, i64 fresh, i64 reps), (mask, out, n))
+
+// np.maximum.accumulate on int64: the running maximum.
+NOINLINE i64 cummax_i64(const i64 *x, i64 *out, i64 n) {
+    if (n == 0) return 0;
+    i64 m = x[0];
+    for (i64 i = 0; i < n; i++) { m = x[i] > m ? x[i] : m; out[i] = m; }
+    return 0;
+}
+BENCH_OUT(cummax_i64, i64, (const i64 *x, i64 *out0, i64 n, i64 fresh, i64 reps), (x, out, n))
+
+// np.fmax.accumulate on float64: the running maximum that ignores NaN, and is
+// NaN only until the first element that is not.
+NOINLINE i64 cumfmax_f64(const f64 *x, f64 *out, i64 n) {
+    if (n == 0) return 0;
+    f64 m = x[0];
+    for (i64 i = 0; i < n; i++) { m = fmax(m, x[i]); out[i] = m; }
+    return 0;
+}
+BENCH_OUT(cumfmax_f64, f64, (const f64 *x, f64 *out0, i64 n, i64 fresh, i64 reps), (x, out, n))
+
+// np.fmax.reduceat(x, starts): the NaN-ignoring maximum of each run of x from
+// one start to the next, the last run ending at n. NumPy gives x[starts[i]]
+// for a run whose start is not below the next one.
+NOINLINE i64 fmax_reduceat_f64(const f64 *x, const i64 *starts, f64 *out, i64 n, i64 m) {
+    for (i64 i = 0; i < m; i++) {
+        const i64 end = i + 1 < m ? starts[i + 1] : n;
+        f64 best = x[starts[i]];
+        for (i64 j = starts[i] + 1; j < end; j++) best = fmax(best, x[j]);
+        out[i] = best;
+    }
+    return 0;
+}
+BENCH_OUT(fmax_reduceat_f64, f64, (const f64 *x, const i64 *starts, f64 *out0, i64 n, i64 m, i64 fresh, i64 reps), (x, starts, out, n, m))
+
+// m.any(axis=1) on a C-ordered boolean array of `rows` rows and `cols` columns.
+NOINLINE i64 any_rows_bool(const u8 *m, u8 *out, i64 rows, i64 cols) {
+    for (i64 r = 0; r < rows; r++) {
+        u8 seen = 0;
+        for (i64 j = 0; j < cols; j++) seen |= m[r * cols + j];
+        out[r] = seen != 0;
+    }
+    return 0;
+}
+BENCH_OUT(any_rows_bool, u8, (const u8 *m, u8 *out0, i64 rows, i64 cols, i64 fresh, i64 reps), (m, out, rows, cols))
+
+// np.bincount on int16 codes. Non-negative input only; `out` has nbins slots.
+NOINLINE i64 bincount_i16(const i16 *x, i64 n, i64 *out, i64 nbins) {
+    for (i64 b = 0; b < nbins; b++) out[b] = 0;
+    for (i64 i = 0; i < n; i++) out[x[i]]++;
+    return 0;
+}
+BENCH_OUT(bincount_i16, i64, (const i16 *x, i64 n, i64 *out0, i64 nbins, i64 fresh, i64 reps), (x, n, out, nbins))
+
+// np.hypot: the C library's hypot, which is what NumPy calls per element.
+NOINLINE i64 hypot_f64(const f64 *a, const f64 *b, f64 *out, i64 n) {
+    for (i64 i = 0; i < n; i++) out[i] = hypot(a[i], b[i]);
+    return 0;
+}
+BENCH_OUT(hypot_f64, f64, (const f64 *a, const f64 *b, f64 *out0, i64 n, i64 fresh, i64 reps), (a, b, out, n))
+
+// The same distance as the square root of the sum of squares. Not what NumPy
+// computes: it differs in the last place on some inputs, and overflows where
+// hypot does not.
+NOINLINE i64 hypot_sqrt_f64(const f64 *a, const f64 *b, f64 *out, i64 n) {
+    for (i64 i = 0; i < n; i++) out[i] = sqrt(a[i] * a[i] + b[i] * b[i]);
+    return 0;
+}
+BENCH_OUT(hypot_sqrt_f64, f64, (const f64 *a, const f64 *b, f64 *out0, i64 n, i64 fresh, i64 reps), (a, b, out, n))
+
+// np.where(c, a, b) on int64, and with a scalar in place of `b`.
+NOINLINE i64 where_i64(const u8 *c, const i64 *a, const i64 *b, i64 *out, i64 n) {
+    for (i64 i = 0; i < n; i++) out[i] = c[i] ? a[i] : b[i];
+    return 0;
+}
+BENCH_OUT(where_i64, i64, (const u8 *c, const i64 *a, const i64 *b, i64 *out0, i64 n, i64 fresh, i64 reps), (c, a, b, out, n))
+
+NOINLINE i64 where_scalar_f64(const u8 *c, const f64 *a, f64 *out, i64 n, f64 value) {
+    for (i64 i = 0; i < n; i++) out[i] = c[i] ? a[i] : value;
+    return 0;
+}
+BENCH_OUT(where_scalar_f64, f64, (const u8 *c, const f64 *a, f64 *out0, i64 n, f64 value, i64 fresh, i64 reps), (c, a, out, n, value))

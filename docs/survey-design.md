@@ -60,6 +60,7 @@ uv run survey run
 |---|---|---|
 | ARM64 | Apple M1 Pro, macOS 27.2.1, NumPy 2.5.5, Apple clang 21. The reference loop drifted by 0.6%. All 65 variants agree with NumPy. Taken before the survey placed output buffers | [apple-m1-pro.md](../survey/results/apple-m1-pro.md) (61 variants) and [apple-m1-pro-branchless.md](../survey/results/apple-m1-pro-branchless.md) (4 follow-up variants) |
 | x86-64 | Intel Core i5-14600KF, Linux 7.0, NumPy 2.5.5 using its AVX2 loops (it requires X86_V2 and found X86_V3), clang 21.1.8. Pinned to one performance core, no warnings. The reference loop drifted by less than 0.1%. All 65 variants agree with NumPy | [intel-core-i5-14600kf.md](../survey/results/intel-core-i5-14600kf.md) |
+| x86-64, second shortlist | The same machine, NumPy 2.5.5, clang 21.1.8, pinned to one performance core, no warnings. The reference loop drifted by less than 0.1%. The 13 variants of [second-shortlist-design.md](second-shortlist-design.md) and no others; all agree with NumPy | [intel-core-i5-14600kf-second-shortlist.md](../survey/results/intel-core-i5-14600kf-second-shortlist.md) |
 
 ## Results on ARM64
 
