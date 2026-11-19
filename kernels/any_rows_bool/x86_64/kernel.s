@@ -228,6 +228,37 @@ any_rows_bool:
     sub     rdx, rcx                    # the last place a row can start
     cmp     rcx, 2 * VEC
     ja      .Llong_row
+    lea     r11, [rcx + rcx * 2]
+    mov     r9, rdx
+    sub     r9, r11                     # the last place four rows can start
+    jb      .Lpair_row
+    cmp     rdi, r9
+    ja      .Lpair_row
+    lea     rax, [rcx * 4]
+.p2align 4
+.Lpair_row4:
+    vmovdqu ymm0, [rdi]
+    vpor    ymm0, ymm0, [rdi + rcx - VEC]
+    vptest  ymm0, ymm0
+    setnz   byte ptr [rsi]
+    vmovdqu ymm1, [rdi + rcx]
+    vpor    ymm1, ymm1, [rdi + rcx * 2 - VEC]
+    vptest  ymm1, ymm1
+    setnz   byte ptr [rsi + 1]
+    vmovdqu ymm2, [rdi + rcx * 2]
+    vpor    ymm2, ymm2, [rdi + r11 - VEC]
+    vptest  ymm2, ymm2
+    setnz   byte ptr [rsi + 2]
+    vmovdqu ymm3, [rdi + r11]
+    vpor    ymm3, ymm3, [rdi + rcx * 4 - VEC]
+    vptest  ymm3, ymm3
+    setnz   byte ptr [rsi + 3]
+    add     rdi, rax
+    add     rsi, 4
+    cmp     rdi, r9
+    jbe     .Lpair_row4
+    cmp     rdi, rdx
+    ja      .Ldone
 .Lpair_row:
     vmovdqu ymm0, [rdi]
     vpor    ymm0, ymm0, [rdi + r10]

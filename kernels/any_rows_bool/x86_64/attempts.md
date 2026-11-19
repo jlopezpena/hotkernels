@@ -55,3 +55,11 @@ The kernel does the same work whatever the elements are, so the two timing distr
 - **compare:** significantly faster, 1.002x [1.001 – 1.003]
 - **Kept:** yes
 - **Notes:** a small gain, and the verdict was taken twice because the first run hinged on 262,144 and 1,048,576 elements, whose intervals were [0.89 – 1.22] in it: that run said no significant difference, 1.008x [0.998 – 1.018], and the second gave the figures above. Rows of 4: 1.03x in both distributions, made of 1.19x at 1,024 and 1.25x at 4,096 (31.1 ns to 24.9), 1.03x at 16,384, and 0.97x to 0.98x from 65,536 up, where eight loads cost more than four did. The block is still near four cycles in the micro-benchmark with `m` at a multiple of 64 (24.2 ns to 23.8 at 4,096) and gains where it is not (33.2 to 29.4): eight loads at two per cycle are four cycles too. Without the alignment of the step loop 64 elements were 0.86x (1.9 ns to 2.3) though the instructions they run are fewer; with it they are 0.95x to 0.98x. The first form, without that alignment, was also judged: significantly faster, 1.002x [1.000 – 1.004].
+
+## 7. Four rows per step in the rows of 33 to 64
+
+- **Idea:** the same unrolling as attempt 2 for the path with two loads per row: four rows per step, each `vmovdqu`, `vpor` with the row's last 32 bytes, `vptest` and `setnz`, addressed from one position with `cols`, twice and three times `cols` as indices.
+- **check:** pass
+- **compare:** significantly faster, 1.041x [1.040 – 1.042]
+- **Kept:** yes
+- **Notes:** rows of 64: 1.13x in both distributions. 1.46x at 256, 1.14x at 1,024, 1.16x at 4,096, 1.30x at 16,384, 1.18x at 65,536, 1.05x at 16,777,216. 0.80x at 64 elements, which are one row: 1.5 ns to 1.9, the price of setting the loop up before a row that does not use it. In the micro-benchmark at 4,096 elements, with `m` at a multiple of 64: 26.7 ns to 19.6, 0.31 ns per row or 1.6 cycles; with `m` five bytes off, where one of the two loads of every row straddles two cache lines: 32.7 ns to 30.2, 2.5 cycles per row.
