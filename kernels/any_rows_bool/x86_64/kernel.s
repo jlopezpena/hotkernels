@@ -9,16 +9,29 @@
 # No division: a row is taken while cols elements are left, and the row count
 # is how far out has advanced.
 #
-# Paths, by cols:
+# Paths, by cols, chosen once at entry:
+#   4        a row is a 32-bit lane. 32 rows per block: four vectors of m are
+#            narrowed to one of out by three packs. The rows left under a
+#            block are done by one more block that ends at the last row; under
+#            32 rows the same in steps of eight, under eight one at a time.
 #   1..32    one 32-byte load at the row's start and `vptest` against a
-#            vector whose first cols bytes are set. A row that starts in the
+#            vector whose first cols bytes are set, then `setnz` to out: eight
+#            rows per step, then four, then one. A row that starts in the
 #            last 31 bytes of m cannot be loaded that way: the bits of the
 #            last 32 bytes of m go to a register with `vpmovmskb`, and each
 #            of those rows is cols bits of it. With n under 32 the bits of
 #            all of m are gathered a byte at a time.
-#   33..64   the row's first 32 bytes or'ed with its last 32, which overlap.
+#   33..64   the row's first 32 bytes or'ed with its last 32, which overlap:
+#            four rows per step, then one.
 #   65..     32-byte chunks or'ed together, the last one ending at the row's
 #            end and overlapping the one before.
+#
+# A byte of m that is neither 0 nor 1 counts as true on every path but one:
+# with n under 32 and cols other than 4 the bits are gathered by shifting the
+# bytes themselves, which is right only for 0 and 1.
+#
+# One `vptest` and one `setnz` per row is the limit of the first path:
+# `vptest` needs port 0, and `setnz` and the loop's branch port 0 or 6.
 
 .section .rodata
 .p2align 6

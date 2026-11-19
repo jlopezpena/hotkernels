@@ -87,3 +87,99 @@ The kernel does the same work whatever the elements are, so the two timing distr
 - **compare:** significantly faster, 1.016x [1.014 – 1.017]
 - **Kept:** yes
 - **Notes:** rows of 22: 1.04x in both distributions. 1.02x at 4,096 (50.1 ns to 48.9), 1.06x at 16,384, 1.12x from 65,536 to 1,048,576 (948.6 ns to 846.8 at 65,536), 1.08x above; 0.92x at 64 elements (1.9 ns to 2.1), 0.97x at 256 and 0.99x at 1,024, which pay for one more test on the way in. More than the count of instructions on the two ports predicts beyond the first-level cache, and the reason was not looked for. HEAD itself has taken 803 ns and 945 ns for 65,536 elements in different runs of `compare`, so the placement of the buffers plays a part there. The micro-benchmark was not usable for this attempt: its core was shared with another job.
+
+## Where it stands
+
+Final `judge run` (unlocked): 6.70x [6.69 – 6.72] over naive C over all six tables, 122x over NumPy.
+
+| table | over naive C [95%] | over NumPy |
+|---|---|---|
+| rows of 22, sparse | 5.10x [5.07 – 5.14] | 91.7x |
+| rows of 22, dense | 5.04x [5.01 – 5.09] | 80.4x |
+| rows of 4, sparse | 17.6x [17.52 – 17.75] | 304x |
+| rows of 4, dense | 17.5x [17.32 – 17.62] | 362x |
+| rows of 64, sparse | 3.40x [3.38 – 3.41] | 69.2x |
+| rows of 64, dense | 3.37x [3.36 – 3.38] | 59.7x |
+
+The kernel does the same work whatever the elements are, so the per-size tables are those of the sparse distribution; the dense ones are within 3% of them at every size.
+
+Rows of 22 (the default):
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup |
+|---|---|---|---|---|---|
+| 16 | 1.3 ns | 1.4 ns | 1.11x [1.07 – 1.17] | 702.1 ns | 540x |
+| 64 | 2.4 ns | 9.1 ns | 3.73x [3.62 – 3.92] | 771.9 ns | 316x |
+| 256 | 4.2 ns | 35.7 ns | 8.48x [8.17 – 8.71] | 879.2 ns | 209x |
+| 1,024 | 14.5 ns | 93.0 ns | 6.43x [6.41 – 6.47] | 1.4 us | 94.1x |
+| 4,096 | 49.0 ns | 334.7 ns | 6.83x [6.82 – 6.84] | 3.0 us | 61.8x |
+| 16,384 | 185.9 ns | 1.3 us | 7.02x [7.02 – 7.03] | 10.5 us | 56.4x |
+| 65,536 | 856.1 ns | 5.2 us | 6.03x [6.02 – 6.04] | 44.7 us | 52.2x |
+| 262,144 | 3.4 us | 20.6 us | 6.15x [6.15 – 6.15] | 187.4 us | 55.9x |
+| 1,048,576 | 13.3 us | 82.6 us | 6.22x [6.21 – 6.23] | 758.8 us | 57.2x |
+| 4,194,304 | 63.9 us | 334.0 us | 5.23x [5.21 – 5.25] | 3.03 ms | 47.4x |
+| 16,777,216 | 289.9 us | 1.34 ms | 4.64x [4.52 – 4.78] | 12.14 ms | 41.9x |
+
+Rows of 4:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup |
+|---|---|---|---|---|---|
+| 16 | 2.9 ns | 9.3 ns | 3.16x [3.16 – 3.16] | 776.5 ns | 265x |
+| 64 | 2.1 ns | 28.9 ns | 13.9x [13.89 – 13.94] | 890.7 ns | 429x |
+| 256 | 2.6 ns | 67.4 ns | 26.3x [26.20 – 26.43] | 1.4 us | 530x |
+| 1,024 | 6.3 ns | 218.2 ns | 34.9x [34.82 – 34.89] | 3.2 us | 514x |
+| 4,096 | 24.4 ns | 824.2 ns | 33.8x [33.74 – 33.76] | 10.7 us | 438x |
+| 16,384 | 95.6 ns | 3.2 us | 33.9x [33.91 – 33.96] | 40.6 us | 425x |
+| 65,536 | 559.0 ns | 12.9 us | 23.1x [23.11 – 23.12] | 163.6 us | 293x |
+| 262,144 | 2.2 us | 51.6 us | 23.3x [23.30 – 23.32] | 653.3 us | 295x |
+| 1,048,576 | 9.1 us | 206.3 us | 22.6x [22.48 – 22.73] | 2.61 ms | 286x |
+| 4,194,304 | 63.5 us | 823.6 us | 13.0x [12.88 – 13.22] | 10.43 ms | 164x |
+| 16,777,216 | 472.1 us | 3.29 ms | 6.96x [6.50 – 7.44] | 42.04 ms | 89.0x |
+
+Rows of 64:
+
+| n | kernel | naive C | speedup [95%] | NumPy | speedup |
+|---|---|---|---|---|---|
+| 16 | 1.3 ns | 1.4 ns | 1.07x [1.02 – 1.13] | 698.7 ns | 548x |
+| 64 | 1.5 ns | 5.1 ns | 3.37x [3.33 – 3.41] | 753.3 ns | 499x |
+| 256 | 2.3 ns | 12.3 ns | 5.39x [5.37 – 5.42] | 788.7 ns | 347x |
+| 1,024 | 6.3 ns | 41.2 ns | 6.53x [6.52 – 6.54] | 956.6 ns | 151x |
+| 4,096 | 27.7 ns | 131.1 ns | 4.74x [4.73 – 4.76] | 1.5 us | 53.0x |
+| 16,384 | 80.3 ns | 494.3 ns | 6.16x [6.16 – 6.16] | 3.7 us | 45.5x |
+| 65,536 | 623.3 ns | 2.0 us | 3.13x [3.13 – 3.14] | 13.6 us | 21.8x |
+| 262,144 | 2.5 us | 7.8 us | 3.10x [3.09 – 3.11] | 56.4 us | 22.5x |
+| 1,048,576 | 10.0 us | 31.1 us | 3.12x [3.12 – 3.13] | 244.7 us | 24.6x |
+| 4,194,304 | 48.7 us | 124.0 us | 2.55x [2.55 – 2.55] | 1.05 ms | 21.6x |
+| 16,777,216 | 206.4 us | 502.3 us | 2.43x [2.41 – 2.45] | 4.02 ms | 19.5x |
+
+With rows of 22 or 64, 16 elements are no row at all: the kernel returns after one compare, and the reference after a division. The times of the rows of 64 depend on where `m` sits: 65,536 elements took 446 ns in the `compare` of attempt 7 and 623 ns in this run. A row of 64 that does not start at a multiple of 32 has one load across two cache lines.
+
+Output 16 bytes behind the input, counted within a page (rows of 22, sparse), against the same code with the output clear:
+
+| n | close | apart | apart / close [95%] |
+|---|---|---|---|
+| 4,096 | 49.1 ns | 48.9 ns | 1.00x [1.00 – 1.00] |
+| 16,384 | 186.1 ns | 185.8 ns | 1.00x [1.00 – 1.00] |
+| 65,536 | 849.0 ns | 849.3 ns | 1.00x [1.00 – 1.00] |
+| 262,144 | 3.4 us | 3.4 us | 1.00x [1.00 – 1.00] |
+| 1,048,576 | 13.4 us | 13.5 us | 1.00x [1.00 – 1.00] |
+| 4,194,304 | 62.0 us | 62.1 us | 1.00x [1.00 – 1.00] |
+| 16,777,216 | 450.3 us | 591.6 us | 1.31x [1.30 – 1.33] |
+
+The close placement costs nothing: the kernel stores one byte for every `cols` it reads, and no store is taken for a store to the bytes about to be loaded. The last line is 16 MB, a size at which timings were not steady during these runs: other judges were running.
+
+What limits it. Rows of 22 in the first-level cache take 0.26 ns per row, about 1.4 cycles, at 22 elements per row. Every row needs one `vptest`, which needs port 0, and one `setnz`, which needs port 0 or 6, as the loop's branch does: a little over one cycle per row is the floor of that form. Attempts 4 and 5 show that the two ways around it that were found cost more vector instructions than they save. Rows of 4 take about four cycles per 128 elements: eight loads, or three packs on port 5 with the instructions around them.
+
+What a caller must know:
+
+- `cols` is at least 1. `out` has room for `n / cols` bytes and does not overlap `m`.
+- Every byte of `m` is 0 or 1. Any other non-zero byte counts as true on every path but one: with fewer than 32 elements and a width other than 4, the bits are gathered by shifting the bytes themselves, and a byte above 1 spills into its neighbours' bits. A binding that may see such bytes has to rule them out, or that path has to gather with a compare; the judge has no such input, and it times nothing on that path, so the change was left for a decision.
+- `pext` and `pdep` are not used. No gather and no masked store.
+
+Not tried:
+
+- Rows of 1, 2 and 8 as whole vectors (a copy, `vpcmpeqw`, `vpcmpeqq`), in the way of attempt 3. They take the `vptest` path now, at about 1.4 cycles per row whatever the width, which for a width of 1 is 0.26 ns per element. The judge times widths of 22, 4 and 64 only, so `compare` cannot keep such a path; it needs a timed scalar set in the spec first.
+- Narrow rows that are not a power of two (3, 5, 6, 7) through the mask bits: `vpmovmskb` of 32 elements, then all the rows of a 64-bit word at once with the carry trick for fields of `cols` bits, `pext` and `pdep`. Estimated at about two instructions per row for a width of 3 against six now. Not timed by the judge either.
+- An early exit inside a long row once a true element is found. Rows of 1,000 are or'ed to the end whatever they hold; the judge does not time them.
+- Rows of 65 and more with more than one chunk per step of the inner loop.
+- Stores past the caches. The output is `1 / cols` of the input, so there is little to gain.
+- For rows of 64 whose loads straddle cache lines, loads brought to a multiple of 32 with the two partial vectors masked: estimated to cost more than the straddling does.
