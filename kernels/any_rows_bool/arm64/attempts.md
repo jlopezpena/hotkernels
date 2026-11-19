@@ -149,3 +149,79 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
 - **compare:** significantly slower, 0.998x [0.997 – 0.999]; rows of 22 0.99x from 262,144 to
   4,194,304 and 0.95x at 16,777,216 (where it replaced `ldnp`).
 - **Kept:** no
+
+## Widths the judge does not time
+
+The judge times widths 22, 4 and 64 only, so `compare` cannot see a change to any other path.
+The attempts below were decided outside the one rule, at the coordinator's request, after the
+kernel was found slower than the naive C it replaced at widths 8, 12, 15, 65 and 1,000, and
+slower than NumPy from Python at widths 1 and 1,000. Each was kept when `check` passed,
+`compare` against HEAD was not significantly slower on the timed widths, and a timer outside
+the repository (the kernel against `naive.c` built with `clang -O3 -mcpu=native`, best of 15,
+3%, 50% and 0% True, 4,096 and 1,048,576 elements) showed it faster than the naive C at the
+width, and for widths 1 and above 64 also not slower than NumPy from Python
+(`m.any(axis=1)` after `hotkernels.install()`, 1,048,576 elements). Load average 5 to 11
+throughout, with other kernel runs in progress.
+
+## 13. Width 1: a copy
+
+- **Idea:** with every byte 0 or 1 the result of a row of one is the byte itself: 32 bytes per
+  step with `ldp` and `stp`, the last 32 stored at the end over the ones before; under 32 bytes,
+  two overlapping copies of 16, 8 or 4 bytes, under 4 a byte at a time.
+- **check:** pass
+- **compare:** no significant difference, 1.000x [0.999 – 1.001] (together with attempt 14)
+- **Kept:** yes, on the timer: the judge times no such width.
+- **Notes:** against the naive C 47x at 4,096 elements (52 ns against 2.46 µs) and 27x to 28x
+  at 1,048,576 (22 µs against 621 µs), the same on every share. From Python at 1,048,576
+  elements 1.35x to 1.46x faster than NumPy (26 µs to 27 µs against 37 µs), where it was 0.08x.
+
+## 14. Widths 2, 3 and 5 to 15: a row in a general register
+
+- **Idea:** in place of a byte at a time, two loads per row, one at the row's start and one
+  ending at its end, overlapping when the row is shorter than both: 8 bytes each for widths 8 to
+  15, 4 bytes for 5 to 7, 2 bytes and 1 byte for 2 and 3. Or'ed, compared with zero, `cset`,
+  `strb`. Four rows per step, addressed from one position and fixed offsets.
+- **check:** pass
+- **compare:** no significant difference, 1.000x [0.999 – 1.001] (together with attempt 13)
+- **Kept:** yes, on the timer: the judge times no such width.
+- **Notes:** against the naive C, the same within 3% on 3%, 50% and 0% True: width 2 2.8x
+  (0.28 ns a row), 3 5.6x to 5.7x, 5 7.5x to 7.9x, 8 3.6x to 3.8x (36 µs against 135 µs at
+  1,048,576), 12 7.6x to 7.9x, 15 10.8x to 11.4x. Width 8 from Python is 23x to 39x faster than
+  NumPy. Width 2 could take `umaxp` like width 4; left, as it is already 2.8x over the C.
+
+## 15. Widths above 64: 64 bytes per step and an exit at the first True
+
+- **Idea:** NumPy's reduction stops at a row's first True; the chunk loop of attempt 1 read every
+  row to its end and reduced it with `umaxv`. Now a row goes 64 bytes per step (two `ldp`, three
+  `orr`, one `umaxp` to 8 bytes, `fmov` to a general register, `cbz`) and ends at the first step
+  that holds a True; its last 64 bytes end at the row's end and overlap the step before.
+- **check:** pass
+- **compare:** no significant difference, 1.000x [1.000 – 1.001]
+- **Kept:** yes, on the timer: the judge times no such width.
+- **Notes:** against the naive C at 4,096 / 1,048,576 elements: width 65 2.16x / 1.13x (3%
+  True), 2.02x / 2.17x (50%), 1.54x / 1.45x (all False); width 100 5.22x / 3.24x, 4.80x /
+  4.40x, 3.59x / 3.26x; width 1,000 7.78x / 5.93x, 7.76x / 6.73x, and 1.05x / 1.04x all False,
+  where there is no exit and both read every byte. From Python at 1,048,576 elements: width 65
+  2.8x to 6.1x faster than NumPy, 100 2.3x to 6.5x, 1,000 1.04x all False but 0.63x (3% True,
+  14.7 µs against 9.3 µs) and 0.66x (50%): the kernel takes about 2.2 µs there, and the rest is
+  the binding's read of every byte for values other than 0 and 1, which NumPy's early exit does
+  not pay. That read is the binding's, not the kernel's.
+
+## 16. Widths 65 to 128: blocks of sixteen rows, no exit
+
+- **Idea:** with the exit of attempt 15, rows of 65 on sparse data hold a True in their first 64
+  bytes 86% of the time, and the branch that decides it mispredicts on the rest: 1.05x over the
+  naive C at 1,048,576 elements. A row of 65 to 128 is at most two steps, so these widths now
+  take the block of rows of 33 to 64 with the row's first 64 bytes or'ed with its last 64
+  (four `ldp`), fifteen `umaxp` per sixteen rows and one store, no exit.
+- **check:** pass
+- **compare:** first placed before the long-row loop: significantly slower, 0.992x
+  [0.991 – 0.992], rows of 4 at 256 elements 2.7 ns to 3.5 ns, the rows-of-4 loop moved in
+  memory. Placed at the end of the text instead: no significant difference, 1.000x
+  [0.999 – 1.001].
+- **Kept:** yes, on the timer: the judge times no such width.
+- **Notes:** width 65 against the naive C at 4,096 / 1,048,576 elements: 2.16x / 1.53x (3%
+  True), 2.22x / 1.50x (50%), 2.19x / 1.50x (all False), where attempt 15 gave 2.16x / 1.05x,
+  2.02x / 2.17x and 1.54x / 1.45x. Width 100: 4.5x / 3.4x on every share (attempt 15: 5.2x / 3.2x
+  sparse, 4.8x / 4.4x dense). The lowest figure of the two widths rises from 1.05x to 1.50x.
+  From Python at 1,048,576 elements width 65 is 2.6x to 8.6x faster than NumPy, 100 2.1x to 7.1x.
