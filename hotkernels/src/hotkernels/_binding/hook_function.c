@@ -892,6 +892,78 @@ static PyObject *run_clip(PyArrayObject *x, hk_kernel kernel, double lo, double 
     return result;
 }
 
+// ---- int64, on short arrays
+//
+// No kernel serves int64, and NumPy's clip loop for it is quick: what a
+// short call costs is NumPy's call path, about 1.7 us at 32 elements, against
+// a few nanoseconds for the loop. So the function and method hooks run a
+// plain C loop of their own, up to CLIP_I64_MAX_N elements; above it NumPy's
+// own loop, in vector code, is the better one and the call goes on to NumPy.
+// Such a call was never counted, as no hook served an int64 clip, and it is
+// still not counted.
+//
+// NumPy keeps the result int64 for a bound that is a Python int, a weak
+// scalar under NEP 50, and for an np.int64. A Python int outside the range of
+// int64 is NumPy's: it raises for some and accepts others. Any other bound,
+// a Python float, a bool or a NumPy scalar of another type, is NumPy's too:
+// most change the result's type.
+
+// Most elements of an int64 array the binding's loop clips. Measured from
+// Python on the Intel Core i5-14600KF, `np.clip(x, -100, 100)` was 16x
+// faster than NumPy at 16 elements, 7.1x at 1,024 and 3.5x at 4,096, the
+// largest size this limit was chosen among. The loop stays ahead further
+// (2.0x at 16,384, 1.5x at 32,768, level from 262,144), but those sizes are
+// not short arrays: they are left to NumPy, and the loop never needs to
+// release the interpreter lock, which the binding does from HK_NOGIL_MIN_N.
+#define CLIP_I64_MAX_N 4096
+
+// Convert a bound for an int64 array: an np.int64 as it is, or a Python int
+// that fits int64. Returns false for anything else, with no exception set.
+static bool clip_bound_i64(PyObject *bound, int64_t *value) {
+    if (Py_IS_TYPE(bound, &PyInt64ArrType_Type)) {
+        *value = PyArrayScalar_VAL(bound, Int64);
+        return true;
+    }
+    if (!PyLong_CheckExact(bound)) return false;
+    int overflow = 0;
+    const long long v = PyLong_AsLongLongAndOverflow(bound, &overflow);
+    if (overflow != 0 || (v == -1 && PyErr_Occurred())) {
+        PyErr_Clear();
+        return false;
+    }
+    *value = (int64_t)v;
+    return true;
+}
+
+// out[i] = min(max(x[i], lo), hi) for the `n` elements at `x`, as NumPy's
+// clip loop computes it for integers. Compiled for the kernels' level, where
+// the compiler makes it a compare and a blend per four elements; for any
+// x86-64 it would leave it a scalar loop, since SSE2 has no 64-bit compare.
+static HK_TARGET_KERNEL_LEVEL void clip_i64_loop(const int64_t *restrict x, int64_t *restrict out, size_t n,
+                                                 int64_t lo, int64_t hi) {
+    for (size_t i = 0; i < n; i++) {
+        const int64_t raised = x[i] < lo ? lo : x[i];
+        out[i] = raised > hi ? hi : raised;
+    }
+}
+
+// np.clip(x, lo, hi) or x.clip(lo, hi) on a contiguous int64 array: the
+// caller has tested the array's type. Returns NULL with no exception set for
+// a call that is NumPy's. The lock stays held: the array is short.
+static HK_NOINLINE PyObject *try_clip_i64(PyArrayObject *x, PyObject *lo, PyObject *hi) {
+    const npy_intp n = PyArray_SIZE(x);
+    int64_t lo64, hi64;
+    if (n > CLIP_I64_MAX_N || !clip_bound_i64(lo, &lo64) || !clip_bound_i64(hi, &hi64) || lo64 > hi64) return NULL;
+    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), NPY_INT64);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    clip_i64_loop(PyArray_DATA(x), PyArray_DATA((PyArrayObject *)result), (size_t)n, lo64, hi64);
+    hk_take(HK_CLIP_I64);
+    return result;
+}
+
 // The bounds are compared with islessequal, which raises no flag for a NaN:
 // a NaN bound fails the comparison, as does lo > hi, and both are NumPy's.
 // The float32 bounds are compared after their conversion, as the loop sees
@@ -902,6 +974,7 @@ HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi) {
     // NumPy returns an empty array without calling the loop; the kernels are
     // never called with n = 0.
     if (PyArray_SIZE(x) < 1) return NULL;
+    if (hk_is_flat(array, NPY_INT64)) return try_clip_i64(x, lo, hi);
     if (hk_is_flat(array, NPY_FLOAT)) {
         float lo32, hi32;
         if (!clip_bound_f32(lo, &lo32) || !clip_bound_f32(hi, &hi32) || !islessequal(lo32, hi32)) return NULL;
@@ -915,7 +988,8 @@ HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi) {
     return NULL;
 }
 
-// np.clip(a, a_min, a_max) for a contiguous float32 or float64 array, with
+// np.clip(a, a_min, a_max) for a contiguous float32 or float64 array, or a
+// short int64 one, with
 // the bounds given by position, as `a_min=` and `a_max=`, or, where NumPy
 // has them, as `min=` and `max=`; `out` absent or None; nothing else. A
 // bound left out, None, or both spellings at once are NumPy's: it raises, or

@@ -37,6 +37,9 @@ PROBE_INDEX = 617
 SMALL_PROBE_INDEX = 11
 # Bounds the clip probes clamp to.
 PROBE_LO, PROBE_HI = -0.5, 0.5
+# Bounds the int64 clip probes clamp to: Python ints inside the probe's values,
+# so that elements on both sides change.
+PROBE_INT_BOUNDS = (-3, 5)
 # How many of every `PROBE_STRIDE` elements a probe selects or sets.
 PROBE_STRIDE = 3
 # Number of bins and range of the histogram probe.
@@ -109,6 +112,11 @@ class KernelInfo:
     hooks: tuple[str, ...]
     # Why the kernel has no hook, or None when it has one.
     unbound_reason: str | None = None
+    # True for a loop built into the binding for calls on short arrays, which
+    # is plain C in the hook files and not a kernel from `kernels/`: the
+    # judge never sees it, and `report()` shows it as exact C and does not
+    # count it among the kernels.
+    builtin: bool = False
 
 
 def _marked(dtype: type, n: int, index: int, value: float) -> np.ndarray:
@@ -194,6 +202,21 @@ def _clip_method(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
 def _clip(dtype: type) -> bool:
     """Probe the clip loop or the function hook: `np.clip(x, lo, hi)`."""
     return _clip_with(dtype, np.clip)
+
+
+def _clip_i64_with(clip: Callable[[np.ndarray, int, int], np.ndarray]) -> bool:
+    """Probe the int64 path of a clip hook: SMALL_PROBE_N values around zero clamped to PROBE_INT_BOUNDS.
+
+    Args:
+        clip: Clips its first argument to the bounds given by the other two.
+
+    Returns:
+        Whether the result is int64 and holds the clamped values.
+    """
+    x = np.arange(SMALL_PROBE_N, dtype=np.int64) - SMALL_PROBE_N // 2
+    lo, hi = PROBE_INT_BOUNDS
+    result = clip(x, lo, hi)
+    return result.dtype == np.int64 and result.tolist() == [min(max(v, lo), hi) for v in x.tolist()]
 
 
 def _stride_mask() -> np.ndarray:
@@ -531,6 +554,7 @@ HOOKS: tuple[Hook, ...] = (
     Hook("function.clip", FUNCTION, (
         Probe("clip_f32", partial(_clip, np.float32)),
         Probe("clip_f64", partial(_clip, np.float64)),
+        Probe("clip_i64", partial(_clip_i64_with, np.clip)),
     )),
     Hook("function.any", FUNCTION, (Probe("any_rows_bool", partial(_any_rows, _any_function)),)),
     Hook("method.astype", METHOD, (Probe("cast_u8_f32", _astype),)),
@@ -557,6 +581,7 @@ HOOKS: tuple[Hook, ...] = (
     Hook("method.clip", METHOD, (
         Probe("clip_f32", partial(_clip_with, np.float32, _clip_method)),
         Probe("clip_f64", partial(_clip_with, np.float64, _clip_method)),
+        Probe("clip_i64", partial(_clip_i64_with, _clip_method)),
     )),
     Hook("ufunc.accumulate", METHOD, (
         Probe("cummax_i64", partial(_cummax, np.maximum)),
@@ -575,8 +600,8 @@ HOOKS: tuple[Hook, ...] = (
 # The hooks that deliver the compress kernels: `x[mask]`, `np.compress` and `np.extract`.
 COMPRESS_HOOKS = ("index.get", "function.compress", "function.extract")
 
-# Every kernel, in the order the report lists them. Kernels of one operation
-# are adjacent.
+# Every kernel, and every loop built into the binding, in the order the report
+# lists them. The rows of one operation are adjacent.
 KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("argmax_f32", "np.argmax", "float32", "argmax", ("slot.argmax.f32", "function.argmax", "method.argmax")),
     KernelInfo("argmax_f64", "np.argmax", "float64", "argmax", ("slot.argmax.f64", "function.argmax", "method.argmax")),
@@ -584,6 +609,8 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("argmin_f64", "np.argmin", "float64", "argmin", ("slot.argmin.f64", "function.argmin", "method.argmin")),
     KernelInfo("clip_f32", "np.clip", "float32", "clip", ("loop.clip.f32", "function.clip", "method.clip")),
     KernelInfo("clip_f64", "np.clip", "float64", "clip", ("loop.clip.f64", "function.clip", "method.clip")),
+    # A loop built into the binding, for short arrays.
+    KernelInfo("clip_i64", "np.clip", "int64", "clip", ("function.clip", "method.clip"), builtin=True),
     KernelInfo("compress_f32", "x[mask]", "float32", "compress", COMPRESS_HOOKS),
     KernelInfo("compress_f64", "x[mask]", "float64", "compress", COMPRESS_HOOKS),
     KernelInfo("maskfill_f64", "x[mask] = v", "float64", "maskfill", ("index.set", "function.putmask", "function.copyto")),

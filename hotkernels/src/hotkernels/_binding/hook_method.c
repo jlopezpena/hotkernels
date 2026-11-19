@@ -417,7 +417,8 @@ static PyObject *method_argmin(PyObject *self, PyObject *const *args, Py_ssize_t
 
 // -------------------------------------------------------------------- clip
 
-// x.clip(min, max) for a contiguous float32 or float64 array, the bounds by
+// x.clip(min, max) for a contiguous float32 or float64 array, or a short
+// int64 one, the bounds by
 // position or as `min=` and `max=`, and `out` absent or None: the same direct
 // call as np.clip's function hook makes (see hk_try_clip). The method passes
 // its arguments to NumPy's `_methods._clip`, whose parameters these are.
@@ -434,9 +435,10 @@ static HK_NOINLINE PyObject *try_clip(PyObject *self, PyObject *const *args, Py_
 
 // The array's type is tested first: most calls are for another element type,
 // and rejecting those must cost almost nothing. A call passed on reaches the
-// clip loop, whose hook counts it, so it is not counted here.
+// clip loop, whose hook counts it, so it is not counted here; nor is an int64
+// call passed on, which no hook counted before the binding had a loop for it.
 static PyObject *method_clip(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
-    if (hk_is_flat(self, NPY_FLOAT) || hk_is_flat(self, NPY_DOUBLE)) {
+    if (hk_is_flat(self, NPY_FLOAT) || hk_is_flat(self, NPY_DOUBLE) || hk_is_flat(self, NPY_INT64)) {
         PyObject *result = try_clip(self, args, nargs, kwnames);
         if (result != NULL) return result;
     }

@@ -1,7 +1,8 @@
 """What `hotkernels.report()` returns, and how it is printed.
 
-A report is plain data: one row per kernel and a few facts about the
-installation. Printing it renders a Jinja template into a table.
+A report is plain data: one row per kernel, one per loop built into the
+binding for short arrays, and a few facts about the installation. Printing it
+renders a Jinja template into a table.
 """
 from __future__ import annotations
 
@@ -19,6 +20,10 @@ KERNEL_TABLE = "kernels.json"
 TEMPLATES = Path(__file__).resolve().parent / "templates"
 REPORT_TEMPLATE = "report.txt.j2"
 
+# What the report says in its "Kernel" column for a loop built into the
+# binding, which has no entry in the kernel table.
+BUILTIN_IMPLEMENTATION = "C"
+
 # What the report says in its "Result" column.
 EXACT = "exact"
 WITHIN_TOLERANCE = "within tolerance"
@@ -30,7 +35,7 @@ NEEDS_INEXACT = "not installed: needs install(inexact=True)"
 
 @dataclass(frozen=True)
 class KernelReport:
-    """One kernel's row in a report."""
+    """One kernel's row in a report, or the row of a loop built into the binding."""
 
     # Kernel name, as in `kernels/`.
     name: str
@@ -52,6 +57,9 @@ class KernelReport:
     # because no kernel's conditions were met. Counted per operation, so it is
     # set on the first row of an operation and None on the others.
     left_to_numpy: int | None
+    # True for a loop built into the binding, which is not one of the kernels
+    # the report's first line counts.
+    builtin: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,8 +83,13 @@ class Report:
 
     @property
     def installed_count(self) -> int:
-        """Return how many kernels calls can reach now."""
-        return sum(1 for kernel in self.kernels if kernel.installed)
+        """Return how many kernels calls can reach now, leaving out the loops built into the binding."""
+        return sum(1 for kernel in self.kernels if kernel.installed and not kernel.builtin)
+
+    @property
+    def kernel_count(self) -> int:
+        """Return how many kernels there are, leaving out the loops built into the binding."""
+        return sum(1 for kernel in self.kernels if not kernel.builtin)
 
     def __str__(self) -> str:
         """Render the report as a table."""
@@ -142,7 +155,9 @@ def build(version: str, installed: bool, unsupported: str | None, inexact: bool,
     table = load_kernel_table()
     rows, seen_operations = [], set()
     for info in KERNELS:
-        entry = table.get(info.name, {})
+        # A loop built into the binding is not in the table: it is C, and
+        # bit-identical to NumPy, which `delivery check` holds it to.
+        entry = {"implementation": BUILTIN_IMPLEMENTATION} if info.builtin else table.get(info.name, {})
         exact = entry.get("exact", True)
         hooks_applied = any(hook in applied_hooks for hook in info.hooks)
         note = _note(info, exact, installed, inexact, hooks_applied)
@@ -158,6 +173,7 @@ def build(version: str, installed: bool, unsupported: str | None, inexact: bool,
             note=note,
             calls=taken.get(info.name, 0),
             left_to_numpy=passed.get(info.operation, 0) if first_of_operation else None,
+            builtin=info.builtin,
         ))
     return Report(version, installed, unsupported, inexact, numpy_version, tuple(rows), problems)
 

@@ -40,6 +40,14 @@
 
 // One entry per kernel the binding can call. The order is the order of
 // HK_KERNEL_NAMES in module.c.
+//
+// The entries after the kernels are loops built into the binding for calls
+// on short arrays, where NumPy's own call path is nearly all of a call's
+// cost and the loop hardly matters. They are plain C in the hook files, not
+// kernels from `kernels/`, and the judge does not see them; `delivery check`
+// compares them with NumPy as it does the rest of the binding. They are
+// counted like kernels so that report() and the self-test of install() can
+// show and prove them.
 typedef enum {
     HK_ARGMAX_F32, HK_ARGMAX_F64, HK_ARGMIN_F32, HK_ARGMIN_F64,
     HK_CLIP_F32, HK_CLIP_F64,
@@ -50,6 +58,8 @@ typedef enum {
     HK_SEARCHSORTED_F64, HK_SEARCHSORTED_RIGHT_F64, HK_INTERP_F64,
     HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64, HK_FMAX_REDUCE_F64, HK_ANY_ROWS_BOOL,
     HK_BINCOUNT_I16, HK_BINCOUNT_I64,
+    // Built into the binding.
+    HK_CLIP_I64,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -309,12 +319,13 @@ PyObject *hk_try_sum(PyObject *array);
 PyObject *hk_try_argext(PyObject *array, bool want_max);
 
 // The array NumPy's clip returns for `array` clamped to the bounds `lo` and
-// `hi`, as given by the caller: the clip kernels, on a new array. `array` is
-// contiguous float32 or float64 with at least one element; each bound is an
-// object that leaves the result in the array's element type and converts to
-// it exactly as NumPy converts it, with lo <= hi after the conversion. A
-// caller whose NumPy operation needs more, such as no `out`, tests that
-// first. In hook_function.c.
+// `hi`, as given by the caller: the clip kernels, or for int64 the binding's
+// own loop, on a new array. `array` is contiguous float32 or float64 with at
+// least one element, or contiguous int64 with 1 to CLIP_I64_MAX_N elements;
+// each bound is an object that leaves the result in the array's element type
+// and converts to it exactly as NumPy converts it, with lo <= hi after the
+// conversion. A caller whose NumPy operation needs more, such as no `out`,
+// tests that first. In hook_function.c.
 PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi);
 
 // The elements of `x` where `mask` is True, as a new one-dimensional array:

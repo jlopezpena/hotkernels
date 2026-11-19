@@ -555,7 +555,9 @@ def clip_cases() -> Iterator[Case]:
     the output is not the input. NumPy buffers arrays that are misaligned or
     in the other byte order and hands the loop contiguous chunks, so those
     may reach the kernel too. The counters do not say which of the hooks took
-    a call; `installation_checks` proves the direct path on its own.
+    a call; `installation_checks` proves the direct path on its own. int64,
+    which the function and method hooks serve on short arrays with a loop of
+    the binding's own, has its cases in `clip_i64_cases`.
     """
     kernels = {"f32": "clip_f32", "f64": "clip_f64"}
     for dtype, kernel in kernels.items():
@@ -647,6 +649,146 @@ def clip_cases() -> Iterator[Case]:
                     expect = None
                 yield Case("clip", f"{spelling.text} {dtype} n={n} layout={variant.name}",
                            partial(_built, dtype, n, variant), spelling.call, expect)
+    yield from clip_i64_cases()
+
+
+# The largest int64 array the binding's own clip loop takes: CLIP_I64_MAX_N
+# in hook_function.c. Above it the call is NumPy's.
+CLIP_I64_MAX_N = 4096
+# Sizes of the int64 sweep over values: every size of the general sweep up to
+# and beyond the limit, and one below it.
+CLIP_I64_SIZES = tuple(sorted({*VALUE_SIZES, CLIP_I64_MAX_N - 1}))
+# Sizes of the int64 sweep over layouts and spellings: empty, the general
+# ones, and the limit and one above it.
+CLIP_I64_LAYOUT_SIZES = (0, *LAYOUT_SIZES, CLIP_I64_MAX_N, CLIP_I64_MAX_N + 1)
+# The extremes of int64, as Python ints.
+I64_MIN, I64_MAX = -2**63, 2**63 - 1
+# Bounds of the int64 sweep over values, every pair with lo <= hi, as the
+# types NumPy keeps an int64 result for: Python ints and np.int64. Some cut
+# off much of the judge's data and some little; the extremes cut off none.
+CLIP_I64_BOUNDS = (
+    (-1, 1),
+    (0, 2**62),
+    (-2**40, 2**40),
+    (5, 5),
+    (I64_MIN, I64_MAX),
+    (I64_MIN, I64_MIN),
+    (I64_MAX, I64_MAX),
+    (np.int64(-1000), np.int64(1000)),
+    (-10, np.int64(10)),
+)
+# The bounds swept at every size; the others are swept at FEW_SIZES and
+# around the limit.
+CLIP_I64_FULL_SWEEP = 2
+# Element types beside int64 that the loop must leave to NumPy, whatever the
+# bounds. On Linux `longlong` is a second 64-bit type with a type number of
+# its own.
+CLIP_I64_NEIGHBOURS = ("i32", "u64", "i16")
+
+
+# Text in a spelling of an int64 clip that marks a bound given as a NumPy
+# integer or array rather than a Python int.
+_CLIP_NUMPY_BOUND_MARKERS = ("np.int", "np.longlong", "np.array", "_array")
+
+
+def _clip_i64_expect(n: int) -> str | None:
+    """Return the kernel a plain contiguous int64 clip of `n` elements with int64 bounds should take."""
+    return "clip_i64" if 1 <= n <= CLIP_I64_MAX_N else None
+
+
+def _longlong(n: int) -> tuple:
+    """Build random int64 values as an array of `np.longlong`, which is another type number on Linux."""
+    return (values("i64", n).astype(np.longlong),)
+
+
+def clip_i64_cases() -> Iterator[Case]:
+    """Yield the cases of `np.clip` and `x.clip` on int64.
+
+    The function and method hooks run the binding's own loop for a plain
+    contiguous int64 array of 1 to CLIP_I64_MAX_N elements, both bounds a
+    Python int that fits int64 or an np.int64, lo <= hi, and no `out` or
+    anything else. Every other call is NumPy's: a bound of another type
+    changes the result's type or is converted by NumPy's own rules, and a
+    float bound sends NumPy to its float64 loop, which the clip loop hook
+    may then take, so no expectation is stated for it.
+    """
+    sizes_near_limit = (CLIP_I64_MAX_N - 1, CLIP_I64_MAX_N, CLIP_I64_MAX_N + 1)
+    for index, (lo, hi) in enumerate(CLIP_I64_BOUNDS):
+        sizes = CLIP_I64_SIZES if index < CLIP_I64_FULL_SWEEP else (*FEW_SIZES, *sizes_near_limit)
+        for n, _, label, maker in value_arrays("i64", sizes):
+            yield Case("clip", f"np.clip(x, {lo!r}, {hi!r}) i64 {label}", partial(_made, maker),
+                       partial(_clip3, np.clip, lo, hi), _clip_i64_expect(n))
+            yield Case("clip", f"x.clip({lo!r}, {hi!r}) i64 {label}", partial(_made, maker),
+                       partial(_clip_method, lo, hi), _clip_i64_expect(n))
+    lo, hi, low, big = -100, 100, np.int64(-100), 2**63
+    spellings = (
+        Spelling("np.clip(x, lo, hi)", partial(_clip3, np.clip, lo, hi)),
+        Spelling("x.clip(lo, hi)", partial(_clip_method, lo, hi)),
+        Spelling("np.clip(x, min=lo, max=hi)", lambda x: np.clip(x, min=lo, max=hi)),
+        Spelling("np.clip(x, a_min=lo, a_max=hi)", lambda x: np.clip(x, a_min=lo, a_max=hi)),
+        Spelling("np.clip(a=x, a_min=lo, a_max=hi)", lambda x: np.clip(a=x, a_min=lo, a_max=hi)),
+        Spelling("np.clip(x, lo, hi, None)", lambda x: np.clip(x, lo, hi, None)),
+        Spelling("np.clip(x, lo, hi, out=None)", lambda x: np.clip(x, lo, hi, out=None)),
+        Spelling("x.clip(min=lo, max=hi)", lambda x: x.clip(min=lo, max=hi)),
+        Spelling("x.clip(lo, hi, None)", lambda x: x.clip(lo, hi, None)),
+        Spelling("x.clip(lo, hi, out=None)", lambda x: x.clip(lo, hi, out=None)),
+        Spelling("np.clip(x, np.int64(lo), np.int64(hi))", lambda x: np.clip(x, low, np.int64(hi))),
+        Spelling("x.clip(np.int64(lo), hi)", lambda x: x.clip(low, hi)),
+        Spelling("np.clip(x, lo, lo)", lambda x: np.clip(x, lo, lo)),
+        Spelling("np.clip(x, -2**63, 2**63 - 1)", lambda x: np.clip(x, I64_MIN, I64_MAX)),
+        Spelling("np.clip(x, -0.5, 0.5)", lambda x: np.clip(x, -0.5, 0.5), MAYBE),
+        Spelling("np.clip(x, lo, 100.0)", lambda x: np.clip(x, lo, 100.0), MAYBE),
+        Spelling("np.clip(x, np.uint64(0), np.uint64(hi))", lambda x: np.clip(x, np.uint64(0), np.uint64(hi)), MAYBE),
+        Spelling("np.clip(x, np.float64(lo), hi)", lambda x: np.clip(x, np.float64(lo), hi), MAYBE),
+        Spelling("np.clip(x, hi, lo) reversed", lambda x: np.clip(x, hi, lo), NEVER),
+        Spelling("x.clip(hi, lo) reversed", lambda x: x.clip(hi, lo), NEVER),
+        Spelling("np.clip(x, 2**63, 2**63 + 1)", lambda x: np.clip(x, big, big + 1), NEVER),
+        Spelling("np.clip(x, -2**63 - 1, hi)", lambda x: np.clip(x, I64_MIN - 1, hi), NEVER),
+        Spelling("np.clip(x, lo, 2**64)", lambda x: np.clip(x, lo, 2**64), NEVER),
+        Spelling("np.clip(x, np.int32(lo), hi)", lambda x: np.clip(x, np.int32(lo), hi), NEVER),
+        Spelling("np.clip(x, np.longlong(lo), hi)", lambda x: np.clip(x, np.longlong(lo), hi), NEVER),
+        Spelling("np.clip(x, False, True)", lambda x: np.clip(x, False, True), NEVER),
+        Spelling("np.clip(x, np.array(lo), hi)", lambda x: np.clip(x, np.array(lo), hi), NEVER),
+        Spelling("np.clip(x, lo_array, hi_array)", lambda x: np.clip(x, np.full(np.shape(x), lo), np.full(np.shape(x), hi)), NEVER),
+        Spelling("np.clip(x, lo, None)", lambda x: np.clip(x, lo, None), NEVER),
+        Spelling("np.clip(x, None, hi)", lambda x: np.clip(x, None, hi), NEVER),
+        Spelling("x.clip(lo)", lambda x: x.clip(lo), NEVER),
+        Spelling("np.clip(x, lo, hi, out=x)", lambda x: _clip_in_place(x, lo, hi), NEVER),
+        Spelling("x.clip(lo, hi, out=x)", lambda x: _clip_method_in_place(x, lo, hi), NEVER),
+        Spelling("np.clip(x, lo, hi, out=fresh)", lambda x: _clip_into_fresh(x, lo, hi), NEVER),
+        Spelling("np.clip(x, lo, hi, dtype=np.int64)", lambda x: np.clip(x, lo, hi, dtype=np.int64), NEVER),
+        Spelling("np.clip(x, lo, hi, casting='unsafe')", lambda x: np.clip(x, lo, hi, casting="unsafe"), NEVER),
+        Spelling("np.clip(x, lo, hi, out=zeros, where=x > 0)", lambda x: _clip_where(x, lo, hi), NEVER),
+        Spelling("np.clip(x, lo, hi, bogus=1)", lambda x: np.clip(x, lo, hi, bogus=1), NEVER),
+        Spelling("x.clip(lo, hi, order='F')", lambda x: x.clip(lo, hi, order="F"), NEVER),
+    )
+    for dtype in ("i64", *CLIP_I64_NEIGHBOURS):
+        kernel = "clip_i64" if dtype == "i64" else None
+        for n, spelling in itertools.product(CLIP_I64_LAYOUT_SIZES, spellings):
+            for variant in variants_for(dtype, n):
+                expect = expectation(kernel, spelling, variant, n)
+                # The two-dimensional layouts hold the whole rows of n elements.
+                size = n // COLUMNS * COLUMNS if variant.dims == 2 else n
+                # Above the limit and for an empty array the call is NumPy's.
+                if expect == kernel and not 1 <= size <= CLIP_I64_MAX_N:
+                    expect = None
+                # np.clip converts a list to an array of NumPy's choosing and
+                # calls its method, which the method hook serves: for int64
+                # values an int64 array, for the others whatever NumPy makes
+                # of them. A list has no method of its own.
+                if variant.name == "list" and spelling.text.startswith("np."):
+                    expect = _clip_i64_expect(n) if kernel and spelling.kind == TAKES else ANY
+                # A float bound sends NumPy to the float64 clip loop, which the
+                # loop hook may take. So does a NumPy integer bound beside a
+                # uint64 array: NumPy promotes the pair to float64.
+                numpy_bound = any(marker in spelling.text for marker in _CLIP_NUMPY_BOUND_MARKERS)
+                if spelling.kind == MAYBE or (dtype == "u64" and numpy_bound):
+                    expect = ANY
+                yield Case("clip", f"{spelling.text} {dtype} n={n} layout={variant.name}",
+                           partial(_built, dtype, n, variant), spelling.call, expect)
+    for n in (1, 16, CLIP_I64_MAX_N):
+        yield Case("clip", f"np.clip(x, -100, 100) longlong n={n}", partial(_longlong, n),
+                   partial(_clip3, np.clip, -100, 100), None)
 
 
 def _clip3(function, lo, hi, x):
