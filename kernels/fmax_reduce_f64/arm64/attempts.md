@@ -11,3 +11,11 @@ All runs on an Apple M1 Pro (performance core), macOS, native. **Every judge com
 - **compare:** n/a (first version)
 - **Kept:** yes
 - **Notes:** starting point; the chain is one `fmaxnm` latency per element.
+
+## 2. Vectors: overlapping first and last loads up to 32 elements, eight accumulators beyond
+
+- **Idea:** the order does not matter within the domain (see above), so: up to 32 elements no loop, the first and the last 2, 4, 8 or 16 elements as vectors that overlap in the middle, folded as a tree of `fmaxnm` and one `fmaxnmp`; the class is found from the bits of n - 1. From 33 elements eight two-lane accumulators start as the first 16 elements, take 16 elements per step, and the last step is the last 16 elements, overlapping the one before it.
+- **check:** pass
+- **compare:** significantly faster, 6.93x [6.85 – 7.02]
+- **Kept:** yes
+- **Notes:** 1.3 ns at 16 (5.2x), 4.4 ns at 64, 0.054 ns per element at 4,096 and 16,384: 2.8 cycles per 16 elements, the load limit of three 16-byte loads per cycle on this core. 0.095 ns per element from 65,536 (second-level cache), 110 us at 1,048,576, where NumPy takes 119 us.
