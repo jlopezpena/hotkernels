@@ -406,6 +406,79 @@ typedef uint64_t bincount_u64x4 __attribute__((vector_size(32)));
 #define BINCOUNT_SCAN_VECTOR_BYTES 32
 #define BINCOUNT_SCAN_STEP_BYTES (BINCOUNT_SCAN_VECTORS * BINCOUNT_SCAN_VECTOR_BYTES)
 
+#if defined(__aarch64__)
+
+// ARM64 versions of the two scans below, with the same answers. Written for
+// the 32-byte vectors of x86-64, the int16 scan took about 0.023 ns per
+// element on the Apple M1 Pro and the int64 scan 0.090, both short of the
+// three 16-byte loads per cycle the core can make. These keep eight running
+// maxima of NEON's 16 bytes. The last step ends at n and overlaps the one
+// before it, which a maximum does not mind.
+
+// Running maxima of the ARM64 scans, and the bytes one step reads: 128.
+#define BINCOUNT_NEON_VECTORS 8
+#define BINCOUNT_NEON_STEP_BYTES (BINCOUNT_NEON_VECTORS * 16)
+
+// As the x86-64 bincount_top_i16 below: the largest of the `n` int16
+// elements at `x`, each read as unsigned. A step is 64 elements, an unsigned
+// maximum (umax) per eight; fewer than 64 are read one at a time. About
+// 0.014 ns per element in the first-level cache, where the x86-64 code took
+// 0.023 (Apple M1 Pro).
+static uint64_t bincount_top_i16(const int16_t *x, size_t n) {
+    const size_t step = BINCOUNT_NEON_STEP_BYTES / sizeof(int16_t);
+    uint16_t largest = 0;
+    if (n < step) {
+        for (size_t i = 0; i < n; i++) largest = (uint16_t)x[i] > largest ? (uint16_t)x[i] : largest;
+        return largest;
+    }
+    uint16x8_t top[BINCOUNT_NEON_VECTORS];
+    for (size_t k = 0; k < BINCOUNT_NEON_VECTORS; k++) top[k] = vdupq_n_u16(0);
+    for (size_t i = 0;; i += step) {
+        if (i > n - step) i = n - step;
+        for (size_t k = 0; k < BINCOUNT_NEON_VECTORS; k++) {
+            top[k] = vmaxq_u16(top[k], vreinterpretq_u16_s16(vld1q_s16(x + i + 8 * k)));
+        }
+        if (i == n - step) break;
+    }
+    for (size_t k = 1; k < BINCOUNT_NEON_VECTORS; k++) top[0] = vmaxq_u16(top[0], top[k]);
+    return vmaxvq_u16(top[0]);
+}
+
+// As the x86-64 bincount_top_i64 below: the largest of the `n` int64
+// elements at `x`, each read as unsigned. NEON has no 64-bit maximum, and a
+// compare and a select per two elements left the loop at 0.090 ns per
+// element. So the elements are taken as pairs of 32-bit words, an unsigned
+// maximum (umax) per four words: when the high words' maximum is 0, every
+// element is below 2^32 and the largest is the low words' maximum. Otherwise,
+// a negative element or one of 2^32 or more, which np.bincount rejects or
+// meets rarely, the elements are read again one at a time. A step is 16
+// elements; fewer are read one at a time. About 0.059 ns per element in the
+// first-level cache (Apple M1 Pro).
+static uint64_t bincount_top_i64(const int64_t *x, size_t n) {
+    const size_t step = BINCOUNT_NEON_STEP_BYTES / sizeof(int64_t);
+    if (n >= step) {
+        uint32x4_t top[BINCOUNT_NEON_VECTORS];
+        for (size_t k = 0; k < BINCOUNT_NEON_VECTORS; k++) top[k] = vdupq_n_u32(0);
+        for (size_t i = 0;; i += step) {
+            if (i > n - step) i = n - step;
+            for (size_t k = 0; k < BINCOUNT_NEON_VECTORS; k++) {
+                top[k] = vmaxq_u32(top[k], vreinterpretq_u32_s64(vld1q_s64(x + i + 2 * k)));
+            }
+            if (i == n - step) break;
+        }
+        for (size_t k = 1; k < BINCOUNT_NEON_VECTORS; k++) top[0] = vmaxq_u32(top[0], top[k]);
+        // Little-endian: lanes 0 and 2 are the low words, 1 and 3 the high.
+        if ((vgetq_lane_u32(top[0], 1) | vgetq_lane_u32(top[0], 3)) == 0) {
+            const uint32_t even = vgetq_lane_u32(top[0], 0), odd = vgetq_lane_u32(top[0], 2);
+            return even > odd ? even : odd;
+        }
+    }
+    uint64_t largest = 0;
+    for (size_t i = 0; i < n; i++) largest = (uint64_t)x[i] > largest ? (uint64_t)x[i] : largest;
+    return largest;
+}
+
+#else
 // The largest of the `n` int16 elements at `x`, each read as unsigned. A
 // negative element reads as 0x8000 or more, so the one maximum is both the
 // largest element, when none is negative, and the test for a negative one.
@@ -458,6 +531,7 @@ static HK_TARGET_KERNEL_LEVEL uint64_t bincount_top_i64(const int64_t *x, size_t
     }
     return largest;
 }
+#endif
 
 // np.bincount(x, minlength=m) for a contiguous one-dimensional int16 or
 // int64 array of at least one element: the bincount_i16 and bincount_i64
