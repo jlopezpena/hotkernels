@@ -1,6 +1,6 @@
 # Bottleneck: NaN-aware reductions that a library sends past NumPy
 
-This is a proposal, written before the code, for [issue 192](https://github.com/sofeikov/hotkernels/issues/192). It answers the issue's three questions with measurements and proposes what to build. The building follows in the same branch.
+This began as a proposal, written before the code, for [issue 192](https://github.com/sofeikov/hotkernels/issues/192), and is now implemented in the same branch. It answers the issue's three questions with measurements and says what was built. Where the building departed from the proposal, [What changed in the building](#what-changed-in-the-building) says so, and [Status](#status) holds the result against the exit criterion. The rest of the text stands as proposed.
 
 Every figure here is ARM64's, measured on an Apple M1 Pro with CPython 3.12.7, NumPy 2.5.5, bottleneck 1.6.1, empyrical-reloaded 0.7.3 and pandas 3.1.1, at a load average of 2.1 to 2.7 with other work running. No x86-64 figure has been taken.
 
@@ -12,6 +12,39 @@ Every figure here is ARM64's, measured on an Apple M1 Pro with CPython 3.12.7, N
 - **They can be reached for every caller.** bottleneck's functions are C function objects, and CPython calls such an object through a pointer inside it, as it calls NumPy's functions. Changing that pointer serves `bn.nanmean`, empyrical's wrapper that captured it at import, and pandas' `nanops`, which captured it too, without replacing any name. It is the function hook hotkernels already uses for NumPy, on an object of another library. See [Question 2](#question-2-where-would-they-be-reached).
 - **Proposed:** four kernels, `nanmean_cols_f64`, `nanstd_cols_f64`, `nanmin_cols_f64` and `nanmax_cols_f64`, shipped as C on both architectures, and four hooks on bottleneck's functions. `install()` applies them by default, since they are bit-identical; `install(bottleneck=False)` leaves them out. It never imports bottleneck: if bottleneck is not imported yet, the hooks are applied when it is. `report()` shows them as rows of their own. See [Design](#design).
 - **Not proposed now:** kernels for NumPy's own `np.nanmean` and `np.nanstd`, which would need NumPy's order and not bottleneck's; one-dimensional and last-axis forms, which this application does not need; assembly. Each is measured below and left for an issue of its own.
+
+## Status
+
+Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with CPython 3.12.7, NumPy 2.5.5 and bottleneck 1.6.1:
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | `judge check` passes for the four kernels | Met on ARM64, with `--unlocked` since the specs are not on `main`: 158,874 cases each for `nanmean_cols_f64`, `nanmin_cols_f64` and `nanmax_cols_f64`, 170,918 for `nanstd_cols_f64`. With the square and add of `nanstd` unfused on ARM64 the reference fails the judge at its first case. x86-64 is not checked here; CI runs `judge check nanstd_cols_f64 --unlocked` on Linux |
+| 2 | `delivery check` passes, with the new cases | Met: 167,565 calls over the 21 NumPy operations and the four bottleneck functions, 1,529 of them bottleneck's, none failing; and the 22 checks of `install()` itself, among them that it never imports bottleneck, that a later import is served, and that a bottleneck of another layout leaves the hooks off with `install()` still working |
+| 3 | `empyrical_stats` identical and faster | Met. `uv run --group apps delivery apps --only empyrical_stats`: 1,367.3 ms on plain NumPy, 855.5 ms after `install()`, 1.60x, results identical. The study's run before this change gave 1.02x. Taken at a load average of 26 (CI runners and other work), so the times are rough; the ratio comes from alternating runs |
+| 4 | `report()` shows the four rows, counting | Met: `bn.nanmean`, `bn.nanstd`, `bn.nanmin` and `bn.nanmax`, "waiting" until bottleneck is imported. In one run of the application they took 480 calls and left 660, the one-dimensional ones, to bottleneck |
+
+From Python, best of 15 calls, at 252 × 4,789, bottleneck's own call against the hooked one (load average 14):
+
+| Call | Rolling windows | C order |
+|---|---|---|
+| `bn.nanmean(a, axis=0)` | 1.578 ms to 0.302 ms, 5.23x | 1.632 ms to 0.401 ms, 4.07x |
+| `bn.nanstd(a, axis=0, ddof=1)` | 3.900 ms to 0.538 ms, 7.25x | 3.911 ms to 0.712 ms, 5.49x |
+| `bn.nanmin(a, axis=0)` | 1.341 ms to 0.302 ms, 4.44x | 1.378 ms to 0.403 ms, 3.42x |
+| `bn.nanmax(a, axis=0)` | 1.341 ms to 0.302 ms, 4.45x | 1.366 ms to 0.403 ms, 3.39x |
+
+**Which bottleneck and CPython.** The function objects were checked to be what the hook expects (exactly `builtin_function_or_method`, `METH_VARARGS | METH_KEYWORDS`, a NULL call pointer), every probe passed, and 200 random matrices with NaN and negative zeros gave the same bits with and without the hooks in all four functions, for bottleneck 1.4.2, 1.5.0, 1.6.0 and 1.6.1 on CPython 3.12, and for 1.6.1 on CPython 3.11, 3.13 and 3.14, all on NumPy 2.5.5. bottleneck 1.3.8, built against NumPy 1, does not import on NumPy 2, so the development environment asks for 1.4 or later. On a bottleneck whose function differs in any of those three ways, the hook's `apply` refuses before changing anything, `install()` leaves that hook off and lists it in `report()`, and the call is bottleneck's as before; `delivery check` proves this with a stand-in module of Python functions. A bottleneck that rounds `nanstd` differently from the platform's reference fails that hook's probe, with the same result.
+
+## What changed in the building
+
+| Proposed | Built | Why |
+|---|---|---|
+| The hooks are applied by `install()` or by the finder | The same; the finder's probes are taken off the counters again, by a new `forget()` in the binding | `install()` resets the counters after its probes. A hook applied later would otherwise report its probes' four calls as the program's |
+| The hook takes a matrix whose kept axis has a stride of 8 bytes | The same, which also takes a 5,040 × 1 column (one result), as empyrical passes for its alpha | The rule did not need an exception for it; `delivery check` has shapes of one row and of one column |
+| The attempts logs say no assembly was tried | Each holds one attempt, the C itself | The documentation site requires a numbered attempt in every log |
+| No version test (open decision 2) | No version test; the development environment asks for bottleneck 1.4 or later | 1.3.8 does not import on NumPy 2. The checks of the object's layout and the probes are the guard, as for NumPy |
+
+Not built, and proposed as issues: assembly for the four kernels, the last-axis and one-dimensional forms, and kernels for NumPy's own `np.nanmean` and `np.nanstd`.
 
 ## What the application calls
 
@@ -204,5 +237,5 @@ Each hook's probe reduces a probe matrix with NaN, zeros of both signs, infiniti
 ## Decisions still open
 
 1. **Whether binding a second library is wanted at all.** The issue leaves this to the maintainer. Proposed: yes, for bottleneck, because the binding is the same hook on the same kind of object, bit-identical and cheap to test; and on by default, with `install(bottleneck=False)` to leave it out.
-2. **Which bottleneck versions.** The loops are the same since 1.3.2 and the self-test checks the answer, as it does for NumPy. Proposed: no version test, and `delivery check` on the bottleneck in `uv.lock`.
+2. **Which bottleneck versions.** Resolved: no version test, as proposed, and `delivery check` on the bottleneck in `uv.lock`. Checked on 1.4.2 to 1.6.1; see [Status](#status).
 3. **Assembly, the other layouts, and NumPy's own `nanmean` and `nanstd`:** issues of their own.
