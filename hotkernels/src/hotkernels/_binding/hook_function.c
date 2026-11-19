@@ -23,7 +23,7 @@
 // The functions that are hooked, as indices into `functions`.
 enum {
     F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN, F_INTERP,
-    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP, F_ANY,
+    F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP, F_ANY, F_ROUND, F_AROUND,
     F_COUNT
 };
 
@@ -1194,6 +1194,38 @@ static PyObject *call_any(HK_VECTORCALL_PARAMETERS) {
     return functions[F_ANY].original(callable, args, nargsf, kwnames);
 }
 
+// ------------------------------------------------------------------- round
+
+// np.round(a, decimals, out) and np.around, which in NumPy 2 is a second
+// function object with the same parameters and the same body: a contiguous
+// float64 array, `decimals` absent or a Python int from 0 to 15, `out`
+// absent or None, by position or by keyword. The work is the method hook's
+// (hk_try_round).
+static HK_NOINLINE PyObject *try_round_function(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { A, DECIMALS, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"a", "decimals", "out"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[A] == NULL || !hk_is_flat(bound[A], NPY_DOUBLE) || !hk_is_absent(bound[OUT])) return NULL;
+    return hk_try_round(bound[A], bound[DECIMALS]);
+}
+
+// A call left to NumPy calls the array's `round` method, whose hook counts
+// it, so it is not counted here.
+static PyObject *call_round_with(HK_VECTORCALL_PARAMETERS, int function) {
+    PyObject *result = try_round_function(args, PyVectorcall_NARGS(nargsf), kwnames);
+    if (result != NULL) return result;
+    return functions[function].original(callable, args, nargsf, kwnames);
+}
+
+static PyObject *call_round(HK_VECTORCALL_PARAMETERS) {
+    return call_round_with(callable, args, nargsf, kwnames, F_ROUND);
+}
+
+static PyObject *call_around(HK_VECTORCALL_PARAMETERS) {
+    return call_round_with(callable, args, nargsf, kwnames, F_AROUND);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_function functions[F_COUNT] = {
@@ -1212,6 +1244,8 @@ static hk_function functions[F_COUNT] = {
     [F_WHERE] = {"where", call_where, NULL, NULL, NULL},
     [F_CLIP] = {"clip", call_clip, prepare_clip, NULL, NULL},
     [F_ANY] = {"any", call_any, NULL, NULL, NULL},
+    [F_ROUND] = {"round", call_round, NULL, NULL, NULL},
+    [F_AROUND] = {"around", call_around, NULL, NULL, NULL},
 };
 
 // Return the address of the call pointer inside a callable object, or NULL
@@ -1277,5 +1311,7 @@ hk_hook hk_function_hooks[] = {
     {"function.where", function_apply, function_remove, F_WHERE, false},
     {"function.clip", function_apply, function_remove, F_CLIP, false},
     {"function.any", function_apply, function_remove, F_ANY, false},
+    {"function.round", function_apply, function_remove, F_ROUND, false},
+    {"function.around", function_apply, function_remove, F_AROUND, false},
     {NULL, NULL, NULL, 0, false},
 };
