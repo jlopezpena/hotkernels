@@ -19,3 +19,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.588x [1.585 – 1.591]
 - **Kept:** yes
 - **Notes:** uniform codes 1.35x from 4,096 up (0.28 ns per element), four values 1.41x (0.96 ns per element: the wait for the counters is less, but still more than three times the uniform cost), 1,000 counters at 16 elements 3.76x (91 ns, level with the C's `memset`).
+
+## 3. Four tables of 32-bit counters on the stack, from 8 elements per counter
+
+- **Idea:** as `bincount_u8`: element k of each group of four is counted in table k, so neighbouring equal elements do not wait for each other's store. A table is `bins` 32-bit counters rounded up to 16 bytes, all four below the stack pointer (at most 16 KB, for 4 to 1,024 counters); `counts` is not cleared on this path, the sum of the four tables, widened, is stored over it four counters per step with the last step overlapping. Taken when n >= 8 * bins and n < 2^32, so no 32-bit counter can overflow.
+- **check:** pass
+- **compare:** significantly faster, 1.381x [1.381 – 1.382]
+- **Kept:** yes
+- **Notes:** four values 2.43x–2.65x from 1,024 up with 64 counters (0.35 ns per element against 0.94), 2.81x–2.94x from 65,536 up with 1,000 counters (0.32 ns). Uniform codes 1.03x–1.04x from 4,096 up, but 0.95x at 1,024 with 64 counters, where clearing and summing the tables is not repaid.
