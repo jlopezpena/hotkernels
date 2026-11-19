@@ -2,6 +2,8 @@
 
 This is the report of the study designed in [applications-design.md](applications-design.md). Five programs that the kernels were not written for were run on plain NumPy and after `hotkernels.install()`, their results compared, and their time profiled. It was recorded twice: first before the gaps it found were worked on, at one size per application and a load average of 18.5; then, after the work on those gaps ([#186](https://github.com/sofeikov/hotkernels/issues/186) to [#192](https://github.com/sofeikov/hotkernels/issues/192)), at two sizes on a quiet machine. The second record is in [delivery/results/apple-m1-pro-apps.md](../delivery/results/apple-m1-pro-apps.md) and summarised in [The second record](#the-second-record-after-the-gaps-at-two-sizes); the sections from [Results](#results) on are the first, whose JSON is kept in `tests/data/apps-record-one-size.json`.
 
+Five more programs, chosen after this study and run with no kernel written for them, are in [applications-second-findings.md](applications-second-findings.md).
+
 ## Summary
 
 - **After the gaps were served, four of five run 1.27x to 3.5x faster at the size first recorded,** with every result bit for bit the same: `sklearn_metrics` 3.48x, `empyrical_stats` 3.52x, `mlp_train` 2.20x and `trimesh_mesh` 1.27x. `min_char_rnn` gained 3%. At the other size each gains the same or less, except `empyrical_stats`, whose longer series gain more (3.93x). See [The second record](#the-second-record-after-the-gaps-at-two-sizes).
