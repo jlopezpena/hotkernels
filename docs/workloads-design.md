@@ -1,6 +1,6 @@
 # Workloads: timing hotkernels on code it did not write
 
-This began as a proposal and is being built in the steps of [Order of work](#order-of-work). Steps 1 and 2 are done; [Status](#status) says what exists, and [What changed in the building](#what-changed-in-the-building) where it departs from the proposal. The rest of the text stands as proposed.
+This began as a proposal and is being built in the steps of [Order of work](#order-of-work). Steps 1 and 2 are done and step 3 is in progress; [Status](#status) says what exists, and [What changed in the building](#what-changed-in-the-building) where it departs from the proposal. The rest of the text stands as proposed.
 
 It adds a third level of timing, above the judge and above `delivery time`: whole programs and library functions that a user runs, written by other people, timed with and without `hotkernels.install()`.
 
@@ -14,8 +14,11 @@ It adds a third level of timing, above the judge and above `delivery time`: whol
 
 ## Status
 
-- **Step 2 is done.** `uv run --group workloads delivery workloads` runs four workloads: `examples/workload.py`, NPBench's `azimint_naive`, a pandas boolean filter and scikit-image's `equalize_hist`. A run on an Apple M4 Max at a load average of 1.8 is in [delivery/results/apple-m4-max-workloads.md](../delivery/results/apple-m4-max-workloads.md). At size `M`: the pandas filter 5.62x faster, `azimint_naive` 1.15x, `equalize_hist` 1.11x, with identical results.
-- **Steps 3 and 4 are not.** The rest of the probe's list, the NPBench controls, the issues for calls left to NumPy, and the README table.
+- **Step 2 is done.** `uv run --group workloads delivery workloads` runs the runner's first four workloads: `examples/workload.py`, NPBench's `azimint_naive`, a pandas boolean filter and scikit-image's `equalize_hist`.
+- **Step 3 is in progress.** Five more workloads are added: NPBench's `azimint_hist`, `mandelbrot1` and `mandelbrot2`, numpy-benchmarks' `make_decision`, and a fractal flame renderer written here. They were chosen by a probe of both suites in full; [Probed and not added](#probed-and-not-added) lists the rest and what would make each worth adding. The issues for calls left to NumPy are not filed yet.
+- **Step 4 is not started.** The README table and the site.
+
+A run of the nine on an Apple M4 Max at a load average of 2.0 is in [delivery/results/apple-m4-max-workloads.md](../delivery/results/apple-m4-max-workloads.md). At size `M`, with identical results: the pandas filter 5.86x faster, `azimint_hist` 1.70x, the flame renderer 1.56x, `make_decision` 1.51x, `azimint_naive` 1.15x, `mandelbrot2` 1.12x, `equalize_hist` 1.10x and `mandelbrot1` 1.00x.
 
 ## What changed in the building
 
@@ -29,6 +32,37 @@ It adds a third level of timing, above the judge and above `delivery time`: whol
 | Open decision 2: pinned or current versions | Pinned by `uv.lock` | As proposed |
 | Open decision 3: licences of copied code | Copied files under `delivery/workloads/vendor/`, with NPBench's `LICENSE` beside them and the pyFAI notice in the file header | The BSD licence asks for its notice with the source; CC-BY asks for the credit, which the header gives |
 | Open decision 4: a summary figure | None | As proposed |
+| NPBench kept in full, the programs that reach no hook as controls | Only programs that reach a hook are copied | The probe ran all 54: 38 reach no hook, and across all 54 programs of both suites that reach none the geometric mean was 1.006x. Copying them would add run time to every run without adding a finding. They are listed below, to copy if a control is wanted again |
+| Workloads not written for hotkernels, apart from `examples/workload.py` | Also a fractal flame renderer written here, reported as ours | No suite has a NumPy flame renderer. It was written in the spelling the algorithm suggests, not to reach hooks, and it has kernel calls of five kinds, more than any workload but `examples/workload.py` |
+| Copied code run as it is | `mandelbrot2`'s wrapper silences one `DeprecationWarning` | The program reshapes by setting `.shape`, which NumPy 2.5 deprecates. A NumPy that removes it will fail the workload, not change its result |
+| NPBench's sizes, or sizes by time | `azimint_hist`, `mandelbrot1`, `mandelbrot2` and `make_decision` keep each program's own parameters and change one length, for the times in `SIZE_NAMES` | As for `azimint_naive`. `make_decision` builds its inputs with the benchmark's own setup line at another length |
+
+## Probed and not added
+
+On 2026-11-19 every program of [NPBench](https://github.com/spcl/npbench) (commit `f2d7f27`, preset `M`) and [numpy-benchmarks](https://github.com/serge-sans-paille/numpy-benchmarks) (commit `deef91c`, its own sizes) was run with and without `install()` by a throwaway script, on an Apple M4 Max with hotkernels 0.3.0 at a load average of about 4.4. All 85 that ran gave identical results; `spmv` needs SciPy and did not run. The five copied above were the ones that gained. The others are below, with what would make each worth copying. A "report() row" is the hook that caught the call, not always the element type of the data: complex128 masks count on the float32 row of `x[mask]`, and sums of other types on the uint8 row of `np.sum`.
+
+| Program | Speedup | Hooked calls: kernel / left to NumPy | Copy when |
+|---|---|---|---|
+| NPBench `nbody` | 1.01x | `x[mask]` 502 / 0, `x[mask] = v` 0 / 502, `np.where(c, a, b)` 0 / 251, `np.sum` 0 / 502 | A licence allows it: NPBench's file is adapted from GPL-3.0 code, and this repository is MIT. Worth it once `x[mask] = v` takes an array `v`: `inv_r3[inv_r3 > 0] = inv_r3[inv_r3 > 0]**(-1.5)` |
+| numpy-benchmarks `periodic_dist` | 1.07x | `x[mask]` 6 / 0, `x[mask] = v` 1 / 6 | `x[mask] = v` takes an array `v`: `dx[dx > L/2] = dx[dx > L/2] - L` |
+| numpy-benchmarks `mandelbrot` | 1.00x | `x[mask]` 0 / 200, `x[mask] = v` 0 / 201 | Not needed: the same program as NPBench's `mandelbrot1` |
+| numpy-benchmarks `reverse_cumsum` | 1.00x | `np.cumsum` 0 / 1 | A kernel takes `np.cumsum` of a reversed float64 view: float `cumsum` is opt-in, and `x[::-1]` is strided |
+| numpy-benchmarks `grouping` | 1.00x | `np.nonzero` 0 / 1 | `np.where(diff)` takes a non-boolean array: here int64 |
+| NPBench `correlation` | 1.04x | `x[mask] = v` 1 / 0 | Not worth it: one call in the whole program |
+| NPBench `hdiff` | 0.99x | `np.where(c, a, b)` 2 / 0 | Not worth it: two calls, a small part of the run |
+| NPBench `cholesky2` | 0.98x | `np.where(c, a, b)` 0 / 1, `x.astype` 0 / 2 | Not worth it: one call |
+| NPBench `contour_integral` | 1.00x | `x.astype` 0 / 32 | A kernel serves its casts |
+| NPBench `resnet`, `conv2d_bias`, `lenet`, `channel_flow`, `mlp`, `softmax`; numpy-benchmarks `cma_pt`, `wdist`, `multiple_sum`, `cronbach`, `euclidean_distance_square`, `l1norm`, `l2norm`, `log_likelihood`, `lstsqr`, `pairwise`, `rosen` | 0.97x to 1.02x | `np.sum` 0 / up to 3,600 | A kernel serves their sums, which are not of uint8 or bool. None is planned |
+| NPBench `adi`, `arc_distance`, `atax`, `bicg`, `cavity_flow`, `cholesky`, `compute`, `covariance`, `covariance2`, `crc16`, `deriche`, `doitgen`, `durbin`, `fdtd_2d`, `floyd_warshall`, `gemm`, `gemver`, `gesummv`, `go_fast`, `gramschmidt`, `heat_3d`, `jacobi_1d`, `jacobi_2d`, `k2mm`, `k3mm`, `lu`, `ludcmp`, `mvt`, `nussinov`, `scattering_self_energies`, `seidel_2d`, `stockham_fft`, `symm`, `syr2k`, `syrk`, `trisolv`, `trmm`, `vadv` | within noise | none | As controls only, if a control is wanted: linear algebra, stencils and FFT, which no kernel serves |
+| numpy-benchmarks `arc_distance`, `check_mask`, `create_grid`, `diffusion`, `evolve`, `grayscott`, `harris`, `hasting`, `laplacien`, `local_maxima`, `normalize_complex_arr`, `repeating`, `slowparts`, `specialconvolve`, `vibr_energy`, `wave` | within noise | none | As above |
+| NPBench `spmv` | not run | | Needs SciPy in the `workloads` group |
+
+The copied workloads leave three kinds of call to NumPy that a kernel could take, ranked by how many programs reach them:
+
+1. **`x[mask] = v` with an array `v`.** The flame renderer (481 calls per run at `M`), `nbody`, `periodic_dist`, and inside the weighted `np.histogram` of `azimint_hist`.
+2. **`x[mask]` and `x[mask] = v` on complex128.** `mandelbrot1`, `mandelbrot2`, and numpy-benchmarks' `mandelbrot`.
+3. **`x[mask] = v` on int64.** `mandelbrot1`'s `N[I] = n`.
+4. **`np.bincount` with a result longer than 65,536 counts, or with weights.** The flame renderer's density and colour images: 196,608 pixels at `M`.
 
 ## What is wrong today
 

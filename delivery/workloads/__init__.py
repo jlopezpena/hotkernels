@@ -17,7 +17,8 @@ from typing import Callable
 SIZE_NAMES = ("S", "M", "L")
 
 # Modules of this package that each define a WORKLOAD, in the order they are run.
-MODULES = ("example", "azimint_naive", "pandas_filter", "equalize_hist")
+MODULES = ("example", "flame", "azimint_naive", "azimint_hist", "mandelbrot1", "mandelbrot2",
+           "make_decision", "pandas_filter", "equalize_hist")
 
 
 @dataclass(frozen=True)
