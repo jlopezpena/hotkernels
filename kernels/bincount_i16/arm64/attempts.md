@@ -83,3 +83,11 @@ What the naive C costs here (Apple clang, `-O3`): on codes uniform in [0, 64) 0.
 - **compare:** significantly faster, 1.003x [1.002 – 1.004]
 - **Kept:** yes
 - **Notes:** only 4,096 elements with 64 counters moves: uniform 1.04x (994 ns against 1.03 us), four values 1.09x [1.05 – 1.14]. Nothing else changes. Not tried lower: at 1,024 the fixed cost is more than the whole call.
+
+## 11. A second pair table only where the data repeats, from 16,384 elements
+
+- **Idea:** attempt 5 with the sample of attempt 9: the second pair of each word goes to a second table only when the first 64 elements repeat. The loop is the same instructions either way: the second pairs are counted through a base register that is the first table's on data that does not repeat. Both tables' space (32 KB, and the 256 bytes of row totals) is always taken from the stack; only what is used is cleared.
+- **check:** pass
+- **compare:** significantly faster, 1.016x [1.015 – 1.016]
+- **Kept:** yes
+- **Notes:** four values with 64 counters 1.02x at 16,384, 1.08x at 65,536, 1.15x–1.16x from 262,144 up (0.193 ns per element at 1,048,576 against 0.222). Uniform codes 1.00x at every size: the sample and the alias cost nothing measurable.

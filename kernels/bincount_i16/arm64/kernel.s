@@ -36,6 +36,12 @@
 // row totals.
 .set PAIR_TABLE, PAIR_CODES * PAIR_CODES * 4
 .set ROW_TOTALS, PAIR_CODES * 4
+// From this many elements, on data that repeats, a second pair table: the
+// first pair of each word is counted in the first, the second in the
+// second, so that neighbouring equal pairs do not wait for each other.
+// Space for both tables is always taken; the row totals are above them.
+.set TWO_PAIRS_MIN_N, 16384
+.set PAIR_TABLES, 2 * PAIR_TABLE
 
 // Count the sign-extended element in \reg into the 32-bit table at \base, if
 // it is below bins.
@@ -126,42 +132,9 @@
 1:
 .endm
 
-.text
-.globl _bincount_i16
-.p2align 2
-_bincount_i16:
-    // Every path but the single table needs n < 2^32.
-    mov     x15, #0                 // 1 for the pair path
-    lsr     x4, x2, #32
-    cbnz    x4, Lsingle
-    // The pair table: bins <= 64 and n >= PAIRS_MIN_N. It counts the
-    // elements it cannot pair into counts, so counts is cleared first.
-    cmp     x3, #PAIR_CODES
-    b.hi    Lnotpairs
-    cmp     x2, #PAIRS_MIN_N
-    b.lo    Lnotpairs
-    mov     x15, #1
-    b       Lsingle
-Lnotpairs:
-    // The tables: 4 <= bins <= 1024, and either n >= 8 * bins, or n >= 2 *
-    // bins and a sample of the data repeats.
-    cmp     x3, #TABLES_MIN_BINS
-    b.lo    Lsingle
-    cmp     x3, #TABLES_MAX_BINS
-    b.hi    Lsingle
-    cmp     x2, x3, lsl #1
-    b.lo    Lsingle
-    // From 8 elements per counter: four tables, or eight from EIGHT_MIN_N
-    // elements if the data repeats. From 2: four tables if the data repeats.
-    cmp     x2, x3, lsl #3
-    b.lo    Lfew
-    cmp     x2, #EIGHT_MIN_N
-    b.lo    Ltables
-Lfew:
-    cmp     x2, #SAMPLE + 8
-    b.lo    Lsampled
-    // Does the data repeat: at least SAMPLE_REPEATS of the first SAMPLE
-    // elements equal the one four places on.
+// w11 = how many of the first SAMPLE elements equal the one four places on.
+// Needs SAMPLE + 4 elements.
+.macro REPEATS
     ldp     q0, q1, [x0]
     ldp     q2, q3, [x0, #32]
     ldp     q4, q5, [x0, #64]
@@ -192,6 +165,50 @@ Lfew:
     neg     v0.8h, v0.8h
     addv    h0, v0.8h
     fmov    w11, s0
+.endm
+
+.text
+.globl _bincount_i16
+.p2align 2
+_bincount_i16:
+    // Every path but the single table needs n < 2^32.
+    mov     x15, #0                 // 1 for the pair path
+    lsr     x4, x2, #32
+    cbnz    x4, Lsingle
+    // The pair table: bins <= 64 and n >= PAIRS_MIN_N. It counts the
+    // elements it cannot pair into counts, so counts is cleared first.
+    cmp     x3, #PAIR_CODES
+    b.hi    Lnotpairs
+    cmp     x2, #PAIRS_MIN_N
+    b.lo    Lnotpairs
+    mov     x15, #1
+    cmp     x2, #TWO_PAIRS_MIN_N
+    b.lo    Lsingle
+    REPEATS
+    cmp     w11, #SAMPLE_REPEATS
+    cinc    x15, x15, hs            // 2: two pair tables
+    b       Lsingle
+Lnotpairs:
+    // The tables: 4 <= bins <= 1024, and either n >= 8 * bins, or n >= 2 *
+    // bins and a sample of the data repeats.
+    cmp     x3, #TABLES_MIN_BINS
+    b.lo    Lsingle
+    cmp     x3, #TABLES_MAX_BINS
+    b.hi    Lsingle
+    cmp     x2, x3, lsl #1
+    b.lo    Lsingle
+    // From 8 elements per counter: four tables, or eight from EIGHT_MIN_N
+    // elements if the data repeats. From 2: four tables if the data repeats.
+    cmp     x2, x3, lsl #3
+    b.lo    Lfew
+    cmp     x2, #EIGHT_MIN_N
+    b.lo    Ltables
+Lfew:
+    cmp     x2, #SAMPLE + 8
+    b.lo    Lsampled
+    // Does the data repeat: at least SAMPLE_REPEATS of the first SAMPLE
+    // elements equal the one four places on.
+    REPEATS
     cmp     w11, #SAMPLE_REPEATS
     b.lo    Lsampled                // no
     cmp     x2, x3, lsl #3
@@ -459,11 +476,16 @@ L8_slow16:                          // one of the sixteen is not below bins
     // the table and left out when the totals are added to counts. The table's
     // counters cannot overflow: n < 2^32, so there are fewer than 2^31 pairs.
 Lpairs:
-    sub     sp, sp, #(PAIR_TABLE >> 12), lsl #12
+    sub     sp, sp, #(PAIR_TABLES >> 12), lsl #12
     sub     sp, sp, #ROW_TOTALS
+    mov     x16, sp                 // the table of the second pairs
+    cmp     x15, #2
+    b.ne    1f
+    add     x16, sp, #(PAIR_TABLE >> 12), lsl #12
+1:
     movi    v0.2d, #0
     mov     x6, sp
-    add     x7, sp, #(PAIR_TABLE >> 12), lsl #12
+    add     x7, x16, #(PAIR_TABLE >> 12), lsl #12
 Lclearpairs:
     stp     q0, q0, [x6]
     stp     q0, q0, [x6, #32]
@@ -482,9 +504,9 @@ Lpairs8:
     ldr     w12, [sp, x9, lsl #2]
     add     w12, w12, #1
     str     w12, [sp, x9, lsl #2]
-    ldr     w13, [sp, x10, lsl #2]
+    ldr     w13, [x16, x10, lsl #2]
     add     w13, w13, #1
-    str     w13, [sp, x10, lsl #2]
+    str     w13, [x16, x10, lsl #2]
 Lback6:
     tst     x7, #0xffc0ffc0ffc0ffc0
     b.ne    Lslow7
@@ -494,13 +516,29 @@ Lback6:
     ldr     w12, [sp, x9, lsl #2]
     add     w12, w12, #1
     str     w12, [sp, x9, lsl #2]
-    ldr     w13, [sp, x10, lsl #2]
+    ldr     w13, [x16, x10, lsl #2]
     add     w13, w13, #1
-    str     w13, [sp, x10, lsl #2]
+    str     w13, [x16, x10, lsl #2]
 Lback7:
     subs    x2, x2, #8
     b.hs    Lpairs8
 
+    // Add the second table, if there is one, into the first.
+    mov     x6, sp
+    cmp     x16, x6
+    b.eq    Lmerged
+    mov     x7, x16
+Lmergepairs:
+    ld1     {v0.4s, v1.4s, v2.4s, v3.4s}, [x6]
+    ld1     {v4.4s, v5.4s, v6.4s, v7.4s}, [x7], #64
+    add     v0.4s, v0.4s, v4.4s
+    add     v1.4s, v1.4s, v5.4s
+    add     v2.4s, v2.4s, v6.4s
+    add     v3.4s, v3.4s, v7.4s
+    st1     {v0.4s, v1.4s, v2.4s, v3.4s}, [x6], #64
+    cmp     x6, x16
+    b.lo    Lmergepairs
+Lmerged:
     // Column totals in v16..v31, four columns each, and row totals stored
     // above the table, one row of 64 counters per step.
     movi    v16.2d, #0
@@ -520,7 +558,7 @@ Lback7:
     movi    v30.2d, #0
     movi    v31.2d, #0
     mov     x6, sp                  // row cursor
-    add     x11, sp, #(PAIR_TABLE >> 12), lsl #12   // the row totals
+    add     x11, sp, #(PAIR_TABLES >> 12), lsl #12  // the row totals
     mov     x9, #0                  // row
 Lrow:
     ld1     {v0.4s, v1.4s, v2.4s, v3.4s}, [x6], #64
@@ -585,7 +623,7 @@ Laddpairs:
     cmp     x9, x3
     b.lo    Laddpairs
     add     sp, sp, #ROW_TOTALS
-    add     sp, sp, #(PAIR_TABLE >> 12), lsl #12
+    add     sp, sp, #(PAIR_TABLES >> 12), lsl #12
     b       Ltail                   // 0 to 7 elements left, into counts
 
 Lslow6:                             // one of the four is not a pair code
