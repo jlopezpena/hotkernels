@@ -1242,26 +1242,305 @@ def histogram_cases() -> Iterator[Case]:
                            expectation(kernel if dtype == "f64" else None, spelling, variant, n))
 
 
-def bincount_cases() -> Iterator[Case]:
-    """Yield the cases of `bincount` on uint8."""
-    spellings = (
+def _bincount_spellings(sweep_extra: bool) -> tuple[Spelling, ...]:
+    """Return the spellings of `np.bincount` that the uint8, int16 and int64 cases share.
+
+    Args:
+        sweep_extra: Whether the spellings with `minlength` that take a
+            kernel are swept over every value class too. The uint8 cases do
+            that; for int16 and int64 the sweep over code ranges has its own
+            values of `minlength`.
+
+    Returns:
+        The spellings. The ones that take a kernel do so on a plain array
+        whose elements are all in the range NumPy accepts.
+    """
+    return (
         Spelling("np.bincount(x)", np.bincount, any_shape=False),
-        Spelling("np.bincount(x, minlength=0)", lambda x: np.bincount(x, minlength=0), any_shape=False),
-        Spelling("np.bincount(x, minlength=10)", lambda x: np.bincount(x, minlength=10), any_shape=False),
-        Spelling("np.bincount(x, minlength=256)", lambda x: np.bincount(x, minlength=256), any_shape=False),
-        Spelling("np.bincount(x, minlength=300)", lambda x: np.bincount(x, minlength=300), any_shape=False),
-        Spelling("np.bincount(x, None, 256)", lambda x: np.bincount(x, None, 256), any_shape=False),
-        Spelling("np.bincount(x, weights=None)", lambda x: np.bincount(x, weights=None), any_shape=False),
+        Spelling("np.bincount(x, minlength=0)", lambda x: np.bincount(x, minlength=0), any_shape=False,
+                 sweep_values=sweep_extra),
+        Spelling("np.bincount(x, minlength=10)", lambda x: np.bincount(x, minlength=10), any_shape=False,
+                 sweep_values=sweep_extra),
+        Spelling("np.bincount(x, minlength=256)", lambda x: np.bincount(x, minlength=256), any_shape=False,
+                 sweep_values=sweep_extra),
+        Spelling("np.bincount(x, minlength=300)", lambda x: np.bincount(x, minlength=300), any_shape=False,
+                 sweep_values=sweep_extra),
+        Spelling("np.bincount(x, None, 256)", lambda x: np.bincount(x, None, 256), any_shape=False,
+                 sweep_values=sweep_extra),
+        Spelling("np.bincount(x, weights=None)", lambda x: np.bincount(x, weights=None), any_shape=False,
+                 sweep_values=sweep_extra),
         Spelling("np.bincount(x, weights=w)", lambda x: np.bincount(x, weights=np.ones(np.shape(x))), NEVER),
         Spelling("np.bincount(x, minlength=-1)", lambda x: np.bincount(x, minlength=-1), NEVER),
+        Spelling("np.bincount(x, minlength=None)", lambda x: np.bincount(x, minlength=None), NEVER),
+        Spelling("np.bincount(x, minlength=5.0)", lambda x: np.bincount(x, minlength=5.0), NEVER),
+        Spelling("np.bincount(x, minlength=True)", lambda x: np.bincount(x, minlength=True), NEVER),
         Spelling("np.bincount(x, minlength=np.int64(5))", lambda x: np.bincount(x, minlength=np.int64(5)), NEVER),
         Spelling("np.bincount(x=x)", lambda x: np.bincount(x=x), NEVER),
         Spelling("np.bincount(x, None, 0, 1)", lambda x: np.bincount(x, None, 0, 1), NEVER),
     )
-    yield from unary_cases("bincount", {"u8": "bincount_u8"}, ("i64", "u16", "i8", "bool"), spellings)
+
+
+# The int16 and int64 kernels of bincount, by element type.
+_BINCOUNT_KERNELS = {"i16": "bincount_i16", "i64": "bincount_i64"}
+# Element types np.bincount accepts or refuses that have no kernel: they stay
+# with NumPy. "longlong" is a 64-bit integer type NumPy keeps apart from
+# int64 on Linux, where int64 is C's long.
+_BINCOUNT_NEIGHBOURS = ("i32", "u16", "u64", "i8", "bool")
+# Counters the int16 and int64 kernels are always given; above it a call is
+# taken only when it has no more counters than elements. The binding's
+# BINCOUNT_FREE_BINS.
+BINCOUNT_FREE_BINS = 65536
+# Most counts a case lets NumPy's result hold: 32 MB of them.
+BINCOUNT_CASE_LIMIT = 1 << 22
+# A code that makes NumPy's result longer than BINCOUNT_FREE_BINS and longer
+# than any array of the cases, but small enough to run.
+BINCOUNT_FAR = 1_000_000
+# The largest int64, for which NumPy's length overflows.
+_INT64_MAX = np.iinfo(np.int64).max
+# Element counts of the sweep over code ranges: the kernels change path at
+# 8,192 elements, and from it the interpreter lock is released.
+BINCOUNT_SIZES = (1, 2, 16, 100, 1000, 8191, 8192, 8193, 20000, 100003)
+# A large code among small ones: inside the counters every call is given, and
+# for int64 one past them.
+BINCOUNT_LARGE = 30000
+BINCOUNT_BEYOND = 70000
+# The ranges of codes of the sweep: name -> the codes are drawn from
+# [0, span). The kernels have a path for at most 64 counters, used from 8,192
+# elements, and one for up to 1,024 where the data repeats, as "0..3" does
+# with a `minlength` above 64.
+_BINCOUNT_RANGES = {
+    "zeros": 1,
+    "0..3": 4,
+    "0..63": 64,
+    "0..64": 65,
+    "0..999": 1000,
+    "0..1023": 1024,
+    "0..1024": 1025,
+    "0..4999": 5000,
+}
+
+
+def _bincount_takes(x: np.ndarray, minlength: int = 0) -> bool:
+    """Say whether the binding takes `np.bincount(x, minlength=...)` for a plain int16 or int64 x.
+
+    It is the binding's rule written again in NumPy: at least one element,
+    none negative, the largest not the largest int64, and no more counters
+    than BINCOUNT_FREE_BINS or the element count, whichever is more.
+
+    Args:
+        x: The codes, contiguous and one-dimensional.
+        minlength: The `minlength` given, 0 when none was.
+
+    Returns:
+        True when the kernel must take the call.
+    """
+    if len(x) == 0 or int(x.min()) < 0 or int(x.max()) == _INT64_MAX:
+        return False
+    bins = max(int(x.max()) + 1, minlength)
+    return bins <= max(BINCOUNT_FREE_BINS, len(x))
+
+
+def _bincount_expect(dtype: str, maker: Callable[[], np.ndarray], minlength: int = 0) -> str | None:
+    """Return the kernel for a plain call on the array `maker` builds, or None when the call is NumPy's."""
+    return _BINCOUNT_KERNELS[dtype] if _bincount_takes(maker(), minlength) else None
+
+
+def _codes(dtype: str, n: int, span: int, large: int | None = None, last: bool = False) -> np.ndarray:
+    """Build codes for np.bincount.
+
+    Args:
+        dtype: "i16" or "i64".
+        n: Element count.
+        span: The codes are drawn from [0, span).
+        large: A code placed in the middle, or None.
+        last: Whether the largest code, `span - 1`, is placed last as well,
+            so that the element that sizes the result is the last read.
+
+    Returns:
+        A contiguous one-dimensional array.
+    """
+    x = np.random.default_rng([SEED, n, span]).integers(0, span, n).astype(np_dtype(dtype))
+    if large is not None and n:
+        x[n // 2] = large
+    if last and n:
+        x[-1] = span - 1
+    return x
+
+
+def _with_negative(dtype: str, n: int, position: int) -> np.ndarray:
+    """Build codes in [0, 64) with -1 at `position`: NumPy raises ValueError."""
+    x = _codes(dtype, n, 64)
+    x[position] = -1
+    return x
+
+
+def _minlength_call(minlength: int | None) -> Callable[[np.ndarray], np.ndarray]:
+    """Return a call of np.bincount with `minlength` given, or without it when None."""
+    if minlength is None:
+        return np.bincount
+    return lambda x: np.bincount(x, minlength=minlength)
+
+
+def _bincount_range_cases(dtype: str) -> Iterator[Case]:
+    """Yield np.bincount on int16 or int64 codes in several ranges, with and without `minlength`.
+
+    Each range is taken at every size in BINCOUNT_SIZES, plain and with
+    BINCOUNT_LARGE in the middle or its largest code last, and with
+    `minlength` absent, 0, below the largest code plus one and above it.
+
+    Args:
+        dtype: "i16" or "i64".
+
+    Yields:
+        The cases.
+    """
+    for (name, span), n in itertools.product(_BINCOUNT_RANGES.items(), BINCOUNT_SIZES):
+        shapes = (("", None, False), (f" one {BINCOUNT_LARGE}", BINCOUNT_LARGE, False), (" largest last", None, True))
+        for suffix, large, last in shapes:
+            maker = partial(_codes, dtype, n, span, large, last)
+            for minlength in (None, 0, span // 2, span + 100):
+                text = "np.bincount(x)" if minlength is None else f"np.bincount(x, minlength={minlength})"
+                yield Case("bincount", f"{text} {dtype} n={n} x={name}{suffix}", partial(_made, maker),
+                           _minlength_call(minlength), _bincount_expect(dtype, maker, minlength or 0))
+
+
+def _bincount_value_cases(dtype: str) -> Iterator[Case]:
+    """Yield np.bincount on every value class of the judge, and of the kernel's spec, at every size.
+
+    Most of the judge's integer classes hold negative values, for which NumPy
+    raises; the binding must leave those calls to it, and the same error must
+    come back.
+
+    Args:
+        dtype: "i16" or "i64".
+
+    Yields:
+        The cases.
+    """
+    for n, cls, label, maker in value_arrays(dtype):
+        if _not_runnable(maker()):
+            continue
+        yield Case("bincount", f"np.bincount(x) {dtype} {label}", partial(_made, maker), np.bincount,
+                   _bincount_expect(dtype, maker))
+    own = spec(_BINCOUNT_KERNELS[dtype]).args[0].classes
+    for (cls, build), n in itertools.product(own.items(), VALUE_SIZES):
+        maker = partial(_spec_class, build, dtype, n)
+        if _not_runnable(maker()):
+            continue
+        yield Case("bincount", f"np.bincount(x) {dtype} n={n} x={cls}", partial(_made, maker), np.bincount,
+                   _bincount_expect(dtype, maker))
+
+
+def _not_runnable(x: np.ndarray) -> bool:
+    """Say whether plain NumPy's np.bincount on `x` cannot be run as a case.
+
+    Two kinds. NumPy 2.5.5 sizes its result as the largest element plus one;
+    for the largest int64, with no negative element, that overflows and NumPy
+    writes outside the array it allocated, and the process aborts or crashes.
+    And a result of more than BINCOUNT_CASE_LIMIT counts, which the value
+    classes with large elements ask for (up to 2^62): NumPy takes it from
+    memory the system zeroes only when touched, and the check, which hashes
+    every byte of a result, would touch all of it. The binding leaves both to
+    NumPy, unchanged; smaller results with far more counters than elements are
+    among the guard cases.
+
+    Args:
+        x: The codes.
+
+    Returns:
+        True when the case must not be made.
+    """
+    if len(x) == 0 or int(x.min()) < 0:
+        return False
+    return int(x.max()) == _INT64_MAX or int(x.max()) >= BINCOUNT_CASE_LIMIT
+
+
+def _spec_class(build: Callable[[np.ndarray], np.ndarray], dtype: str, n: int) -> np.ndarray:
+    """Build an array from one of a spec's own value classes, which derive their values from the default array."""
+    return build(judge_cases.base(dtype, n, SEED, "x"))
+
+
+def _bincount_guard_cases(dtype: str) -> Iterator[Case]:
+    """Yield the calls the int16 and int64 binding must leave to NumPy, and the edges of what it takes.
+
+    A negative element first, in the middle and last; more counters than the
+    binding gives (BINCOUNT_BEYOND, and a large `minlength`) with few
+    elements, where NumPy's zeroed memory costs it nothing, and with more
+    elements than counters, which is taken. For int64 the largest int64,
+    which NumPy itself does not survive (_not_runnable), is not among them.
+
+    Args:
+        dtype: "i16" or "i64".
+
+    Yields:
+        The cases.
+    """
+    for n in (1, 16, 1000, 8193, 20000):
+        for position in sorted({0, n // 2, n - 1}):
+            maker = partial(_with_negative, dtype, n, position)
+            yield Case("bincount", f"np.bincount(x) {dtype} n={n} x=-1@{position}", partial(_made, maker),
+                       np.bincount, None)
+    for n, minlength in ((16, BINCOUNT_FREE_BINS), (16, BINCOUNT_FREE_BINS + 1), (100003, 100003),
+                         (100003, 100004)):
+        maker = partial(_codes, dtype, n, 64)
+        yield Case("bincount", f"np.bincount(x, minlength={minlength}) {dtype} n={n} x=0..63", partial(_made, maker),
+                   _minlength_call(minlength), _bincount_expect(dtype, maker, minlength))
+    if dtype != "i64":
+        return
+    for n, large in ((16, BINCOUNT_BEYOND), (100003, BINCOUNT_BEYOND), (16, BINCOUNT_FAR), (100003, BINCOUNT_FAR)):
+        maker = partial(_codes, dtype, n, 64, large)
+        yield Case("bincount", f"np.bincount(x) {dtype} n={n} x=0..63 one {large}", partial(_made, maker),
+                   np.bincount, _bincount_expect(dtype, maker))
+
+
+def _bincount_layout_cases() -> Iterator[Case]:
+    """Yield every spelling of np.bincount in every layout, on codes in [0, 64).
+
+    The int16 and int64 kernels and their neighbouring element types, at
+    LAYOUT_SIZES and on an empty array, which is NumPy's.
+
+    Yields:
+        The cases.
+    """
+    spellings = _bincount_spellings(sweep_extra=False)
+    for dtype in (*_BINCOUNT_KERNELS, *_BINCOUNT_NEIGHBOURS):
+        kernel = _BINCOUNT_KERNELS.get(dtype)
+        for n, spelling in itertools.product(LAYOUT_SIZES, spellings):
+            for variant in variants_for(dtype, n):
+                maker = partial(_codes, "bool" if dtype == "bool" else dtype, n, 2 if dtype == "bool" else 64)
+                yield Case("bincount", f"{spelling.text} {dtype} n={n} x=0..63 layout={variant.name}",
+                           partial(_variant_codes, maker, variant), spelling.call,
+                           expectation(kernel, spelling, variant, n))
+        for spelling in spellings:
+            yield Case("bincount", f"{spelling.text} {dtype} n=0", partial(_built, dtype, 0, CONTIGUOUS),
+                       spelling.call, None)
+    for n in LAYOUT_SIZES:
+        yield Case("bincount", f"np.bincount(x) longlong n={n} x=0..63",
+                   lambda n=n: (_codes("i64", n, 64).astype(np.longlong),), np.bincount, None)
+
+
+def _variant_codes(maker: Callable[[], np.ndarray], variant: Variant) -> tuple:
+    """Build the one argument of a bincount layout case: codes from `maker` in a variant."""
+    return (variant.build(maker()),)
+
+
+def bincount_cases() -> Iterator[Case]:
+    """Yield the cases of `bincount`: uint8, int16 and int64, and the element types that stay with NumPy.
+
+    uint8 is taken whatever its values. int16 and int64 are taken when no
+    element is negative and the result is not far longer than the array; see
+    the binding's bincount_codes.
+    """
+    spellings = _bincount_spellings(sweep_extra=True)
+    yield from unary_cases("bincount", {"u8": "bincount_u8"}, (), spellings)
     for value in (0, 1, 254, 255):
         yield Case("bincount", f"np.bincount(x) every byte is {value}", lambda value=value: (np.full(ORDINARY_N, value, np.uint8),),
                    np.bincount, "bincount_u8")
+    for dtype in _BINCOUNT_KERNELS:
+        yield from _bincount_value_cases(dtype)
+        yield from _bincount_range_cases(dtype)
+        yield from _bincount_guard_cases(dtype)
+    yield from _bincount_layout_cases()
 
 
 def _isin_x(spread: str, n: int) -> np.ndarray:

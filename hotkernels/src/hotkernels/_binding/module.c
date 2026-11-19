@@ -20,6 +20,7 @@ static const char *const HK_KERNEL_NAMES[HK_KERNEL_COUNT] = {
     "histogram_f64", "bincount_u8", "isin_i64",
     "searchsorted_f64", "searchsorted_right_f64", "interp_f64",
     "where_f64", "cummax_i64", "cumfmax_f64", "fmax_reduce_f64", "any_rows_bool",
+    "bincount_i16", "bincount_i64",
 };
 
 // Operation names, in the order of hk_operation.

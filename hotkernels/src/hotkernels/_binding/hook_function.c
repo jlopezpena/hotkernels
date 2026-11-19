@@ -48,6 +48,12 @@ static hk_function functions[F_COUNT];
 #define HISTOGRAM_DEFAULT_BINS 10
 // Number of counters `bincount_u8` writes: one per byte value.
 #define BYTE_VALUES 256
+// Counters `bincount_i16` and `bincount_i64` are always given, whatever the
+// element count: 512 KB. At that size a call on 1,000 elements takes about
+// as long with the kernel as NumPy's does (6.5 against 6.9 us on the Intel
+// Core i5-14600KF), both being mostly the counters. Above it a call is taken
+// only while it has no more counters than elements; see bincount_codes.
+#define BINCOUNT_FREE_BINS 65536
 // Bytes of a boolean array that `np.sum` checks and then sums at a time. Each
 // block is read twice, so it is a third of the smallest first-level data
 // cache the kernels run on (48 KiB on the x86-64 performance cores).
@@ -386,17 +392,150 @@ static PyObject *call_histogram(HK_VECTORCALL_PARAMETERS) {
 
 // ---------------------------------------------------------------- bincount
 
-// np.bincount(x, minlength=m) for a contiguous one-dimensional uint8 array
-// without weights. The kernel always fills 256 counters. NumPy's result has
-// one entry more than the largest value present, or `minlength` entries if
-// that is more, so the counters are cut or padded to that length.
+// The range scans of np.bincount keep BINCOUNT_SCAN_VECTORS running maxima
+// in 32-byte vectors, of these types. They are written with the compiler's
+// vector types because, written as loops over elements, the compiler kept one
+// running maximum for int64: a chain of a compare and a blend through every
+// four elements, about 0.3 ns per element on the Intel Core i5-14600KF, as
+// long as the kernel itself takes. Several independent maxima leave the loop
+// bound by its loads.
+typedef uint16_t bincount_u16x16 __attribute__((vector_size(32)));
+typedef uint64_t bincount_u64x4 __attribute__((vector_size(32)));
+#define BINCOUNT_SCAN_VECTORS 4
+// Bytes of one vector, and of the array one step of a scan reads.
+#define BINCOUNT_SCAN_VECTOR_BYTES 32
+#define BINCOUNT_SCAN_STEP_BYTES (BINCOUNT_SCAN_VECTORS * BINCOUNT_SCAN_VECTOR_BYTES)
+
+// The largest of the `n` int16 elements at `x`, each read as unsigned. A
+// negative element reads as 0x8000 or more, so the one maximum is both the
+// largest element, when none is negative, and the test for a negative one.
+// No branch on the data. The vectors are loaded with memcpy, which the
+// compiler turns into unaligned loads, and the maximum is a compare and a
+// select, which it turns into vpmaxuw.
+static HK_TARGET_KERNEL_LEVEL uint64_t bincount_top_i16(const int16_t *x, size_t n) {
+    const size_t step = BINCOUNT_SCAN_STEP_BYTES / sizeof(int16_t);
+    bincount_u16x16 top[BINCOUNT_SCAN_VECTORS] = {{0}};
+    size_t i = 0;
+    for (; i + step <= n; i += step) {
+        for (size_t k = 0; k < BINCOUNT_SCAN_VECTORS; k++) {
+            bincount_u16x16 v;
+            memcpy(&v, (const char *)(x + i) + k * BINCOUNT_SCAN_VECTOR_BYTES, sizeof v);
+            const bincount_u16x16 more = (bincount_u16x16)(v > top[k]);
+            top[k] = (v & more) | (top[k] & ~more);
+        }
+    }
+    uint16_t largest = 0;
+    for (; i < n; i++) largest = (uint16_t)x[i] > largest ? (uint16_t)x[i] : largest;
+    for (size_t k = 0; k < BINCOUNT_SCAN_VECTORS; k++) {
+        for (size_t j = 0; j < sizeof top[k] / sizeof top[k][0]; j++) {
+            largest = top[k][j] > largest ? top[k][j] : largest;
+        }
+    }
+    return largest;
+}
+
+// As bincount_top_i16 for int64 elements: a negative one reads as 2^63 or
+// more. AVX2 has no 64-bit maximum: the compiler makes a signed compare of
+// the elements with their top bit flipped, and a blend.
+static HK_TARGET_KERNEL_LEVEL uint64_t bincount_top_i64(const int64_t *x, size_t n) {
+    const size_t step = BINCOUNT_SCAN_STEP_BYTES / sizeof(int64_t);
+    bincount_u64x4 top[BINCOUNT_SCAN_VECTORS] = {{0}};
+    size_t i = 0;
+    for (; i + step <= n; i += step) {
+        for (size_t k = 0; k < BINCOUNT_SCAN_VECTORS; k++) {
+            bincount_u64x4 v;
+            memcpy(&v, (const char *)(x + i) + k * BINCOUNT_SCAN_VECTOR_BYTES, sizeof v);
+            const bincount_u64x4 more = (bincount_u64x4)(v > top[k]);
+            top[k] = (v & more) | (top[k] & ~more);
+        }
+    }
+    uint64_t largest = 0;
+    for (; i < n; i++) largest = (uint64_t)x[i] > largest ? (uint64_t)x[i] : largest;
+    for (size_t k = 0; k < BINCOUNT_SCAN_VECTORS; k++) {
+        for (size_t j = 0; j < sizeof top[k] / sizeof top[k][0]; j++) {
+            largest = top[k][j] > largest ? top[k][j] : largest;
+        }
+    }
+    return largest;
+}
+
+// np.bincount(x, minlength=m) for a contiguous one-dimensional int16 or
+// int64 array of at least one element: the bincount_i16 and bincount_i64
+// kernels. `minimum` is m, at least 0.
+//
+// NumPy sizes its result by the largest element, plus one, or by m if that is
+// more, and raises ValueError for a negative element. So the array is read
+// once for its largest element first, as an unsigned number, which a negative
+// element makes too large for its type's positive range: that call is
+// NumPy's, and it raises. Otherwise every element lies in [0, bins), where
+// the kernel's counts and NumPy's agree, and the kernel zeroes the counters
+// itself. The read cannot be done a block at a time ahead of the kernel, as
+// the guards of np.fmax.reduceat and m.any(axis=1) are: the kernel needs the
+// number of counters before it reads its first element.
+//
+// NumPy takes its result from calloc, whose large blocks are pages the system
+// zeroes only when they are first touched; the kernel stores every counter.
+// A call with far more counters than elements, such as np.bincount([10**9]),
+// costs NumPy almost nothing and would have the kernel write 8 GB, so it is
+// left to NumPy. So is a largest element whose length overflows, and a
+// result that cannot be allocated: NumPy raises its own error.
+//
+// The array is read twice, by the scan and by the kernel, and the lock is
+// released for both all the same: the kernel ignores elements outside
+// [0, bins), so a thread that writes the array between the two reads can at
+// worst change the counts, never make the kernel write outside them.
+static HK_NOINLINE PyObject *bincount_codes(PyArrayObject *x, npy_intp minimum) {
+    const bool narrow = PyArray_TYPE(x) == NPY_INT16;
+    const npy_intp n = PyArray_SIZE(x);
+    // NumPy's answer for no elements is m zeros; the kernel has no largest
+    // element to size them by, and the call is NumPy's.
+    if (n == 0) return NULL;
+    uint64_t top;
+    {
+        HK_BEGIN_NOGIL(n)
+        top = narrow ? bincount_top_i16(PyArray_DATA(x), (size_t)n) : bincount_top_i64(PyArray_DATA(x), (size_t)n);
+        HK_END_NOGIL
+    }
+    // The sign bit of the element type: set in `top` when some element is
+    // negative. For int64 it also keeps `top + 1` below 2^63, but the
+    // largest int64, whose length NumPy cannot hold, is still excluded.
+    const uint64_t sign = narrow ? (uint64_t)1 << 15 : (uint64_t)1 << 63;
+    if (top >= sign || top >= (uint64_t)NPY_MAX_INTP) return NULL;
+    npy_intp bins = (npy_intp)top + 1;
+    if (bins < minimum) bins = minimum;
+    if (bins > BINCOUNT_FREE_BINS && bins > n) return NULL;
+    PyObject *result = PyArray_SimpleNew(1, &bins, NPY_INTP);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    int64_t *counts = PyArray_DATA((PyArrayObject *)result);
+    {
+        HK_BEGIN_NOGIL(n)
+        if (narrow) bincount_i16(PyArray_DATA(x), counts, (size_t)n, (size_t)bins);
+        else bincount_i64(PyArray_DATA(x), counts, (size_t)n, (size_t)bins);
+        HK_END_NOGIL
+    }
+    hk_take(narrow ? HK_BINCOUNT_I16 : HK_BINCOUNT_I64);
+    return result;
+}
+
+// np.bincount(x, minlength=m) for a contiguous one-dimensional uint8, int16
+// or int64 array without weights. For uint8 the kernel always fills 256
+// counters. NumPy's result has one entry more than the largest value present,
+// or `minlength` entries if that is more, so the counters are cut or padded
+// to that length. int16 and int64 go to bincount_codes.
 static HK_NOINLINE PyObject *try_bincount(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     enum { X, WEIGHTS, MINLENGTH, PARAMETERS };
     // `x` can only be given by position.
     static const char *const names[PARAMETERS] = {NULL, "weights", "minlength"};
     PyObject *bound[PARAMETERS];
     if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
-    if (bound[X] == NULL || !hk_is_flat_1d(bound[X], NPY_UINT8) || !hk_is_absent(bound[WEIGHTS])) return NULL;
+    if (bound[X] == NULL || !hk_is_absent(bound[WEIGHTS])) return NULL;
+    // The element types with a kernel. Every other one, bool and int32
+    // included, which NumPy converts to intp, stays with NumPy.
+    const bool bytes = hk_is_flat_1d(bound[X], NPY_UINT8);
+    if (!bytes && !hk_is_flat_1d(bound[X], NPY_INT16) && !hk_is_flat_1d(bound[X], NPY_INT64)) return NULL;
 
     Py_ssize_t minimum = 0;
     if (bound[MINLENGTH] != NULL) {
@@ -410,6 +549,7 @@ static HK_NOINLINE PyObject *try_bincount(PyObject *const *args, Py_ssize_t narg
     }
 
     PyArrayObject *x = (PyArrayObject *)bound[X];
+    if (!bytes) return bincount_codes(x, minimum);
     const npy_intp n = PyArray_SIZE(x);
     int64_t counters[BYTE_VALUES];
     {
