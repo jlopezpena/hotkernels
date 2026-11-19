@@ -221,11 +221,11 @@ The judge proves a kernel right as a native function. It says nothing about the 
 | Spellings | Positional, keyword, `out=`, `axis=`, method and function forms |
 | Values | The judge's value classes: NaN, infinities, signed zeros, ties |
 
-That is **96,734 calls over the 15 hooked operations**, and all agree.
+That is **166,029 calls over the 21 hooked operations** (on x86-64; 96,734 over 15 when the first kernels were bound), and all agree.
 
 **Each case also states whether a kernel should have run**, and the counters are checked against it. Without that, a check that quietly stopped matching would pass every comparison, since NumPy's fallback is always right, while delivering nothing.
 
-**NumPy's own test suite**, run once on plain NumPy and once with the kernels installed, gives the same outcome for each of its **47,234 tests**. This is the broadest evidence available for "never break anything", and it cost nothing to write.
+**NumPy's own test suite**, run once on plain NumPy and once with the kernels installed, gives the same outcome for each of its **48,659 tests** (NumPy 2.5.5 on x86-64, with every exact kernel and loop installed). This is the broadest evidence available for "never break anything", and it cost nothing to write.
 
 The test earned its keep while it was being written. It found two defects in the binding: `np.count_nonzero` returned a Python `int` where NumPy returns `np.intp`, and `np.histogram` issued NumPy's overflow warnings twice for a range wider than a double can hold. Neither was a wrong number. Both were differences a user's code could have observed.
 
