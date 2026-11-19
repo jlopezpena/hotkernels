@@ -7,9 +7,16 @@ Each application is a module of this package with these names:
     LICENCE    The licence of copied code, or None for code written here or
                a call into an installed library.
     REQUIRES   Names of the modules it imports beyond NumPy.
-    SIZE       One line saying how large its data is.
-    make_data  Builds its inputs from a fixed seed; returns a tuple.
+    SIZES      The sizes it runs at, each of SIZE_NAMES, mapped to one line
+               saying how large its data is at that size.
+    make_data  Takes a size, builds its inputs from a fixed seed; returns a
+               tuple.
     run        Takes the inputs, runs the program once, returns its results.
+
+Every application runs at two sizes, so a result can be told apart from the
+size it was measured at. "small" and "large" are relative to each program:
+"small" has arrays of hundreds to tens of thousands of elements, "large" of
+hundreds of thousands to millions.
 
 See docs/applications-design.md.
 """
@@ -21,6 +28,8 @@ from types import ModuleType
 
 # Every application, in the order the report lists them.
 NAMES = ("mlp_train", "min_char_rnn", "trimesh_mesh", "sklearn_metrics", "empyrical_stats")
+# The sizes every application has, in the order the report lists them.
+SIZE_NAMES = ("small", "large")
 
 
 def load(name: str) -> ModuleType:

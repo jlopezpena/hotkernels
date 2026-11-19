@@ -5,33 +5,35 @@ Written by `uv run --group apps delivery apps --profile --record`. Do not edit. 
 - **Machine:** Apple M1 Pro, macOS-27.2.1-arm64-arm-64bit
 - **Software:** Python 3.12.7, NumPy 2.5.5, trimesh 5.2.1, scikit-learn 1.9.1, empyrical-reloaded 0.7.3, pandas 3.1.1, scipy 1.18.1, hotkernels at 6be1984
 - **Load average when the run started:** 18.54, a busy machine: the times are rough
-- **Method:** 7 alternating runs of each side, the best of each. Results compared bit for bit on every round.
+- **Method:** 7 alternating rounds of each side, the best of each. A round is one run, or as many runs as last 100 ms where one is shorter; the times are of one run. Results compared bit for bit on every round.
 
 ## Times
 
-| Application | Size | NumPy | `install()` | Faster by | Results | `install(inexact=True)` | Faster by | Kernel calls | Left to NumPy |
-|---|---|---|---|---|---|---|---|---|---|
-| `mlp_train` | 12,000 examples of 784 float64 inputs, 256 hidden units, batches of 128, 2 epochs | 226.3 ms | 208.7 ms | 1.08x | identical | 203.4 ms | 1.11x | 188 | 4,942 |
-| `min_char_rnn` | 300 iterations, 100 hidden units, sequences of 25 characters | 287.7 ms | 289.5 ms | 0.99x | identical | 287.7 ms | 1.00x | 0 | 11,400 |
-| `trimesh_mesh` | 81,920 faces, 200,000 surface samples | 180.2 ms | 160.6 ms | 1.12x | identical | 162.4 ms | 1.11x | 35 | 61 |
-| `sklearn_metrics` | 1,000,000 binary predictions, 300,000 predictions over 10 classes | 1005.8 ms | 978.6 ms | 1.03x | identical | 977.5 ms | 1.03x | 98 | 300,161 |
-| `empyrical_stats` | 60 series of 5,040 daily returns | 1331.1 ms | 1305.2 ms | 1.02x | identical | 1327.7 ms | 1.00x | 1,020 | 1,080 |
+| Application | Size | Data | NumPy | `install()` | Faster by | Results | `install(inexact=True)` | Faster by | Kernel calls | Left to NumPy |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `mlp_train` | large | 12,000 examples of 784 float64 inputs, 256 hidden units, batches of 128, 2 epochs | 226.3 ms | 208.7 ms | 1.08x | identical | 203.4 ms | 1.11x | 188 | 4,942 |
+| `min_char_rnn` | small | 300 iterations, 100 hidden units, sequences of 25 characters | 287.7 ms | 289.5 ms | 0.99x | identical | 287.7 ms | 1.00x | 0 | 11,400 |
+| `trimesh_mesh` | large | 81,920 faces, 200,000 surface samples | 180.2 ms | 160.6 ms | 1.12x | identical | 162.4 ms | 1.11x | 35 | 61 |
+| `sklearn_metrics` | large | 1,000,000 binary predictions, 300,000 predictions over 10 classes | 1005.8 ms | 978.6 ms | 1.03x | identical | 977.5 ms | 1.03x | 98 | 300,161 |
+| `empyrical_stats` | small | 60 series of 5,040 daily returns | 1331.1 ms | 1305.2 ms | 1.02x | identical | 1327.7 ms | 1.00x | 1,020 | 1,080 |
 
-The median of the 7 runs, to show the noise:
+The median of the 7 rounds, to show the noise, and the runs in each round:
 
-| Application | NumPy, best | NumPy, median | `install()`, best | `install()`, median |
-|---|---|---|---|---|
-| `mlp_train` | 226.3 ms | 239.1 ms | 208.7 ms | 221.7 ms |
-| `min_char_rnn` | 287.7 ms | 296.5 ms | 289.5 ms | 292.9 ms |
-| `trimesh_mesh` | 180.2 ms | 190.9 ms | 160.6 ms | 166.5 ms |
-| `sklearn_metrics` | 1005.8 ms | 1015.4 ms | 978.6 ms | 987.1 ms |
-| `empyrical_stats` | 1331.1 ms | 1346.2 ms | 1305.2 ms | 1336.2 ms |
+| Application | Size | Runs per round | NumPy, best | NumPy, median | `install()`, best | `install()`, median |
+|---|---|---|---|---|---|---|
+| `mlp_train` | large | 1 | 226.3 ms | 239.1 ms | 208.7 ms | 221.7 ms |
+| `min_char_rnn` | small | 1 | 287.7 ms | 296.5 ms | 289.5 ms | 292.9 ms |
+| `trimesh_mesh` | large | 1 | 180.2 ms | 190.9 ms | 160.6 ms | 166.5 ms |
+| `sklearn_metrics` | large | 1 | 1005.8 ms | 1015.4 ms | 978.6 ms | 987.1 ms |
+| `empyrical_stats` | small | 1 | 1331.1 ms | 1346.2 ms | 1305.2 ms | 1336.2 ms |
 
 ## `mlp_train`
 
 Training a two-layer perceptron by mini-batch gradient descent. Source: written for this study.
 
-### Calls in one run
+### Large: 12,000 examples of 784 float64 inputs, 256 hidden units, batches of 128, 2 epochs
+
+#### Calls in one run
 
 | NumPy call | Elements | Kernel calls | Left to NumPy |
 |---|---|---|---|
@@ -40,7 +42,7 @@ Training a two-layer perceptron by mini-batch gradient descent. Source: written 
 | `x.astype(float32)` | | | 2 |
 | `np.sum` | | | 940 |
 
-### Where the time goes
+#### Where the time goes
 
 Share of the samples of working threads, by the class of the function at the top of the stack.
 
@@ -113,7 +115,9 @@ The Python functions with the most time of their own, in one plain run under `cP
 
 min-char-rnn.py, a character-level recurrent network. Source: https://gist.github.com/karpathy/d4dee566867f8291f086 (Andrej Karpathy), copied unchanged.
 
-### Calls in one run
+### Small: 300 iterations, 100 hidden units, sequences of 25 characters
+
+#### Calls in one run
 
 | NumPy call | Elements | Kernel calls | Left to NumPy |
 |---|---|---|---|
@@ -123,7 +127,7 @@ min-char-rnn.py, a character-level recurrent network. Source: https://gist.githu
 | `np.sum` | | | 8,100 |
 | `np.searchsorted` | | | 600 |
 
-### Where the time goes
+#### Where the time goes
 
 Share of the samples of working threads, by the class of the function at the top of the stack.
 
@@ -196,7 +200,9 @@ The Python functions with the most time of their own, in one plain run under `cP
 
 Processing a triangle mesh: build, measure, sample, section, subdivide. Source: trimesh, called as a library.
 
-### Calls in one run
+### Large: 81,920 faces, 200,000 surface samples
+
+#### Calls in one run
 
 | NumPy call | Elements | Kernel calls | Left to NumPy |
 |---|---|---|---|
@@ -215,7 +221,7 @@ Processing a triangle mesh: build, measure, sample, section, subdivide. Source: 
 | `np.sum` | | | 11 |
 | `np.round` | | | 2 |
 
-### Where the time goes
+#### Where the time goes
 
 Share of the samples of working threads, by the class of the function at the top of the stack.
 
@@ -288,7 +294,9 @@ The Python functions with the most time of their own, in one plain run under `cP
 
 Scoring a classifier: ROC, precision-recall, calibration, confusion matrix. Source: scikit-learn (sklearn.metrics, sklearn.calibration), called as a library.
 
-### Calls in one run
+### Large: 1,000,000 binary predictions, 300,000 predictions over 10 classes
+
+#### Calls in one run
 
 | NumPy call | Elements | Kernel calls | Left to NumPy |
 |---|---|---|---|
@@ -311,7 +319,7 @@ Scoring a classifier: ROC, precision-recall, calibration, confusion matrix. Sour
 | `np.where(c, a, b)` | | | 2 |
 | `m.any(axis=1)` | | | 1 |
 
-### Where the time goes
+#### Where the time goes
 
 Share of the samples of working threads, by the class of the function at the top of the stack.
 
@@ -384,7 +392,9 @@ The Python functions with the most time of their own, in one plain run under `cP
 
 Risk and return statistics of daily return series. Source: empyrical-reloaded, called as a library.
 
-### Calls in one run
+### Small: 60 series of 5,040 daily returns
+
+#### Calls in one run
 
 | NumPy call | Elements | Kernel calls | Left to NumPy |
 |---|---|---|---|
@@ -400,7 +410,7 @@ Risk and return statistics of daily return series. Source: empyrical-reloaded, c
 | `np.where(c, a, b)` | | | 120 |
 | `maximum.accumulate` | | | 60 |
 
-### Where the time goes
+#### Where the time goes
 
 Share of the samples of working threads, by the class of the function at the top of the stack.
 
