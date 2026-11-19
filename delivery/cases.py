@@ -4205,8 +4205,6 @@ _UNIQUE_STARTS: dict[str, Callable[[int], int]] = {
     "int64 min": lambda width: _INT64_MIN,
     "int64 max": lambda width: _INT64_MAX - width + 1,
 }
-# The smallest int64.
-_INT64_MIN = np.iinfo(np.int64).min
 # Element types next to int64 that np.unique accepts and that have no kernel.
 _UNIQUE_NEIGHBOURS = ("i32", "u64", "u8", "i16", "bool", "f64")
 # Layouts that reach the kernel: plain arrays, and arrays the binding copies

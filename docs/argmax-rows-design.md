@@ -88,7 +88,7 @@ The loop is written once, with the compiler's vector types (`__attribute__((vect
 A kernel in `kernels/` is judged, and ships as assembly or as its naive C on both architectures. A new judged kernel for narrow rows would need:
 
 - assembly for x86-64, which cannot be written and timed here: there is no x86-64 machine at hand, and a figure from emulation does not count;
-- or its naive C on x86-64, which [release-design.md](release-design.md) rules out until the Linux wheel is built with clang, and which, as a loop that branches on each comparison, is slower than NumPy on random rows (above).
+- or its naive C on x86-64, which, as a loop that branches on each comparison, is slower than NumPy on random rows (above). When this was designed, [release-design.md](release-design.md#more-than-one-platform) also ruled out C kernels on x86-64 until the Linux wheel was built with clang; the `np.unique` kernel stacked above this one ([unique-design.md](unique-design.md#x86-64)) made that change, so only the speed argument now stands, and it is enough.
 
 The binding already has loops of its own for calls on short arrays, where NumPy's call path is nearly all of the cost: `clip_i64`, `round_f64` and `median_f64`. A row of two to seven elements is that case, repeated. Such a loop is held to NumPy by `delivery check`, which runs on Linux x86-64 in continuous integration as well as on ARM64, and is shown in `report()` as C and not counted among the kernels.
 
