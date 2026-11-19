@@ -88,3 +88,10 @@ No release note: nothing in `hotkernels/` changes.
 
 1. **Whether the applications join the workloads runner** once it is merged, or stay a separate command.
 2. **A profile on Linux.** `perf` gives the same table and needs permissions the judge's machine may not grant.
+
+## What changed in the building
+
+- **`min-char-rnn.py` needed three textual changes, not one.** The program is Python 2. Besides bounding its loop, the wrapper rewrites its `print` statements and `xrange` when it loads the file. The list is `REWRITES` in `delivery/apps/min_char_rnn.py`; no NumPy call is touched, and the copied file is unchanged.
+- **Functions are classed by the file they are in.** `sample` names an image by its file name, so the profile maps every compiled file under `site-packages` to its package. The C maths library got a class of its own, since `exp`, `log` and `tanh` are neither NumPy's nor the system's in the sense that matters here.
+- **The shares are of working threads, by the function at the top of the stack.** A thread that waits is left out, so a main thread waiting for the BLAS's workers is not counted and the workers are. Functions with fewer than five samples are not in `sample`'s table and not in the shares.
+- **The sizes were set by hand** so that a run takes 0.2 to 1.3 seconds: 12,000 examples for the perceptron, 300 iterations of the network, an icosphere of 81,920 faces, a million predictions, 60 return series of twenty years.
