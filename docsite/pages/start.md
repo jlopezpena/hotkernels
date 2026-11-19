@@ -73,7 +73,7 @@ Importing the package changes nothing; only `install()` does. Calling it twice i
 `print(hotkernels.report())` after your code has run:
 
 ```text
-hotkernels 0.2.0: installed, 21 of 23 kernels (NumPy 2.5.5)
+hotkernels 0.2.0: installed, 22 of 24 kernels (NumPy 2.5.5)
 
 NumPy call         Elements Kernel    Result            Kernel calls  Left to NumPy
 np.argmax          float32  assembly  exact                        0              0
@@ -103,7 +103,7 @@ A kernel takes a call only when the array is a plain, contiguous `ndarray` of th
 | `x[mask] = v` | float64 | As for `x[mask]`, and `v` is a Python float or int |
 | `np.putmask(x, mask, v)`, `np.copyto(x, v, where=mask)` | float64 | `v` is a Python float or int, and `x` and `mask` are the same size (`np.putmask`) or the same shape (`np.copyto`, with no `casting`), of any shape |
 | `np.nonzero(mask)`, `mask.nonzero()`, `np.where(mask)` | bool | One-dimensional; `np.where` with nothing but the mask |
-| `np.cumsum(x)`, `x.cumsum()` | int64; float32 and float64 with `inexact=True` | No `axis`, `dtype` or `out` |
+| `np.cumsum(x)`, `x.cumsum()` | int64, bool; float32 and float64 with `inexact=True` | No `axis`, `dtype` or `out` |
 | `x.astype(np.float32)` | uint8 | Other arguments at their defaults |
 | `np.sum(x)`, `x.sum()` | uint8, bool | No other arguments |
 | `np.count_nonzero(x)` | int64, float64 | No `axis` |
@@ -121,7 +121,7 @@ How much faster each one is, from Python and at three sizes, is in [the results]
 
 - **Float `cumsum` is opt-in for a reason.** The fast kernels add in a different order from NumPy. The result is as accurate, but not bit-identical, and the output of a non-negative input is not guaranteed to be non-decreasing. Code such as `np.searchsorted(np.cumsum(p), r)` relies on that. Use `install(inexact=True)` only when it does not matter to you. [Why it cannot be both exact and fast]([[ root ]]report/arithmetic/#cumsum-the-chain-you-cannot-break).
 - **`x[mask] = v` rewrites elements it does not change**, and so do `np.putmask` and `np.copyto(x, v, where=mask)`. On a dense mask the kernel stores unselected elements back with their own bits. The result is identical; the array must be writable throughout, which a normal array is.
-- **A mask holding a byte other than 0 or 1 goes to NumPy.** NumPy treats any non-zero byte as True, and a boolean view of other data can hold a 2. Every mask is read once before a kernel sees it, in the indexing syntax, in the function forms and in `mask.sum()` alike.
+- **A mask holding a byte other than 0 or 1 goes to NumPy.** NumPy treats any non-zero byte as True, and a boolean view of other data can hold a 2. Every mask is read once before a kernel sees it, in the indexing syntax, in the function forms, in `mask.sum()` and in `np.cumsum(mask)` alike.
 - **The mask functions are counted under the indexing syntax.** In `report()`, `np.compress` and `np.extract` count on the `x[mask]` rows, `np.putmask` and `np.copyto` on `x[mask] = v`, and `np.where(mask)` on `np.nonzero`. `np.copyto` without `where` and `np.where(mask, a, b)` are other operations and are not counted at all. `mask.sum()` counts on the `np.sum` row, whose element type reads `uint8`: one kernel adds the bytes of both. In the same way `x[mask]` on int64 counts on the float64 row of `x[mask]`: that kernel moves 64-bit elements without computing on them, so it serves both types.
 - **`np.clip(x, 0, 1)` is faster by less than `np.clip(x, -1, 1)`.** A lower bound of exactly zero needs extra care for negative zeros. It is still several times faster than NumPy.
 - **A small `np.clip` is fast when its bounds are plain numbers.** `np.clip(x, lo, hi)` and `x.clip(lo, hi)` skip NumPy's own call path, most of a call on a small array, when the bounds are Python floats or ints, or NumPy scalars of the array's own type, and there is no `out`, `dtype`, `casting` or `where`. The result has the element type NumPy gives it: a float32 array clipped to Python floats stays float32. Other calls, such as `np.float64` bounds on a float32 array (NumPy returns float64), `out=`, or a bound of `None`, go through NumPy's call path first; the kernel still serves them where it served them before, and they gain only on larger arrays.

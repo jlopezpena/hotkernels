@@ -184,13 +184,14 @@ static HK_NOINLINE bool cumsum_arguments_are_default(PyObject *args, PyObject *k
     return true;
 }
 
-// The kernel for `x.cumsum()` on this array: int64 always, float32 and
-// float64 when install(inexact=True) was given. Returns HK_KERNEL_COUNT when
+// The kernel for `x.cumsum()` on this array: int64 and bool always, float32
+// and float64 when install(inexact=True) was given. Returns HK_KERNEL_COUNT when
 // there is none. This is tested before the arguments are looked at: most
 // calls are for another element type, and rejecting those must cost almost
 // nothing.
 static hk_kernel cumsum_kernel(PyObject *self) {
     if (hk_is_flat(self, NPY_INT64)) return HK_CUMSUM_I64;
+    if (hk_is_flat(self, NPY_BOOL)) return HK_CUMSUM_BOOL;
     if (hk_inexact && hk_is_flat(self, NPY_FLOAT)) return HK_CUMSUM_F32;
     if (hk_inexact && hk_is_flat(self, NPY_DOUBLE)) return HK_CUMSUM_F64;
     return HK_KERNEL_COUNT;
@@ -204,21 +205,30 @@ static hk_kernel cumsum_kernel(PyObject *self) {
 // 9). NumPy turns those into warnings. So the flags are cleared before the
 // kernel, and if any that NumPy reports is set afterwards the kernel's output
 // is dropped and NumPy computes the result and issues its own warnings.
+//
+// A boolean array gives a running count of its True elements, as np.intp:
+// NumPy's result type for it. The kernel adds the mask's bytes, and NumPy
+// counts a byte other than 0 or 1 once, so the bytes are checked first and
+// such a mask is NumPy's.
 static HK_NOINLINE PyObject *try_cumsum(PyObject *self, hk_kernel kernel) {
     PyArrayObject *x = (PyArrayObject *)self;
     npy_intp n = PyArray_SIZE(x);
     if (n < 1) return NULL;
-    PyObject *result = PyArray_SimpleNew(1, &n, PyArray_TYPE(x));
+    PyObject *result = PyArray_SimpleNew(1, &n, kernel == HK_CUMSUM_BOOL ? NPY_INTP : PyArray_TYPE(x));
     if (result == NULL) {
         PyErr_Clear();
         return NULL;
     }
     void *out = PyArray_DATA((PyArrayObject *)result);
+    // True when the kernel's output is not NumPy's and the call is passed on.
     bool raised = false;
     {
         HK_BEGIN_NOGIL(n)
         if (kernel == HK_CUMSUM_I64) {
             cumsum_i64(PyArray_DATA(x), out, (size_t)n);
+        } else if (kernel == HK_CUMSUM_BOOL) {
+            raised = !hk_mask_is_clean(PyArray_DATA(x), (size_t)n);
+            if (!raised) cumsum_bool(PyArray_DATA(x), out, (size_t)n);
         } else {
             feclearexcept(FE_ALL_EXCEPT);
             if (kernel == HK_CUMSUM_F32) cumsum_f32(PyArray_DATA(x), out, (size_t)n);

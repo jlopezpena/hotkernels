@@ -285,6 +285,7 @@ TAKEN: tuple[Timed, ...] = (
     Timed("nonzero", "np.nonzero(mask)", "bool, few selected", partial(_mask, FEW), np.nonzero, "nonzero_bool"),
     Timed("nonzero", "np.where(mask)", "bool, half selected", partial(_mask, HALF), np.where, "nonzero_bool"),
     Timed("cumsum", "np.cumsum(x)", "int64", partial(_ints, np.int64), np.cumsum, "cumsum_i64"),
+    Timed("cumsum", "np.cumsum(mask)", "bool, half selected", partial(_mask, HALF), np.cumsum, "cumsum_bool"),
     Timed("cumsum", "np.cumsum(x)", "float32", partial(_floats, np.float32), np.cumsum, "cumsum_f32", inexact=True),
     Timed("cumsum", "np.cumsum(x)", "float64", partial(_floats, np.float64), np.cumsum, "cumsum_f64", inexact=True),
     Timed("astype", "x.astype(np.float32)", "uint8", _bytes, lambda x: x.astype(np.float32), "cast_u8_f32"),
