@@ -53,7 +53,7 @@ flowchart TD
 | **Inner loop** | A ufunc's loop for one element type | Yes: a public C API exists for exactly this |
 | **Type slot** | The `argmax` and `argmin` entries each element type holds | The accessor is public; writing through it is not a documented use |
 | **Function** | The call pointer inside a NumPy function object | No |
-| **Method** | The C function pointer in `ndarray`'s method table, and in the ufunc type's for `accumulate` | No |
+| **Method** | The C function pointer in `ndarray`'s method table, and in the ufunc type's for `accumulate` and `reduceat` | No |
 | **Indexing** | The two pointers behind `a[i]` and `a[i] = v` in `ndarray`'s type | No |
 
 The honest reading of the last column: one hook is sanctioned, one is a grey area, and three reach into NumPy's objects in ways NumPy never invited. With the two sanctioned-or-nearly hooks alone, 3 of the 15 operations could be served. The project decided to use all five, and built the defences described below to make that safe.
@@ -235,6 +235,6 @@ The binding runs without guard pages. A wrong length passed to a correct kernel 
 
 ## Where that leaves things
 
-Of the 27 kernels, 25 are installed by `install()` and the other 2 with `install(inexact=True)`. `searchsorted` and `interp` were bound late: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. The last kernel added is the right side of the search, which `np.digitize` asks for by default. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
+Of the 28 kernels, 26 are installed by `install()` and the other 2 with `install(inexact=True)`. `searchsorted` and `interp` were bound late: they were written with one length for the sorted array and the needles, which no real call has, and had to be given a second before a hook could hand them anything. The last kernel added is the right side of the search, which `np.digitize` asks for by default. An ordinary NumPy program that uses eleven of these operations on two million elements runs in 45 ms on plain NumPy and 8.4 ms with the one line added, with the same results bit for bit.
 
 The last chapter collects every number, and is candid about which of them mean less than they appear to.
