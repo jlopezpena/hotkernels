@@ -12,8 +12,10 @@ SOURCE = "empyrical-reloaded, called as a library"
 LICENCE = None
 REQUIRES = ("empyrical", "pandas")
 
-# Strategies in the sweep, and trading days of each: twenty years.
-STRATEGIES, DAYS = 60, 5040
+# By size: strategies in the sweep, and trading days of each. The small sweep
+# is sixty series of twenty years; the large one is six series ten times as
+# long, so the same number of returns comes in arrays ten times larger.
+SWEEPS = {"small": (60, 5_040), "large": (6, 50_400)}
 # Mean and standard deviation of a day's return.
 DAILY_MEAN, DAILY_DEVIATION = 0.0004, 0.01
 # Window of the rolling statistics, in days: one year.
@@ -24,13 +26,20 @@ STATISTICS = (
     "stability_of_timeseries", "max_drawdown", "omega_ratio", "sortino_ratio", "tail_ratio", "value_at_risk",
     "downside_risk",
 )
+# The first trading day. Fifty thousand business days from it end in 2193,
+# before the last date pandas can index.
+FIRST_DAY = "2000-01-03"
 # Seed of the returns.
 SEED = 0
-SIZE = f"{STRATEGIES} series of {DAYS:,} daily returns"
+# One line per size saying how large its data is.
+SIZES = {size: f"{strategies} series of {days:,} daily returns" for size, (strategies, days) in SWEEPS.items()}
 
 
-def make_data() -> tuple:
+def make_data(size: str) -> tuple:
     """Build the return series.
+
+    Args:
+        size: One of SIZES.
 
     Returns:
         (list of pandas Series of daily returns indexed by business day, the
@@ -38,12 +47,13 @@ def make_data() -> tuple:
     """
     import pandas as pd
 
+    strategies, length = SWEEPS[size]
     rng = np.random.default_rng(SEED)
-    days = pd.bdate_range("2000-01-03", periods=DAYS)
-    benchmark = pd.Series(rng.normal(DAILY_MEAN, DAILY_DEVIATION, DAYS), index=days)
+    days = pd.bdate_range(FIRST_DAY, periods=length)
+    benchmark = pd.Series(rng.normal(DAILY_MEAN, DAILY_DEVIATION, length), index=days)
     series = [
-        pd.Series(0.5 * benchmark.to_numpy() + rng.normal(DAILY_MEAN, DAILY_DEVIATION, DAYS), index=days)
-        for _ in range(STRATEGIES)
+        pd.Series(0.5 * benchmark.to_numpy() + rng.normal(DAILY_MEAN, DAILY_DEVIATION, length), index=days)
+        for _ in range(strategies)
     ]
     return series, benchmark
 

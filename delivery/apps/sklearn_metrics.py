@@ -13,32 +13,40 @@ SOURCE = "scikit-learn (sklearn.metrics, sklearn.calibration), called as a libra
 LICENCE = None
 REQUIRES = ("sklearn",)
 
-# Predictions scored in the binary problem.
-BINARY = 1_000_000
-# Predictions and classes in the multi-class problem.
-MULTI, CLASSES = 300_000, 10
+# Classes in the multi-class problem.
+CLASSES = 10
+# By size: predictions scored in the binary problem and in the multi-class one.
+PREDICTIONS = {"small": (50_000, 15_000), "large": (1_000_000, 300_000)}
 # Bins of the calibration curve.
 BINS = 10
 # Probability above which the binary classifier predicts the positive class.
 THRESHOLD = 0.5
 # Seed of the labels and scores.
 SEED = 0
-SIZE = f"{BINARY:,} binary predictions, {MULTI:,} predictions over {CLASSES} classes"
+# One line per size saying how large its data is.
+SIZES = {
+    size: f"{binary:,} binary predictions, {multi:,} predictions over {CLASSES} classes"
+    for size, (binary, multi) in PREDICTIONS.items()
+}
 
 
-def make_data() -> tuple:
+def make_data(size: str) -> tuple:
     """Build labels and the scores of a classifier that is right more often than not.
+
+    Args:
+        size: One of SIZES.
 
     Returns:
         (binary labels as int64, positive-class probabilities as float64,
         multi-class labels as int64, class probabilities as float64 rows).
     """
+    binary, multi = PREDICTIONS[size]
     rng = np.random.default_rng(SEED)
-    y = rng.integers(0, 2, BINARY)
-    score = 1 / (1 + np.exp(-(rng.standard_normal(BINARY) + 1.5 * (y - 0.5))))
-    labels = rng.integers(0, CLASSES, MULTI)
-    logits = rng.standard_normal((MULTI, CLASSES))
-    logits[np.arange(MULTI), labels] += 1.5
+    y = rng.integers(0, 2, binary)
+    score = 1 / (1 + np.exp(-(rng.standard_normal(binary) + 1.5 * (y - 0.5))))
+    labels = rng.integers(0, CLASSES, multi)
+    logits = rng.standard_normal((multi, CLASSES))
+    logits[np.arange(multi), labels] += 1.5
     proba = np.exp(logits)
     proba /= proba.sum(axis=1, keepdims=True)
     return y, score, labels, proba

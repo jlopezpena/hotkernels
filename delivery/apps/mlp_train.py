@@ -13,32 +13,44 @@ SOURCE = "written for this study"
 LICENCE = None
 REQUIRES = ()
 
-# Training examples, held-out examples, and inputs per example (a 28 x 28 image).
-TRAIN, HELD_OUT, INPUTS = 12_000, 2_000, 784
-# Hidden units, and classes.
-HIDDEN, CLASSES = 256, 10
+# Training examples and held-out examples, at either size.
+TRAIN, HELD_OUT = 12_000, 2_000
+# Classes.
+CLASSES = 10
 # Examples per gradient step, and passes over the training set.
 BATCH, EPOCHS = 128, 2
 # Step size, and the weight of the L2 penalty.
 LEARNING_RATE, PENALTY = 0.1, 1e-4
 # Seed of the data and of the initial weights.
 SEED = 0
-SIZE = f"{TRAIN:,} examples of {INPUTS} float64 inputs, {HIDDEN} hidden units, batches of {BATCH}, {EPOCHS} epochs"
+# Inputs per example and hidden units, by size. The large network takes a
+# 28 x 28 image and its weight matrix has 200,704 elements; the small one takes
+# a 14 x 14 image and has 12,544.
+NETWORKS = {"small": (196, 64), "large": (784, 256)}
+# One line per size saying how large its data is.
+SIZES = {
+    size: f"{TRAIN:,} examples of {inputs} float64 inputs, {hidden} hidden units, batches of {BATCH}, {EPOCHS} epochs"
+    for size, (inputs, hidden) in NETWORKS.items()
+}
 
 
-def make_data() -> tuple:
+def make_data(size: str) -> tuple:
     """Build a classification problem a small network can learn.
 
+    Args:
+        size: One of SIZES.
+
     Returns:
-        (training inputs, training labels, held-out inputs, held-out labels).
-        The labels come from a random linear teacher, so accuracy rises
-        during training.
+        (training inputs, training labels, held-out inputs, held-out labels,
+        hidden units). The labels come from a random linear teacher, so
+        accuracy rises during training.
     """
+    inputs, hidden = NETWORKS[size]
     rng = np.random.default_rng(SEED)
-    x = rng.standard_normal((TRAIN + HELD_OUT, INPUTS))
-    teacher = rng.standard_normal((INPUTS, CLASSES))
+    x = rng.standard_normal((TRAIN + HELD_OUT, inputs))
+    teacher = rng.standard_normal((inputs, CLASSES))
     y = np.argmax(x @ teacher, axis=1)
-    return x[:TRAIN], y[:TRAIN], x[TRAIN:], y[TRAIN:]
+    return x[:TRAIN], y[:TRAIN], x[TRAIN:], y[TRAIN:], hidden
 
 
 def forward(params: dict, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -92,7 +104,7 @@ def accuracy(params: dict, x: np.ndarray, y: np.ndarray) -> float:
     return float(np.mean(np.argmax(forward(params, x)[1], axis=1) == y))
 
 
-def run(x: np.ndarray, y: np.ndarray, x_held: np.ndarray, y_held: np.ndarray) -> tuple:
+def run(x: np.ndarray, y: np.ndarray, x_held: np.ndarray, y_held: np.ndarray, hidden: int) -> tuple:
     """Train the network and measure it.
 
     Args:
@@ -100,16 +112,18 @@ def run(x: np.ndarray, y: np.ndarray, x_held: np.ndarray, y_held: np.ndarray) ->
         y: Training labels.
         x_held: Held-out inputs.
         y_held: Held-out labels.
+        hidden: Hidden units.
 
     Returns:
         (the four parameters, the loss of every step, the held-out accuracy
         after every epoch).
     """
+    inputs = x.shape[1]
     rng = np.random.default_rng(SEED + 1)
     params = {
-        "w1": rng.standard_normal((INPUTS, HIDDEN)) * np.sqrt(2.0 / INPUTS),
-        "b1": np.zeros(HIDDEN),
-        "w2": rng.standard_normal((HIDDEN, CLASSES)) * np.sqrt(2.0 / HIDDEN),
+        "w1": rng.standard_normal((inputs, hidden)) * np.sqrt(2.0 / inputs),
+        "b1": np.zeros(hidden),
+        "w2": rng.standard_normal((hidden, CLASSES)) * np.sqrt(2.0 / hidden),
         "b2": np.zeros(CLASSES),
     }
     losses, accuracies = [], []

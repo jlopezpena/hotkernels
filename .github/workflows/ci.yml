@@ -76,3 +76,6 @@ jobs:
       # Every hooked NumPy call, with and without hotkernels installed, on the
       # NumPy in uv.lock, with the x86-64 kernels.
       - run: uv run delivery check
+      # The tests of the delivery tool's own code: the sizes and records of
+      # `delivery apps` and the parsing of the Linux profile. They time nothing.
+      - run: uv run --group dev pytest tests
