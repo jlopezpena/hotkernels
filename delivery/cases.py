@@ -4841,6 +4841,201 @@ def bottleneck_cases(function: str) -> Iterator[Case]:
         yield from _bn_ddof_cases()
     yield from _bn_layout_cases(function)
 
+# ----------------------------------------------------------------- argsort
+
+# The binding's limits for a stable argsort (hook_method.c): the element count
+# from which the kernels take it, how many elements out of order still leave
+# an array to NumPy, and the share of an array one run may leave out and
+# still leave it to NumPy.
+ARGSORT_MIN_N = 256
+ARGSORT_FALL_LIMIT = 8
+ARGSORT_RUN_REMAINDER = 32
+# Element type (spec name) -> the kernel that sorts it.
+ARGSORT_KERNELS = {"f64": "argsort_f64", "i64": "argsort_i64", "u64": "argsort_u64"}
+# Element types no argsort kernel sorts.
+ARGSORT_NEIGHBOURS = ("f32", "i32", "u8", "bool")
+# Sizes of the cases built to sit either side of the order tests: just above
+# the smallest array taken, an ordinary one, and one sorted with the
+# interpreter lock released.
+ARGSORT_ORDER_SIZES = (ARGSORT_MIN_N, 1000, 100003)
+# Distinct values of the arrays built with ties, few enough that every
+# element has several equals.
+ARGSORT_TIE_VALUES = 5
+# How the label of a case on the masked-array layout ends.
+_MASKED_LAYOUT = "layout=masked_array"
+
+
+def _stable(x):
+    """Return `x.argsort(kind="stable")`."""
+    return x.argsort(kind="stable")
+
+
+def _argsort_sorted(dtype: str, n: int) -> np.ndarray:
+    """Build `n` distinct elements of `dtype` in ascending order."""
+    return (np.arange(n) * 3 - n).astype(np_dtype(dtype)) if dtype != "u64" else (np.arange(n) * 3).astype(np.uint64)
+
+
+def _argsort_with_falls(dtype: str, n: int, falls: int) -> tuple:
+    """Build ascending runs of equal length with exactly `falls` places where an element is below the one before."""
+    runs = falls + 1
+    x = _argsort_sorted(dtype, n)
+    out = np.concatenate([x[i::runs] for i in range(runs)])
+    return (out,)
+
+
+def _argsort_with_tail(dtype: str, n: int, tail: int, at_start: bool, descending: bool = False) -> tuple:
+    """Build a sorted array with `tail` shuffled elements at one end.
+
+    Args:
+        dtype: Element type as a spec name.
+        n: Element count.
+        tail: How many elements are out of order.
+        at_start: Put them before the sorted part instead of after it.
+        descending: Sort the rest in strictly descending order.
+
+    Returns:
+        The one argument of the call.
+    """
+    x = _argsort_sorted(dtype, n)
+    if descending:
+        x = x[::-1].copy()
+    shuffled = np.random.default_rng(SEED).permutation(x[:tail] if at_start else x[n - tail:])
+    return (np.concatenate([shuffled, x[tail:]] if at_start else [x[: n - tail], shuffled]),)
+
+
+def _argsort_with_rises(dtype: str, n: int, rises: int) -> tuple:
+    """Build strictly descending runs with exactly `rises` places where an element is not below the one before."""
+    (ascending,) = _argsort_with_falls(dtype, n, rises)
+    return (ascending[::-1].copy(),)
+
+
+def _argsort_descending_ties(dtype: str, n: int) -> tuple:
+    """Build `n` elements in descending order in which every value repeats."""
+    return (np.sort(np.arange(n) % (n // 4 + 1))[::-1].astype(np_dtype(dtype)),)
+
+
+def _argsort_ties(dtype: str, n: int, zeros: bool) -> tuple:
+    """Build shuffled elements of a few values; for floats optionally zeros of both signs among them."""
+    picks = np.random.default_rng(SEED).integers(0, ARGSORT_TIE_VALUES, n)
+    if zeros:
+        return (np.array([0.0, -0.0, 1.0, -1.0, np.nan])[picks],)
+    return (picks.astype(np_dtype(dtype)),)
+
+
+def _argsort_nan_in_order(n: int, where: str) -> tuple:
+    """Build ascending float64 with NaNs: at the end, where they sort, or in the middle, out of order."""
+    x = np.arange(n, dtype=np.float64)
+    if where == "end":
+        x[n - n // 8:] = np.nan
+    else:
+        x[n // 2] = np.nan
+    return (x,)
+
+
+def _argsort_order_cases(dtype: str, kernel: str) -> Iterator[Case]:
+    """Yield the cases either side of the binding's tests for input in order."""
+    for n in ARGSORT_ORDER_SIZES:
+        def case(label: str, make: Callable[[], tuple], expect: str | None) -> Case:
+            """Build one stable-argsort case on an array made for the order tests."""
+            return Case("argsort", f"x.argsort(kind='stable') {dtype} n={n} {label}", make, _stable, expect)
+        yield case("sorted", lambda n=n: (_argsort_sorted(dtype, n),), kernel)
+        yield case("strictly descending", lambda n=n: (_argsort_sorted(dtype, n)[::-1].copy(),), kernel)
+        yield case("descending with ties", partial(_argsort_descending_ties, dtype, n), kernel)
+        yield case("a few values", partial(_argsort_ties, dtype, n, False), kernel)
+        for falls in (1, ARGSORT_FALL_LIMIT, ARGSORT_FALL_LIMIT + 1, 4 * ARGSORT_FALL_LIMIT):
+            yield case(f"{falls} falls", partial(_argsort_with_falls, dtype, n, falls),
+                       None if falls <= ARGSORT_FALL_LIMIT else kernel)
+            yield case(f"descending but for {falls} rises", partial(_argsort_with_rises, dtype, n, falls),
+                       None if falls <= ARGSORT_FALL_LIMIT else kernel)
+        # A shuffled stretch short enough to leave one long run, and one twice too long.
+        short, long = n // (2 * ARGSORT_RUN_REMAINDER), n // (ARGSORT_RUN_REMAINDER // 2)
+        for at_start, descending in itertools.product((False, True), (False, True)):
+            place = ("start" if at_start else "end") + (", descending" if descending else "")
+            if short > 2 * ARGSORT_FALL_LIMIT:
+                yield case(f"sorted but {short} at the {place}",
+                           partial(_argsort_with_tail, dtype, n, short, at_start, descending), None)
+            # A stretch this short may hold few enough elements out of order
+            # to count as nearly sorted, which is the other test's business.
+            yield case(f"sorted but {long} at the {place}",
+                       partial(_argsort_with_tail, dtype, n, long, at_start, descending),
+                       kernel if long > 4 * ARGSORT_FALL_LIMIT else ANY)
+
+
+def argsort_cases() -> Iterator[Case]:
+    """Yield the cases of a stable `argsort`.
+
+    The kernels take `kind='stable'`, `kind='mergesort'` and `stable=True`
+    on a plain one-dimensional float64, int64 or uint64 array of at least
+    ARGSORT_MIN_N elements that is not nearly in order already; see the
+    binding's try_argsort.
+    """
+    taken = dict(min_n=ARGSORT_MIN_N, any_shape=False)
+    spellings = (
+        Spelling("x.argsort(kind='stable')", _stable, **taken),
+        Spelling("np.argsort(x, kind='mergesort')", lambda x: np.argsort(x, kind="mergesort"), normalises=True, **taken),
+        Spelling("x.argsort(stable=True)", lambda x: x.argsort(stable=True), sweep_values=False, **taken),
+        Spelling("np.argsort(x, stable=True)", lambda x: np.argsort(x, stable=True), normalises=True,
+                 sweep_values=False, **taken),
+        Spelling("x.argsort(-1, 'stable')", lambda x: x.argsort(-1, "stable"), sweep_values=False, **taken),
+        Spelling("x.argsort(axis=0, kind='mergesort', order=None, stable=None)",
+                 lambda x: x.argsort(axis=0, kind="mergesort", order=None, stable=None), sweep_values=False, **taken),
+        Spelling("x.argsort(kind=None, stable=True)", lambda x: x.argsort(kind=None, stable=True),
+                 sweep_values=False, **taken),
+        Spelling("x.argsort()", lambda x: x.argsort(), NEVER),
+        Spelling("np.argsort(x)", np.argsort, NEVER),
+        Spelling("x.argsort(kind='quicksort')", lambda x: x.argsort(kind="quicksort"), NEVER),
+        Spelling("x.argsort(kind='heapsort')", lambda x: x.argsort(kind="heapsort"), NEVER),
+        # NumPy reads the first letter only; the hook takes its two full names.
+        Spelling("x.argsort(kind='Stable')", lambda x: x.argsort(kind="Stable"), NEVER),
+        Spelling("x.argsort(kind='s')", lambda x: x.argsort(kind="s"), NEVER),
+        Spelling("x.argsort(kind='merge')", lambda x: x.argsort(kind="merge"), NEVER),
+        Spelling("x.argsort(kind='nonsense')", lambda x: x.argsort(kind="nonsense"), NEVER),
+        Spelling("x.argsort(stable=False)", lambda x: x.argsort(stable=False), NEVER),
+        Spelling("x.argsort(stable=None)", lambda x: x.argsort(stable=None), NEVER),
+        Spelling("x.argsort(stable=1)", lambda x: x.argsort(stable=1), NEVER),
+        Spelling("x.argsort(kind='stable', stable=True)", lambda x: x.argsort(kind="stable", stable=True), NEVER),
+        Spelling("x.argsort(kind='stable', stable=False)", lambda x: x.argsort(kind="stable", stable=False), NEVER),
+        Spelling("x.argsort(None, 'stable')", lambda x: x.argsort(None, "stable"), NEVER),
+        Spelling("x.argsort(1, 'stable')", lambda x: x.argsort(1, "stable"), NEVER),
+        Spelling("x.argsort(np.int64(0), 'stable')", lambda x: x.argsort(np.int64(0), "stable"), NEVER),
+        Spelling("x.argsort(kind='stable', order='f0')", lambda x: x.argsort(kind="stable", order="f0"), NEVER),
+        Spelling("x.argsort(kind='stable', descending=False)",
+                 lambda x: x.argsort(kind="stable", descending=False), NEVER),
+        Spelling("x.argsort(stable=True, descending=True)", lambda x: x.argsort(stable=True, descending=True), NEVER),
+        Spelling("x.argsort(-1, 'stable', None, True)", lambda x: x.argsort(-1, "stable", None, True), NEVER),
+        Spelling("x.argsort(kind='stable', kinds='stable')", lambda x: x.argsort(kind="stable", kinds="stable"), NEVER),
+        Spelling("np.sort(x, kind='stable')", lambda x: np.sort(x, kind="stable"), NEVER),
+        Spelling("np.lexsort((x,))", lambda x: np.lexsort((x,)), NEVER),
+        # np.unique sorts a flattened copy stably when asked for the first index of each value.
+        Spelling("np.unique(x, return_index=True)", lambda x: np.unique(x, return_index=True), MAYBE,
+                 normalises=True),
+    )
+    for case in unary_cases("argsort", ARGSORT_KERNELS, ARGSORT_NEIGHBOURS, spellings, empty_takes=False):
+        # A masked array's own argsort fills the masked elements and calls the
+        # method of the plain array underneath with the `kind` it was given,
+        # whatever else the caller passed, so a call no kernel may take on a
+        # plain array can reach one there.
+        yield replace(case, expect=ANY) if case.label.endswith(_MASKED_LAYOUT) else case
+    yield from unusual_nan_cases("argsort", {"f64": "argsort_f64"}, "x.argsort(kind='stable')", _stable,
+                                 min_n=ARGSORT_MIN_N)
+    for dtype, kernel in ARGSORT_KERNELS.items():
+        yield from _argsort_order_cases(dtype, kernel)
+    for n in ARGSORT_ORDER_SIZES:
+        yield Case("argsort", f"x.argsort(kind='stable') f64 n={n} zeros of both signs and NaN, shuffled",
+                   partial(_argsort_ties, "f64", n, True), _stable, "argsort_f64")
+        yield Case("argsort", f"x.argsort(kind='stable') f64 n={n} sorted, NaNs last",
+                   partial(_argsort_nan_in_order, n, "end"), _stable, "argsort_f64")
+        yield Case("argsort", f"x.argsort(kind='stable') f64 n={n} sorted, a NaN in the middle",
+                   partial(_argsort_nan_in_order, n, "middle"), _stable, None)
+        # C's `long long` is a NumPy type of its own, and 64 bits wide like `long`.
+        yield Case("argsort", f"x.argsort(kind='stable') longlong n={n}",
+                   lambda n=n: (values("i64", n).astype(np.longlong),), _stable, "argsort_i64")
+        yield Case("argsort", f"x.argsort(kind='stable') ulonglong n={n}",
+                   lambda n=n: (values("u64", n).astype(np.ulonglong),), _stable, "argsort_u64")
+        # Times order like integers but for NaT, which sorts last: not the integer kernel's.
+        yield Case("argsort", f"x.argsort(kind='stable') datetime64 n={n}",
+                   lambda n=n: (values("i64", n).view("datetime64[ns]"),), _stable, None)
+
 
 # Every operation that has a hook, with its exact cases.
 OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
@@ -4868,6 +5063,7 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "unique": unique_cases,
     "inplace": inplace_cases,
     **{f"bn.{function}": partial(bottleneck_cases, function) for function in BN_FUNCTIONS},
+    "argsort": argsort_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the

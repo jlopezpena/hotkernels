@@ -109,6 +109,12 @@ PROBE_ROWS = 25
 # Largest factor in the cumulative-product probe: its products are at most
 # 3 ** PROBE_ROWS, below 2 ** 53, so every one is exact in float64.
 PROBE_FACTOR = 3
+# The argsort probes sort the values (PROBE_SORT_STEP * i modulo PROBE_N)
+# divided by PROBE_SORT_TIES: the step has no factor in common with PROBE_N,
+# so the values are shuffled, and the division leaves them in groups of equal
+# elements, which a sort that is not stable would put in another order.
+PROBE_SORT_STEP = 617
+PROBE_SORT_TIES = 4
 
 # Element count of the sorted array the search probes look in. It differs
 # from PROBE_N so that a kernel which confused its two lengths would fail.
@@ -792,6 +798,24 @@ def _bottleneck(function: str, hook: str) -> bool:
                for e, g in zip(expected, got))
 
 
+def _argsort(dtype: type) -> bool:
+    """Probe the method hook: `np.argsort(x, kind="stable")` on shuffled values with ties.
+
+    The expected order is worked out by Python's own sort of (value, index)
+    pairs, which is stable by construction and shares no code with NumPy's.
+
+    Args:
+        dtype: Element type of the probe array.
+
+    Returns:
+        Whether the result is the stable order, as `np.intp`.
+    """
+    values = [(PROBE_SORT_STEP * i % PROBE_N) // PROBE_SORT_TIES for i in range(PROBE_N)]
+    expected = sorted(range(PROBE_N), key=lambda i: (values[i], i))
+    result = np.argsort(np.array(values, dtype), kind="stable")
+    return result.dtype == np.intp and result.tolist() == expected
+
+
 # Every hook, in the order install() applies them: the deepest first.
 HOOKS: tuple[Hook, ...] = (
     Hook("slot.argmax.f32", TYPE_SLOT, (Probe("argmax_f32", partial(_argext_method, np.float32, "argmax", 1.0)),)),
@@ -897,6 +921,11 @@ HOOKS: tuple[Hook, ...] = (
     Hook("ufunc.reduceat", METHOD, (Probe("fmax_reduce_f64", _fmax_reduceat),)),
     Hook("method.any", METHOD, (Probe("any_rows_bool", partial(_any_rows, _any_method)),)),
     Hook("method.round", METHOD, (Probe("round_f64", partial(_round_with, _round_method)),)),
+    Hook("method.argsort", METHOD, (
+        Probe("argsort_f64", partial(_argsort, np.float64)),
+        Probe("argsort_i64", partial(_argsort, np.int64)),
+        Probe("argsort_u64", partial(_argsort, np.uint64)),
+    )),
     Hook("index.get", INDEXING, (
         Probe("compress_f32", partial(_compress, np.float32)),
         Probe("compress_f64", partial(_compress, np.float64)),
@@ -972,6 +1001,10 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("fmax_reduce_f64", "fmax.reduceat", "float64", "reduceat", ("ufunc.reduceat",)),
     KernelInfo("any_rows_bool", "m.any(axis=1)", "bool", "any", ("method.any", "function.any")),
     KernelInfo("unique_i64", "np.unique", "int64", "unique", ("function.unique",)),
+    # The stable kinds only: kind='stable', kind='mergesort' and stable=True.
+    KernelInfo("argsort_f64", "np.argsort, stable", "float64", "argsort", ("method.argsort",)),
+    KernelInfo("argsort_i64", "np.argsort, stable", "int64", "argsort", ("method.argsort",)),
+    KernelInfo("argsort_u64", "np.argsort, stable", "uint64", "argsort", ("method.argsort",)),
     # A loop built into the binding, for short arrays.
     KernelInfo("round_f64", "np.round", "float64", "round", ("function.round", "function.around", "method.round"),
                builtin=True),
