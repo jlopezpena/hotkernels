@@ -45,9 +45,10 @@
 // One entry per kernel the binding can call. The order is the order of
 // HK_KERNEL_NAMES in module.c.
 //
-// The entries after the kernels are loops built into the binding for calls
+// The entries after the kernels are loops built into the binding: for calls
 // on short arrays, where NumPy's own call path is nearly all of a call's
-// cost and the loop hardly matters. They are plain C in the hook files, not
+// cost and the loop hardly matters, and for accumulations along the first
+// axis of a matrix, where the gain is the order in which memory is walked. They are plain C in the hook files, not
 // kernels from `kernels/`, and the judge does not see them; `delivery check`
 // compares them with NumPy as it does the rest of the binding. They are
 // counted like kernels so that report() and the self-test of install() can
@@ -64,6 +65,7 @@ typedef enum {
     HK_BINCOUNT_I16, HK_BINCOUNT_I64,
     // Built into the binding.
     HK_CLIP_I64, HK_ROUND_F64, HK_MEDIAN_F64,
+    HK_CUMSUM_ROWS_F64, HK_CUMPROD_ROWS_F64, HK_CUMMAX_ROWS_F64, HK_CUMFMAX_ROWS_F64,
     HK_KERNEL_COUNT
 } hk_kernel;
 

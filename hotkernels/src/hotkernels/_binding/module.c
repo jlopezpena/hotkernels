@@ -23,6 +23,7 @@ static const char *const HK_KERNEL_NAMES[HK_KERNEL_COUNT] = {
     "bincount_i16", "bincount_i64",
     // Built into the binding.
     "clip_i64", "round_f64", "median_f64",
+    "cumsum_rows_f64", "cumprod_rows_f64", "cummax_rows_f64", "cumfmax_rows_f64",
 };
 
 // Operation names, in the order of hk_operation.
