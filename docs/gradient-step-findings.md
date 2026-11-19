@@ -179,12 +179,12 @@ The two loops are counted, as `add_inplace_f64` and `subtract_inplace_f64`, and 
 
 ### Other architectures
 
-The loop is not installed on x86-64. The effect it removes was found on the Apple M1 Pro with Accelerate, and no x86-64 machine was at hand to see whether a threaded BLAS leaves the same cost there. The question is recorded as an issue of its own.
+The loop is not installed on x86-64. The effect it removes was found on the Apple M1 Pro with Accelerate, and no x86-64 machine was at hand to see whether a threaded BLAS leaves the same cost there. The question is recorded as [issue 204](https://github.com/sofeikov/hotkernels/issues/204).
 
 ### What is not proposed
 
-- **Other in-place ufuncs.** `w *= 0.9` or `probs /= s` on an array a threaded product has just read would pay the same cost. The two operations of the gradient step are taken first; the rest wait for a program that needs them.
-- **`float32`.** No application in the study trains in `float32`.
+- **Other in-place ufuncs.** `w *= 0.9` or `probs /= s` on an array a threaded product has just read would pay the same cost. The two operations of the gradient step are taken first; the rest wait for a program that needs them ([issue 202](https://github.com/sofeikov/hotkernels/issues/202)).
+- **`float32`.** No application in the study trains in `float32` ([issue 203](https://github.com/sofeikov/hotkernels/issues/203)).
 - **Setting Accelerate's threads.** See above.
 
 ## What changed in the building
