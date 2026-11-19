@@ -522,6 +522,90 @@ static hk_kernel accumulate_kernel(PyObject *ufunc, PyObject *array) {
 // the read for signalling NaNs alone (Intel Core i5-14600KF). Finding a zero
 // with a floating-point compare and testing its sign bit took two
 // instructions more per four elements, and the call 1.31 us.
+//
+// On ARM64 the same loop takes about 0.35 ns per element on the Apple M1 Pro,
+// three times the 0.11 to 0.14 of the cumfmax_f64 kernel it guards, and the
+// version below reads the array once more cheaply first.
+#if defined(__aarch64__)
+
+// ARM64: the same answer, and the same floating-point flags, a block of 32
+// elements at a time (HK_GUARD_BLOCK). The block's top halfwords
+// (hk_top_halves) say whether it holds a NaN or an infinity, all ones in the
+// exponent, and whether it holds a top halfword of 0x8000, which a negative
+// zero has (and a negative number too small to matter, which only costs a
+// second look). Only then is the block read again for the NaN bit patterns,
+// or for negative zeros, into masks across the whole array as on x86-64: the
+// NaNs share one pattern when no bit is both set in one and clear in one.
+// The NaN compare is the quiet kind and runs on every block with a NaN, so it
+// raises the invalid-operation flag exactly when the x86-64 loop would: for a
+// signalling NaN. The last block ends at n and overlaps the one before it,
+// which reads some elements twice into masks that only gather. Fewer than 32
+// elements are read by the loop of the x86-64 version.
+//
+// About 0.074 ns per element with no NaN, where the loop took 0.350, and
+// 0.24 with 5% of the elements NaN (Apple M1 Pro, first-level cache).
+static bool fmax_accumulate_left_to_numpy(const double *values, size_t n) {
+    // The quiet bit of a NaN, the top bit of the fraction.
+    const uint64_t quiet = 0x0008000000000000ULL;
+    // The sign bit alone: the pattern of -0.0.
+    const uint64_t sign = 0x8000000000000000ULL;
+    if (n < HK_GUARD_BLOCK) {
+        uint64_t set = 0, clear = 0, negative_zero = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t bits;
+            memcpy(&bits, &values[i], sizeof bits);
+            const uint64_t nan = values[i] != values[i] ? ~0ULL : 0;
+            set |= bits & nan;
+            clear |= ~bits & nan;
+            negative_zero |= bits == sign ? ~0ULL : 0;
+        }
+        return (clear & quiet) != 0 || (set & clear) != 0 || negative_zero != 0;
+    }
+    // A top halfword shifted left by one, which drops the sign, is at least
+    // this exactly for a NaN or an infinity.
+    const uint16_t exponent_all_ones = 0xffe0;
+    // The top halfword of -0.0.
+    const uint16x8_t sign_half = vdupq_n_u16(0x8000);
+    const uint64x2_t sign_bits = vdupq_n_u64(sign);
+    // The bits set in some NaN; the bits set in every NaN (all ones while
+    // there is none); all ones in a lane that has seen -0.0.
+    uint64x2_t set = vdupq_n_u64(0), kept = vdupq_n_u64(~0ULL), negative_zero = vdupq_n_u64(0);
+    for (size_t i = 0;; i += HK_GUARD_BLOCK) {
+        if (i > n - HK_GUARD_BLOCK) i = n - HK_GUARD_BLOCK;
+        const double *x = values + i;
+        uint16x8_t top[4];
+        hk_top_halves(x, top);
+        // The largest top halfword without its sign, and the smallest top
+        // halfword with its sign flipped, which is 0 for 0x8000.
+        const uint16x8_t high = vmaxq_u16(vmaxq_u16(vshlq_n_u16(top[0], 1), vshlq_n_u16(top[1], 1)),
+                                          vmaxq_u16(vshlq_n_u16(top[2], 1), vshlq_n_u16(top[3], 1)));
+        const uint16x8_t flipped = vminq_u16(vminq_u16(veorq_u16(top[0], sign_half), veorq_u16(top[1], sign_half)),
+                                             vminq_u16(veorq_u16(top[2], sign_half), veorq_u16(top[3], sign_half)));
+        if (vmaxvq_u16(high) >= exponent_all_ones) {
+            for (size_t k = 0; k < HK_GUARD_BLOCK; k += 2) {
+                const float64x2_t v = vld1q_f64(x + k);
+                const uint64x2_t bits = vreinterpretq_u64_f64(v);
+                // All ones for a number, zero for a NaN.
+                const uint64x2_t number = vceqq_f64(v, v);
+                set = vorrq_u64(set, vbicq_u64(bits, number));
+                kept = vandq_u64(kept, vorrq_u64(bits, number));
+            }
+        }
+        if (vminvq_u16(flipped) == 0) {
+            for (size_t k = 0; k < HK_GUARD_BLOCK; k += 2) {
+                const uint64x2_t bits = vreinterpretq_u64_f64(vld1q_f64(x + k));
+                negative_zero = vorrq_u64(negative_zero, vceqq_u64(bits, sign_bits));
+            }
+        }
+        if (i == n - HK_GUARD_BLOCK) break;
+    }
+    const uint64_t set_bits = vgetq_lane_u64(set, 0) | vgetq_lane_u64(set, 1);
+    const uint64_t clear_bits = ~(vgetq_lane_u64(kept, 0) & vgetq_lane_u64(kept, 1));
+    const uint64_t zero_seen = vgetq_lane_u64(negative_zero, 0) | vgetq_lane_u64(negative_zero, 1);
+    return (clear_bits & quiet) != 0 || (set_bits & clear_bits) != 0 || zero_seen != 0;
+}
+
+#else
 static HK_TARGET_KERNEL_LEVEL bool fmax_accumulate_left_to_numpy(const double *values, size_t n) {
     // The quiet bit of a NaN, the top bit of the fraction.
     const uint64_t quiet = 0x0008000000000000ULL;
@@ -540,6 +624,7 @@ static HK_TARGET_KERNEL_LEVEL bool fmax_accumulate_left_to_numpy(const double *v
     }
     return (clear & quiet) != 0 || (set & clear) != 0 || negative_zero != 0;
 }
+#endif
 
 // np.maximum.accumulate(x) or np.fmax.accumulate(x) on a one-dimensional
 // contiguous array with at least one element, `axis` the first, and `dtype`
@@ -678,6 +763,45 @@ static bool fmax_runs(const double *x, uint64_t n, const npy_intp *indices, size
 // True when any of the `n` doubles at `values` is a negative zero, the one
 // pattern that is the sign bit alone. Compiled for the kernels' level, as
 // hk_has_signalling_nan is, for a 64-bit compare.
+#if defined(__aarch64__)
+
+// Elements per step of the ARM64 version: eight vectors of two.
+#define NEGATIVE_ZERO_STEP 16
+
+// ARM64: the same test with eight independent masks, a compare and an OR per
+// two elements, where clang's loop narrows each compare first. The last step
+// ends at n and overlaps the one before it; fewer than 16 elements are tested
+// one at a time. About 0.078 ns per element, where the plain loop took 0.117
+// (Apple M1 Pro, first-level cache).
+static bool has_negative_zero(const double *values, size_t n) {
+    // The pattern of -0.0.
+    const uint64_t negative_zero = 0x8000000000000000ULL;
+    if (n < NEGATIVE_ZERO_STEP) {
+        uint64_t seen = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t bits;
+            memcpy(&bits, &values[i], sizeof bits);
+            seen |= bits == negative_zero ? ~0ULL : 0;
+        }
+        return seen != 0;
+    }
+    const uint64x2_t pattern = vdupq_n_u64(negative_zero);
+    uint64x2_t seen[NEGATIVE_ZERO_STEP / 2];
+    for (size_t k = 0; k < NEGATIVE_ZERO_STEP / 2; k++) seen[k] = vdupq_n_u64(0);
+    for (size_t i = 0;; i += NEGATIVE_ZERO_STEP) {
+        if (i > n - NEGATIVE_ZERO_STEP) i = n - NEGATIVE_ZERO_STEP;
+        for (size_t k = 0; k < NEGATIVE_ZERO_STEP / 2; k++) {
+            const uint64x2_t bits = vreinterpretq_u64_f64(vld1q_f64(values + i + 2 * k));
+            seen[k] = vorrq_u64(seen[k], vceqq_u64(bits, pattern));
+        }
+        if (i == n - NEGATIVE_ZERO_STEP) break;
+    }
+    uint64x2_t any = seen[0];
+    for (size_t k = 1; k < NEGATIVE_ZERO_STEP / 2; k++) any = vorrq_u64(any, seen[k]);
+    return (vgetq_lane_u64(any, 0) | vgetq_lane_u64(any, 1)) != 0;
+}
+
+#else
 static HK_TARGET_KERNEL_LEVEL bool has_negative_zero(const double *values, size_t n) {
     // The pattern of -0.0.
     const uint64_t negative_zero = 0x8000000000000000ULL;
@@ -691,6 +815,7 @@ static HK_TARGET_KERNEL_LEVEL bool has_negative_zero(const double *values, size_
     }
     return seen != 0;
 }
+#endif
 
 // True when the NaNs among the `n` doubles at `values` do not all have the
 // same bit pattern. A NaN is found as in hk_has_signalling_nan; `set` gathers
