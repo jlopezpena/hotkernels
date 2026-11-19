@@ -43,14 +43,15 @@ A library is called through its documented functions with typical arguments. Cop
 | Memory and system | `memmove`, `memset`, the allocator, the kernel |
 | Other compiled code | The extension modules of the library under test and of pandas and SciPy |
 
-Samples of threads that are waiting are left out. The share of NumPy functions for which a kernel exists, exists for another element type, or does not exist bounds what the program could gain. The profile runs only on macOS; on another system the command says so and gives the times and counts alone.
+Samples of threads that are waiting are left out. The share of NumPy functions for which a kernel exists, exists for another element type, or does not exist bounds what the program could gain. The profile ran first only on macOS; `perf` on Linux was added later, see [Two sizes, a profile on Linux, and the record](#two-sizes-a-profile-on-linux-and-the-record-issue-193). Where no sampler may run, the command says why and gives the times and counts alone.
 
 **Python profile.** One plain run under `cProfile`, to tie the native functions to the lines of the program that call them.
 
 ## The command
 
 ```
-uv run --group apps delivery apps [--only NAME] [--profile] [--record]
+uv run --group apps delivery apps [--only NAME] [--size small|large] [--profile] [--record [--allow-busy]]
+uv run delivery apps-report delivery/results/<machine>-apps.json
 ```
 
 The libraries go in an `apps` dependency group, pinned by `uv.lock` and not installed by default. `--record` writes `delivery/results/<machine>-apps.md` and `.json`, with the load average and the versions of the libraries. Templates are under `delivery/templates/`.
@@ -81,13 +82,13 @@ No release note: nothing in `hotkernels/` changes.
 ## Out of scope
 
 - Changing the binding or a kernel so that an application gains. Those are the issues.
-- x86-64. The times and counts work there; the profile needs a sampler for Linux.
+- x86-64 hardware. The times and counts work there, and the profile does through `perf`, but neither has been run on an x86-64 machine yet ([#193](https://github.com/sofeikov/hotkernels/issues/193)).
 - Running the applications in CI.
 
 ## Decisions still open
 
 1. **Whether the applications join the workloads runner** once it is merged, or stay a separate command.
-2. **A profile on Linux.** `perf` gives the same table and needs permissions the judge's machine may not grant.
+2. **A profile on Linux.** Resolved: `perf record -g`, with the permissions it needs stated by the command when they are missing. See [below](#a-profile-on-linux).
 
 ## What changed in the building
 
@@ -143,3 +144,11 @@ perf script -i perf.data -F comm,tid,ip,sym,dso
 The record is taken when nothing else is running: when `gh run list` shows no unfinished run, since this machine hosts the CI runners. `--record` asks `gh run list` and refuses while any of the last twenty runs is queued, waiting or in progress; `--allow-busy` records anyway. The number of unfinished runs and the load average are written in the record. A load average above 1.0 is not refused, since this desktop does not reach it ([#51](https://github.com/sofeikov/hotkernels/issues/51)); the record marks its times rough, as before.
 
 The record itself is taken once every change that moves an application's time has been made, and the findings are brought up to date from it then.
+
+### What changed in the building of the second round
+
+- **perf leaves the kernel out silently.** At `perf_event_paranoid` 2 a user who is not root asking for `cpu-clock` gets it, with the kernel's samples dropped and no error. Trying the event cannot tell the two apart, so the event is chosen from the level and the user first (`cpu-clock` for root or at 1 and below, `cpu-clock:u` otherwise) and only then tried. A user with `CAP_PERFMON` at level 2 is sampled in user space although the kernel would be allowed.
+- **The small `min_char_rnn` has 58 distinct characters,** counted from the licence when the module loads; the description of the size says so, so its line differs from the first record's.
+- **Short rounds.** The small `trimesh_mesh` runs in about 13 ms and the small `mlp_train` in about 36 ms, so they are repeated in each round as designed.
+- **Tests.** The repository had no tests of the delivery tool's own code. `tests/test_apps.py` tests the sizes, the record and its old layout, the refusal while CI runs, and the parsing and classing of perf's output on a capture and on hand-written x86-64 samples. CI runs it on the hosted Linux runner (`uv run --group dev pytest tests`).
+- **What ran where.** The perf path ran end to end in a Docker container on this Apple M1 Pro, ARM64 Linux (Debian bookworm, `linux-perf` 6.1, kernel 6.12): as root with `--privileged`, which samples `cpu-clock`; as an unprivileged user at level 2, which samples `cpu-clock:u`; and in a container without `--privileged`, where perf is refused and the command says so. hotkernels installs nothing on ARM64 Linux, so there both sides were plain NumPy. No figure from the container is used anywhere. Nothing has run on x86-64 Linux; that is left to [#193](https://github.com/sofeikov/hotkernels/issues/193)'s follow-up on the x86-64 machine. Level 3 was not reached in the container (its `/proc/sys` is read-only) and is covered by a unit test only.

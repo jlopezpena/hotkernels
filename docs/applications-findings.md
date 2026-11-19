@@ -12,7 +12,7 @@ This is the report of the study designed in [applications-design.md](application
 
 ## Results
 
-Apple M1 Pro, CPython 3.12.7, NumPy 2.5.5. Seven alternating runs of each side, the best of each.
+Apple M1 Pro, CPython 3.12.7, NumPy 2.5.5. Seven alternating runs of each side, the best of each. Each application at one size, the one its section names; the second size each now has is not in this record yet.
 
 | Application | What it is | NumPy | `install()` | Faster by | Results | Kernel calls | Left to NumPy |
 |---|---|---|---|---|---|---|---|
@@ -184,15 +184,18 @@ empyrical-reloaded 0.7.3: twelve statistics, alpha and beta, cumulative returns,
 ## Limits
 
 - **A busy machine.** The run started at a load average of 18.5. The speedups come from alternating runs and their medians agree with their minima, so the ratios hold. The profile's shares do not all hold: functions bound by memory are inflated when other processes compete for the cache. `DOUBLE_subtract` in `mlp_train` is the clear case.
-- **One machine, one architecture.** On x86-64 NumPy has vector loops it lacks on ARM64, and the profile needs a sampler for Linux.
-- **One size each.** A larger mesh or a longer return series would move the shares.
+- **One machine, one architecture.** On x86-64 NumPy has vector loops it lacks on ARM64. The profile now runs on Linux through `perf`, but it has not been run on an x86-64 machine.
+- **One size each.** A larger mesh or a longer return series would move the shares. Every application now has a second size, `small` and `large` (see [applications-design.md](applications-design.md#two-sizes)); the figures here are from the first record, which ran each at one: `min_char_rnn` and `empyrical_stats` at the small size, the other three at the large.
 - **Five programs.** They were chosen by field before any was timed, and the list was not changed by the results. They are still five. Dense linear algebra, image processing and pandas-heavy code are represented by one program or by none.
 - **Estimates of what a missing kernel is worth** assume the rest of the program is unchanged and take the kernel's speed from a stand-in measured in Python, not from a kernel.
 
 ## Running it
 
 ```bash
-uv run --group apps delivery apps --profile            # all five, with profiles
-uv run --group apps delivery apps --only trimesh_mesh  # one, times and counts only
-uv run --group apps delivery apps --profile --record   # write delivery/results/<machine>-apps.md
+uv run --group apps delivery apps --profile                          # all five at both sizes, with profiles
+uv run --group apps delivery apps --only trimesh_mesh --size small   # one at one size, times and counts only
+uv run --group apps delivery apps --profile --record                 # write delivery/results/<machine>-apps.md
+uv run delivery apps-report delivery/results/apple-m1-pro-apps.json  # write a record's report again from its JSON
 ```
+
+The profile samples with `sample` on macOS and `perf record -g` on Linux, where `kernel.perf_event_paranoid` must allow it; the command says what is missing when it does not. `--record` refuses while `gh run list` shows unfinished runs, since this machine hosts the CI runners; `--allow-busy` records anyway.
