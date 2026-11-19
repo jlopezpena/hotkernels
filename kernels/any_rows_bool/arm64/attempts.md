@@ -105,3 +105,14 @@ element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and l
   2.9 ns behind three taken branches (0.997x, significantly slower). A pair of rows reduced by a
   `umaxp` and three more `umaxp` of the vector with itself is a chain of four; two `umaxv` side
   by side measured the same at two rows.
+
+## 9. Non-temporal loads above 8 MB for rows of 4 and of 33 to 64
+
+- **Idea:** `ldnp` in place of `ldp` in the main loops. Tried first everywhere: 1.16x at
+  16,777,216 elements, but 0.88x at 1,048,576 (no significant difference over all). So the main
+  loops are duplicated with `ldnp` and taken from 8,388,608 elements, larger than the 12 MB
+  second-level cache. Rows of 16 to 32 cannot use it: `ldnp` has no register offset.
+- **check:** pass
+- **compare:** significantly faster, 1.010x [1.010 – 1.010]; rows of 4 and of 64 1.15x to 1.19x
+  at 16,777,216, every other size unchanged.
+- **Kept:** yes
