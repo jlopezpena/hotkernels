@@ -5,14 +5,35 @@ per run: NumPy gives a run of `reduceat` the bits it gives the same elements
 in `np.fmax.reduce`.
 
 The result is the largest element of `x` that is not a NaN, and a NaN only if
-every element is one. It is NumPy's bit for bit, which fixes two things a
-maximum leaves open: the sign of a zero maximum when zeros of both signs are
-present, and which NaN is returned when every element is a NaN. NumPy's
-answer to both depends on where the elements sit, because of how its loop
-goes through the array, and no rule simpler than that loop reproduces it. So
-`naive.c` goes through the array the way NumPy does **on an x86-64 machine
-with AVX2 and without AVX-512**, where a vector of NumPy's loop has
-`VECTOR_LANES` elements:
+every element is one.
+
+**The domain** is what the binding passes to the kernel for one run; it sends
+every other call to NumPy (`fmax_runs` and `fmax_runs_ambiguous` in
+`hotkernels/src/hotkernels/_binding/hook_method.c`):
+
+- **No negative zero at a zero maximum.** If the maximum is a zero, no
+  element of `x` is `-0.0`. A `-0.0` below a larger maximum is in the domain.
+- **One NaN when all are NaN.** If every element of `x` is a NaN, they all
+  have the same bit pattern.
+- **No signaling NaN.** Every NaN in `x` is a quiet one, as every NaN that
+  arithmetic produces is. NumPy's leftover elements go through the C
+  library's `fmax`, which does not ignore a signaling NaN.
+
+`x` is passed through `_no_negative_zero_at_a_zero_maximum` before every call
+the judge checks, which makes every `-0.0` a `+0.0` when the maximum is a
+zero. The judge's value classes make one NaN pattern only, `np.nan`, and no
+signaling NaN, so the other two conditions hold of every generated input as
+it is.
+
+On this domain every correct maximum gives NumPy's result bit for bit, on
+every architecture. Outside it NumPy's answer for the sign of a zero maximum,
+and for which NaN an all-NaN array returns, depends on its build, which is
+why the binding leaves those calls to NumPy. NumPy's ARM64 build is one
+`fmaxnm` per element from `x[0]`: a zero maximum is `+0.0` if any `+0.0` is
+present, and an all-NaN array gives `x[0]`. Its x86-64 build with AVX2 and
+without AVX-512 goes through the array in vectors of `VECTOR_LANES` elements,
+and `naive.c` and the x86-64 kernel reproduce that loop, which the judge no
+longer checks:
 
 - `x[0]` starts `VECTOR_LANES` running maxima, one per lane.
 - The elements from `x[1]` on are taken `VECTOR_LANES` at a time, each into
@@ -38,21 +59,16 @@ and `n - 1 - VECTOR_LANES * groups` leftover elements:
 - **All NaN.** The result is `x[0]`, sign and payload, when there are no
   leftover elements, and the last element when there are.
 
-NumPy built for another instruction set (AVX-512, NEON) has vectors of
-another length and may answer those two cases differently; this spec is
-NumPy's answer on the machines named above.
-
-**No signaling NaN.** Every NaN in `x` is a quiet one, as every NaN that
-arithmetic produces is. NumPy's leftover elements go through the C library's
-`fmax`, which does not ignore a signaling NaN. A caller that may hold one
-checks before the call.
+NumPy built with AVX-512 has vectors of another length and answers those two
+cases differently again.
 """
 import numpy as np
 
 from judge.spec import In, Kernel, Size
 
 # Elements in one vector of NumPy's own loop for this reduction on x86-64 with
-# AVX2. The naive reference follows NumPy's lanes; see the module docstring.
+# AVX2. The naive reference follows NumPy's lanes, which matter only outside
+# the domain; see the module docstring.
 VECTOR_LANES = 4
 # Share of NaN in the `some_nan` timing distribution.
 NAN_SHARE = 0.05
@@ -68,6 +84,25 @@ def oracle(x):
         The maximum as a float64 scalar, a NaN if every element is one.
     """
     return np.fmax.reduce(x)
+
+
+def _no_negative_zero_at_a_zero_maximum(x):
+    """Make an input satisfy the domain: every `-0.0` becomes `+0.0` when the maximum is a zero.
+
+    The binding sends a call to NumPy when a run's maximum is a zero and the
+    array holds a negative zero. Where the maximum is not a zero the array is
+    left as it is, so a `-0.0` below the maximum is still checked.
+
+    Args:
+        x: A generated float64 array, at least one element.
+
+    Returns:
+        `x` itself when its maximum is not a zero, and otherwise a new array
+        equal to `x` except that every zero is `+0.0`.
+    """
+    if x.size == 0 or np.fmax.reduce(x) != 0:
+        return x
+    return np.where(x == 0, 0.0, x)
 
 
 def _random(rng, n):
@@ -101,7 +136,7 @@ def _some_nan(rng, n):
 KERNEL = Kernel(
     name="fmax_reduce_f64",
     returns="f64",
-    args=[In("x", "f64"), Size("n")],
+    args=[In("x", "f64", prepare=_no_negative_zero_at_a_zero_maximum), Size("n")],
     oracle=oracle,
     min_n=1,  # np.fmax.reduce raises on empty input; the kernel is never called with n = 0
     distributions={"random": _random, "some_nan": _some_nan},

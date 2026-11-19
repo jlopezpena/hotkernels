@@ -130,3 +130,14 @@ The spec change alters nothing a caller can observe, so its pull request takes t
 | 3 | Do the x86-64 descriptions (later of equals, `n == 2`, the four lanes) stay in the spec docstrings as notes? | Yes, marked as outside the domain; they explain the x86-64 kernels' paths |
 | 4 | Does `prepare` also make NaNs one pattern, against a future value class? | No; the docstring states it, and a new class is a judge change reviewed with the specs in view |
 | 5 | Is a `prepare` that changes inputs enough, or should the judge gain a field that excludes value classes by name? | `prepare`: it states the exact condition, and excluding `zeros` would also drop the all-`+0.0` arrays |
+
+## What changed in the building
+
+Step 1, the two specs, is built in the pull request stacked on this proposal's, as proposed and ahead of its acceptance: option 3, the exact condition for `fmax_reduce_f64`, the x86-64 descriptions kept as notes outside the domain, and NaNs left as the judge makes them. Nothing under `judge/`, no `naive.c` and no `kernel.s` changed.
+
+- **The two `prepare` functions are the sketch's**, with one guard added: `fmax_reduce_f64`'s returns an empty array unchanged, which `min_n=1` makes unreachable, rather than ask NumPy for the maximum of nothing.
+- **The domains are the binding's conditions as one call sees them.** `cumfmax_f64`'s is exactly `fmax_accumulate_left_to_numpy`'s. `fmax_reduce_f64`'s is a run's: the binding tests a negative zero and the NaN patterns over the whole array, so what it passes for one run is a subset of the domain.
+- **The timed inputs are unchanged.** Both kernels supply every timing input from a distribution, which `prepare` does not touch, so no recorded figure needed taking again.
+- **On ARM64,** with no ARM64 assembly, `uv run judge check cumfmax_f64 --unlocked` passes 20,368 cases and `fmax_reduce_f64` 20,313, where both failed on the reference at their first `zeros` case before.
+- **`docs/judge-design.md`** gains the two kernels in the `prepare` row, and the row now says that a distribution's inputs do not pass through `prepare`, which `judge/spec.py` already said.
+- **On x86-64 the two checks are not yet run.** CI's Linux job does not run `judge check` for these kernels, so whether the x86-64 assembly passes under the narrowed specs (it should, the domains being subsets of the old ones) is still to be confirmed on the x86-64 machine.
