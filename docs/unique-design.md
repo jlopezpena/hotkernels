@@ -132,7 +132,7 @@ The Linux wheels are built by `cibuildwheel` in a manylinux image whose compiler
 
 ## Out of scope
 
-- **`return_counts`, `return_inverse`, `return_index`.** `np.unique(y, return_inverse=True)` is what `LabelEncoder` calls in an estimator's `fit`, and `return_counts=True` what class weights are computed with. The same table gives both (counts are what the bincount kernels compute), but they need a second kernel or a second output, and no call in the application asks for them.
+- **`return_counts`, `return_inverse`, `return_index`.** `np.unique(y, return_inverse=True)` is what `LabelEncoder` calls in an estimator's `fit`, and `return_counts=True` what class weights are computed with. The same table gives both (counts are what the bincount kernels compute), but they need a second kernel or a second output, and no call in the application asks for them. Recorded as [issue 200](https://github.com/sofeikov/hotkernels/issues/200).
 - **Other element types.** Labels from Python lists are `int64` on both platforms; `int32` and `uint8` labels can follow with kernels of their own.
 - **`sorted=False` and `np.unique_values`.** Their order is NumPy's hash set's.
 - **x86-64 assembly.**
