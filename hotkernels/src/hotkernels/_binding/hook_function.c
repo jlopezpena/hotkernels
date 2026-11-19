@@ -1069,12 +1069,12 @@ static void prepare_clip(PyObject *object) {
 // by block with that buffer as the scalar's side. A buffer of n elements
 // would be written in full and read back from wherever it lies; at a million
 // elements that made the call no faster than NumPy's. The blocks give up the
-// kernel's stores past the caches, which it starts from millions of elements.
+// x86-64 kernel's stores past the caches, which it starts from millions of
+// elements.
 //
-// The kernel takes any non-zero byte of the condition as True, as NumPy
-// does, but its spec promises only 0 and 1 and ARM64 runs it as C; the
-// condition is checked first, as for the other mask kernels, and one with
-// another byte is NumPy's. Returns NULL with no exception set when the call
+// Both kernels take any non-zero byte of the condition as True, as NumPy
+// does, but the spec promises only 0 and 1; the condition is checked first,
+// as for the other mask kernels, and one with another byte is NumPy's. Returns NULL with no exception set when the call
 // goes to NumPy after all.
 static HK_NOINLINE PyObject *run_where(PyArrayObject *condition, const void *a, const void *b, double fill,
                                        int type_num) {
