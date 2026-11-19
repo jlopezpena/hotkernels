@@ -13,3 +13,11 @@ The output is eight bytes for every byte read. Sixteen elements are 128 bytes of
 - **compare:** n/a (first version). `run`: 1.00x [1.00 – 1.00] of naive C overall, not significant at any size; 11.9x over NumPy.
 - **Kept:** yes (baseline)
 - **Notes:** the same instructions the compiler emits for `naive.c`: 0.37 ns per element at every size, in both tables of `run`.
+
+## 2. NEON, sixteen elements per step: byte counts by multiply and `tbl`, widened by `uaddw`
+
+- **Idea:** the running count within a block of 16 as sixteen bytes, P, without the count before the block: `mul` of the 32-bit lanes by 0x01010101 (counts within each group of four), `tbl` and `add` to carry the group totals to the second group of each half, `tbl` and `add` to carry the low half's total to the high half. Four `tbl` spread P four bytes at a time over 32-bit lanes; `uaddw` and `uaddw2` widen those to 64 bits and add T, the count before the block in both lanes, giving the eight output vectors. The next T is T plus byte 15 of P (`tbl`, `add`): one add per 16 elements on the carried chain. 19 vector operations, one load and four `stp` per 16 elements. Under 16 elements and for the last 0 to 15, the loop of attempt 1.
+- **check:** pass
+- **compare:** significantly faster, 2.954x [2.945 – 2.962]
+- **Kept:** yes
+- **Notes:** 2.87x at 16, 2.75x at 64, 3.03x to 3.13x from 256 to 1,048,576 (0.122 ns per element at 4,096, about 6.2 cycles per block), 2.91x at 4,194,304, 2.57x at 16,777,216. 19 operations in 6.2 cycles is three per cycle on a core with four vector pipes, so something other than the count limits it.
