@@ -75,7 +75,7 @@ Each element becomes an unsigned 64-bit key whose order is NumPy's order:
 
 - **uint64**: the element.
 - **int64**: the element with its sign bit inverted.
-- **float64**: the bits, with the sign bit inverted for a positive number and every bit inverted for a negative one. Two cases are set first, because NumPy's comparison calls them equal and a stable sort must keep equal elements in their original order: `-0.0` gets the key of `+0.0`, and every NaN, whatever its sign and payload, gets the largest key, which also puts NaN last, where NumPy puts it.
+- **float64**: a double is a sign and a magnitude, and magnitudes order like the values they stand for. A positive number's key is 2^63 plus its magnitude and a negative number's 2^63 minus it. NumPy's comparison calls `-0.0` and `+0.0` equal, and any two NaNs, and a stable sort must keep equal elements in their original order, so they must get equal keys: both zeros have magnitude 0 and so the same key, and every NaN, whatever its sign and payload, gets the largest key there is, which also puts NaN last, where NumPy puts it.
 
 Two elements compare equal for NumPy exactly when their keys are equal, and less exactly when the key is less. A stable sort is determined by that order, so any stable sort by key returns what NumPy's timsort returns.
 
@@ -131,7 +131,7 @@ A run long enough for NumPy to win covers nearly the whole array, so it contains
 1. **Sort, then verify there were no ties**, and hand the call to NumPy if there were. Exact, and a loss of the radix sort's time (about 8% of NumPy's) on every array with ties that a cheap test beforehand does not catch.
 2. **Under `install(inexact=True)`**, without verification. The kernel is then exact for one kind and inexact for another, which `report()` has no way to say.
 
-Both are recorded as an issue. So is `np.sort(x, kind='stable')`, the rows of two that `trimesh` sorts, and `np.lexsort`, which still reads the type's table and passes an index array that is not in order.
+Both are in [issue 207](https://github.com/sofeikov/hotkernels/issues/207). `np.sort(x, kind='stable')` and `np.lexsort`, which still reads the type's table and passes an index array that is not in order, are in [issue 208](https://github.com/sofeikov/hotkernels/issues/208), and the rows of two that `trimesh` sorts in [issue 209](https://github.com/sofeikov/hotkernels/issues/209).
 
 ## Exit criterion
 
@@ -148,7 +148,22 @@ To be filled in when built.
 
 ## What changed in the building
 
-To be filled in when built.
+| Proposed | Built | Why |
+|---|---|---|
+| The key of a negative float is its bits inverted | It is 2^63 minus its magnitude | Inverting turns the zero low bits of a whole number into ones, so whole numbers of both signs had keys that differ in all 64 bits: 15.2 ms for a million of them, against 4.7 ms with the subtraction. It also gives both zeros one key without a test |
+| The binding walks out from the middle element to find one long run | It counts falls from the start, at most eight, and then measures the run that begins at the last fall in the first thirty-second of the array | The walk from the middle missed the commonest ordered input: a sorted array with one pair of elements swapped has no long run through its middle, takes NumPy 1.2 ms and the kernel 7. And a comparison per element cost 0.5 ms per million on sorted input, half of NumPy's whole time; the scan now passes over 64 elements at a time and costs 0.16 ms |
+| Input already in order is NumPy's | A sorted array is answered `0, 1, 2, ...` by the hook, and a strictly descending one `n-1, ..., 0` | Once the scan has reached the end without a fall the answer is known. From Python a million sorted float64 take 0.5 ms, against NumPy's 1.0 ms |
+| The kernel reads the caller's array | It reads a copy the binding makes: four words of memory per element, not three | The kernel reads its input three times and sizes the places it scatters to from the first reading. An array that changes in between can send a write outside its buffers. `argmax` has the same exposure and keeps the interpreter lock; a sort of a million elements is too long to hold it, and a copy made under the lock is safe against every writer for about a fiftieth of the sort |
+| `ARGSORT_MIN_N`, to be measured | 256 | From Python the kernel was level with NumPy at 128 elements (0.95x to 1.30x by element type), 1.2x to 1.6x faster at 192 and 1.6x to 1.95x at 256. At 64 and 96 it took up to 1.6 times as long: NumPy sorts so few by insertion |
+| `descending` absent, None or False | Absent | NumPy 2.3, the oldest the package installs on, has no such parameter and raises for it. A call one supported NumPy rejects is not the hook's to take |
+| The counts take about 96 KB of stack | 112 KB | Two tables for digits of up to 13 bits and six for 11 |
+| Each attempt on a kernel is judged by `uv run judge compare` | The attempts were timed in a harness outside the repository, and the result by `uv run judge run` | `compare` builds a `kernel.s` at two revisions; a kernel that is its C has none. The logs say which figures are which |
+| Nothing about the Linux wheels | The argsort kernels ship as C on x86-64 and need the wheel build to use clang | [release-design.md](release-design.md#more-than-one-platform) allows gcc there only while no kernel ships as C on x86-64. The change is made by the pull request for [issue 189](https://github.com/sofeikov/hotkernels/issues/189), whose `unique_i64` is the first such kernel and which this one is stacked on |
+| Three follow-ups in one issue | Three issues | The default kind ([207](https://github.com/sofeikov/hotkernels/issues/207)), `np.sort(x, kind='stable')` and `np.lexsort` ([208](https://github.com/sofeikov/hotkernels/issues/208)), and sorting short rows, which the trace found in both applications ([209](https://github.com/sofeikov/hotkernels/issues/209)) |
+
+Tried and not kept, in `kernels/argsort_f64/arm64/attempts.md`: the scatter loop of a pass in assembly, which tied the compiler's (1.00x to 1.03x), and ranking the sign and exponent bits of a float to narrow the window, which made data of one sign 5% to 19% slower for a gain of 5% to 11% on some sizes of data of both.
+
+Not built: a sort for 17 to 255 elements. The kernel sorts 16 or fewer by insertion and is 16 times faster than a NumPy call there, but the binding does not take arrays under 256, and between the two sizes the kernel has nothing NumPy's insertion sort lacks.
 
 ## Documents that change
 

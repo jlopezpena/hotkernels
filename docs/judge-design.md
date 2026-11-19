@@ -518,6 +518,8 @@ A fifth, `rank_u8`, covers [a second length](#a-second-length). For each of a sc
 
 `rank_u8` also draws its needles from its array, and a selftest step confirms what [Values drawn from another argument](#values-drawn-from-another-argument) promises without running a kernel: at every size the fixture is checked at, in every scalar set, there is a case whose needles are all elements of the array as the kernel receives it, and the array holds repeated values.
 
+A capacity that is a multiple of `n` (`capacity=Times(3)`) has no fixture of its own: a selftest step builds a spec with one and confirms that the output is sized at that many elements per element at several sizes, and that a factor that is not a whole number of at least 1 is refused. The kernels that use it, the stable `argsort` kernels, are what run it against guard pages.
+
 | Broken variant | Must be caught by |
 |---|---|
 | Skips the last element when the size is not a multiple of the vector width | Correctness |
