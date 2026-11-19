@@ -21,3 +21,11 @@ The output is eight bytes for every byte read. Sixteen elements are 128 bytes of
 - **compare:** significantly faster, 2.954x [2.945 – 2.962]
 - **Kept:** yes
 - **Notes:** 2.87x at 16, 2.75x at 64, 3.03x to 3.13x from 256 to 1,048,576 (0.122 ns per element at 4,096, about 6.2 cycles per block), 2.91x at 4,194,304, 2.57x at 16,777,216. 19 operations in 6.2 cycles is three per cycle on a core with four vector pipes, so something other than the count limits it.
+
+## 3. The count and the byte counts in general registers, eight elements per group
+
+- **Idea:** a micro-benchmark outside the judge (see "Measurements outside the judge" below) showed that on this core the depth of the chain from the load to the stores costs time even when nothing is carried from block to block, and attempt 2 is seven vector operations deep. So: load the block as two 64-bit numbers and multiply each by 0x0101010101010101, which gives the running count within eight elements as eight bytes and the group's total as the top byte. Keep T in a general register (`add x3, x3, x4, lsr #56`, one cycle per group) and move it to a vector register for each group with `dup`. The products go across with `fmov`; two `tbl` and four `uaddw` per group as before. 12 vector operations, four moves from general to vector registers and two deep after the move, against 19 and seven.
+- **check:** pass
+- **compare:** significantly faster, 1.071x [1.056 – 1.087]
+- **Kept:** yes
+- **Notes:** 1.06x at 16 and 64, 1.11x to 1.14x from 256 to 16,384 (0.106 ns per element at 4,096), 1.06x at 1,048,576; not significant at 65,536, 262,144 and 16,777,216, where the intervals were wide with the other run on the machine.
