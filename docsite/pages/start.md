@@ -91,7 +91,7 @@ np.sum             uint8    assembly  exact                        1            
 
 **Left to NumPy** is the column to read when nothing got faster. It counts calls that reached a hook and did not meet a kernel's conditions: another element type, a strided array, an argument the kernel does not implement. A large number there tells you what your arrays look like.
 
-Both columns count the calls you wrote. `np.argmax(m, axis=1)` is one call, however many rows NumPy splits it into, whether a kernel took its rows or NumPy did. The rows marked C are loops built into hotkernels for short arrays and narrow rows; the first line does not count them among the kernels.
+Both columns count the calls you wrote. `np.argmax(m, axis=1)` is one call, however many rows NumPy splits it into, whether a kernel took its rows or NumPy did. The rows marked C are loops built into hotkernels rather than kernels; the first line does not count them among the kernels.
 
 ## What gets faster
 
