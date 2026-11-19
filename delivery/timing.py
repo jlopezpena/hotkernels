@@ -40,6 +40,14 @@ SIZES = (16, 4096, 1_048_576)
 ROUNDS = 9
 # Time one batch aims for, in nanoseconds, and the limits on calls per batch.
 TARGET_BATCH_NS = 10_000_000
+# Untimed calls made after each switch between plain NumPy and hotkernels, as a
+# share of a batch. install() runs its probes for about a millisecond, and the
+# calls after any such interruption (a short sleep does the same) run slow for
+# about 3 ms while the core and its caches recover: np.median at 4,096 float64
+# elements lost about 0.4 ms there, which made a 10 ms batch with hotkernels
+# installed 9% slower than NumPy's for a call no hook takes. Half a batch is
+# past that on both sides.
+WARMUP_SHARE = 0.5
 MIN_CALLS = 3
 MAX_CALLS = 200_000
 # Seed of all timing data.
@@ -516,13 +524,17 @@ def measure(entry: Timed, n: int) -> Measurement:
     kernel = entry.kernel_at(n)
     hotkernels.uninstall()
     calls = _calls_per_batch(entry.call, arguments)
+    # At least one untimed call, so the first timed call never follows a switch.
+    warmup = max(int(calls * WARMUP_SHARE), 1)
     plain, installed = [], []
     for _ in range(ROUNDS):
         hotkernels.uninstall()
+        _batch(entry.call, arguments, warmup)
         plain.append(_batch(entry.call, arguments, calls))
         hotkernels.install(inexact=entry.inexact)
         if not _kernel_ran(entry, arguments, kernel):
             raise RuntimeError(f"{entry.statement} ({entry.data}, n={n}) was not routed as expected")
+        _batch(entry.call, arguments, warmup)
         installed.append(_batch(entry.call, arguments, calls))
     hotkernels.uninstall()
     return Measurement(entry.operation, entry.statement, entry.data, kernel, n, min(plain), min(installed))
