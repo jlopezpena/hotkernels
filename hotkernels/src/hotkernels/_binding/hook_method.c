@@ -562,6 +562,25 @@ static PyObject *method_accumulate(PyObject *self, PyObject *const *args, Py_ssi
 
 // ---------------------------------------------------------------- reduceat
 
+// Elements of the array read for signalling NaNs at a time, ahead of the runs
+// that use them: 16,384 bytes, so that the kernel then reads them from the
+// first-level cache. Checking the whole array first read an array beyond the
+// caches twice, and np.fmax.reduceat on runs of 1,024 elements of a 262,144
+// element array was 0.6x of NumPy (Intel Core i5-14600KF).
+#define REDUCEAT_CHECK_BLOCK 2048
+
+// Read `x` for signalling NaNs from `*checked`, up to which it has been read,
+// to at least `upto`, which is above it: a block of REDUCEAT_CHECK_BLOCK
+// elements, or more if `upto` is further, and never past `n`. Returns false
+// when a signalling NaN was found, and advances `*checked` otherwise.
+static bool check_ahead(const double *x, uint64_t n, uint64_t upto, uint64_t *checked) {
+    uint64_t to = upto - *checked < REDUCEAT_CHECK_BLOCK ? *checked + REDUCEAT_CHECK_BLOCK : upto;
+    if (to > n) to = n;
+    if (hk_has_signalling_nan(x + *checked, (size_t)(to - *checked))) return false;
+    *checked = to;
+    return true;
+}
+
 // Every run of np.fmax.reduceat(x, indices), into `out`, one element per
 // index. NumPy's rule for run i: it ends at indices[i + 1], or at n for the
 // last run; if it starts before it ends, its result is the reduction of
@@ -573,41 +592,96 @@ static PyObject *method_accumulate(PyObject *self, PyObject *const *args, Py_ssi
 // Each index is read once, into a register, and tested there against [0, n)
 // before it is used: as unsigned numbers, so that a negative index fails the
 // same test. Another thread may change the indices while this runs, and a
-// second read could give an index that was never tested. Returns false at the
-// first index outside [0, n), whose call is NumPy's: it raises IndexError.
-// Nothing but the kernel is called inside the loop, which runs once per run
-// of perhaps 16 elements, where the kernel takes about 1.5 ns.
+// second read could give an index that was never tested.
+//
+// `x` is read for signalling NaNs a block at a time, just ahead of the
+// elements a run uses (check_ahead): everything below the furthest element
+// any run has used. The last run ends at n, so the whole array is read by
+// the end. A signalling NaN anywhere sends the call to NumPy: NumPy's fmax
+// answers one with a quiet NaN, where the kernel would skip it.
+//
+// Returns false at the first index outside [0, n), whose call is NumPy's (it
+// raises IndexError), and when `x` holds a signalling NaN. Inside the loop
+// the only call besides the kernel is the check, once per block of
+// elements. The loop runs once per run of perhaps 16 elements, where the
+// kernel takes about 1.5 ns.
 static bool fmax_runs(const double *x, uint64_t n, const npy_intp *indices, size_t m, double *out) {
+    uint64_t checked = 0;
     uint64_t start = (uint64_t)indices[0];
     if (start >= n) return false;
     for (size_t i = 0; i + 1 < m; i++) {
         const uint64_t end = (uint64_t)indices[i + 1];
         if (end >= n) return false;
+        // One past the last element the run reads.
+        const uint64_t last = end > start + 1 ? end : start + 1;
+        if (last > checked && !check_ahead(x, n, last, &checked)) return false;
         out[i] = end > start + 1 ? fmax_reduce_f64(x + start, (size_t)(end - start)) : x[start];
         start = end;
     }
+    if (n > checked && !check_ahead(x, n, n, &checked)) return false;
     out[m - 1] = n > start + 1 ? fmax_reduce_f64(x + start, (size_t)(n - start)) : x[start];
     return true;
 }
 
-// True when some result of the runs is one whose bits NumPy does not fix
-// apart from the lane structure of its vector loop: a zero, when the array
-// holds a negative zero (`zeros`), or a NaN, when its NaNs are not all of one
-// pattern (`nans`). For a zero maximum with zeros of both signs present, or a
-// run that is all NaN with different NaNs, NumPy's answer depends on which
-// lane of its loop each element falls in, and NumPy picks its AVX2 or its
-// AVX-512 loop when it runs, which have four and eight lanes. Everywhere else
-// every correct maximum is the same number. The kernel reproduces the AVX2
-// loop, which is what this machine's NumPy runs and what the judge checked;
-// the binding does not depend on it, and leaves such calls to NumPy. The
-// comparisons raise no flag for a quiet NaN.
-static bool fmax_runs_ambiguous(const double *out, size_t m, bool zeros, bool nans) {
+// True when any of the `n` doubles at `values` is a negative zero, the one
+// pattern that is the sign bit alone. Compiled for the kernels' level, as
+// hk_has_signalling_nan is, for a 64-bit compare.
+static HK_TARGET_KERNEL_LEVEL bool has_negative_zero(const double *values, size_t n) {
+    // The pattern of -0.0.
+    const uint64_t negative_zero = 0x8000000000000000ULL;
+    // A 64-bit mask, as wide as an element: with a bool the compiler leaves
+    // the loop scalar.
+    uint64_t seen = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t bits;
+        memcpy(&bits, &values[i], sizeof bits);
+        seen |= bits == negative_zero ? ~0ULL : 0;
+    }
+    return seen != 0;
+}
+
+// True when the NaNs among the `n` doubles at `values` do not all have the
+// same bit pattern. A NaN is found as in hk_has_signalling_nan; `set` gathers
+// the bits set in some NaN and `clear` the bits clear in some NaN, and the
+// NaNs all have one pattern exactly when no bit is in both.
+static HK_TARGET_KERNEL_LEVEL bool nans_are_mixed(const double *values, size_t n) {
+    // Clears the sign bit.
+    const uint64_t magnitude = 0x7fffffffffffffffULL;
+    // The pattern of infinity, which the magnitude of every NaN is above.
+    const int64_t infinity = 0x7ff0000000000000LL;
+    uint64_t set = 0, clear = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t bits;
+        memcpy(&bits, &values[i], sizeof bits);
+        const uint64_t nan = (int64_t)(bits & magnitude) > infinity ? ~0ULL : 0;
+        set |= bits & nan;
+        clear |= ~bits & nan;
+    }
+    return (set & clear) != 0;
+}
+
+// True when the results of the runs of `x`, `out[0..m)`, hold one whose bits
+// NumPy does not fix apart from the lane structure of its vector loop: a
+// zero, when `x` holds a negative zero, or a NaN, when the NaNs of `x` are
+// not all of one pattern. For a zero maximum with zeros of both signs
+// present, or a run that is all NaN with different NaNs, NumPy's answer
+// depends on which lane of its loop each element falls in, and NumPy picks
+// its AVX2 or its AVX-512 loop when it runs, which have four and eight
+// lanes. Everywhere else every correct maximum is the same number. The kernel
+// reproduces the AVX2 loop, which is what this machine's NumPy runs and what
+// the judge checked; the binding does not depend on it, and leaves such
+// calls to NumPy.
+//
+// The results are read first, which is short: one per run. `x` is read again
+// only when a result is a zero or a NaN. The comparisons raise no flag for a
+// quiet NaN, and `out` holds no other kind.
+static bool fmax_runs_ambiguous(const double *x, size_t n, const double *out, size_t m) {
     bool zero = false, nan = false;
     for (size_t i = 0; i < m; i++) {
         zero |= out[i] == 0.0;
         nan |= out[i] != out[i];
     }
-    return (zeros && zero) || (nans && nan);
+    return (zero && has_negative_zero(x, n)) || (nan && nans_are_mixed(x, n));
 }
 
 // np.fmax.reduceat(x, indices) on a one-dimensional contiguous float64 array
@@ -617,13 +691,13 @@ static bool fmax_runs_ambiguous(const double *out, size_t m, bool zeros, bool na
 // by position or by keyword. Indices of another type, and lists, are NumPy's
 // to convert. The result is a new float64 array with one element per index.
 //
-// The array is read once before the runs (hk_survey_doubles). A signalling
-// NaN anywhere sends the call to NumPy: NumPy's fmax answers one with a quiet
-// NaN, and the kernel would skip it. A negative zero, or NaNs of more than
-// one pattern, send it to NumPy only if a result turns out to be a zero or a
-// NaN (fmax_runs_ambiguous). The kernel's vmaxpd sets the invalid-operation
-// flag for every NaN operand, and the flags are cleared after it, as after
-// the clip kernels.
+// Three guards, all of which send the whole call to NumPy: a signalling NaN
+// anywhere in `x`, looked for as the runs go (fmax_runs); and, after the
+// runs, a zero result when `x` holds a negative zero, and a NaN result when
+// its NaNs are of more than one pattern (fmax_runs_ambiguous). The kernel's vmaxpd sets the
+// invalid-operation flag for every NaN operand, quiet ones included, and
+// NumPy's own loop leaves no flag behind, so the flags are cleared after the
+// kernel, as after the clip kernels.
 static HK_NOINLINE PyObject *try_reduceat(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     enum { ARRAY, INDICES, AXIS, DTYPE, OUT, PARAMETERS };
     static const char *const names[PARAMETERS] = {"array", "indices", "axis", "dtype", "out"};
@@ -646,19 +720,15 @@ static HK_NOINLINE PyObject *try_reduceat(PyObject *const *args, Py_ssize_t narg
         PyErr_Clear();
         return NULL;
     }
+    const double *data = PyArray_DATA(x);
     double *out = PyArray_DATA((PyArrayObject *)result);
     // True when the kernel's results stand and the call is taken.
     bool taken = false;
     {
         HK_BEGIN_NOGIL(n)
-        const hk_double_survey survey = hk_survey_doubles(PyArray_DATA(x), (size_t)n);
-        if (!survey.signalling) {
-            taken = fmax_runs(PyArray_DATA(x), (uint64_t)n, PyArray_DATA(indices), (size_t)m, out);
-            feclearexcept(FE_ALL_EXCEPT);
-            if (taken && (survey.negative_zero || survey.mixed_nans)) {
-                taken = !fmax_runs_ambiguous(out, (size_t)m, survey.negative_zero, survey.mixed_nans);
-            }
-        }
+        taken = fmax_runs(data, (uint64_t)n, PyArray_DATA(indices), (size_t)m, out);
+        feclearexcept(FE_ALL_EXCEPT);
+        taken = taken && !fmax_runs_ambiguous(data, (size_t)n, out, (size_t)m);
         HK_END_NOGIL
     }
     if (!taken) {

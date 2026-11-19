@@ -176,90 +176,45 @@ static inline bool hk_has_nan(const double *values, size_t n) {
     return seen;
 }
 
-// True when any of the `n` doubles at `values` is a signalling NaN: exponent
-// all ones, the top bit of the fraction (the quiet bit) clear, and the
-// fraction not zero. With the sign cleared those are exactly the bit patterns
-// from 0x7ff0000000000001 to 0x7ff7ffffffffffff. NumPy answers a signalling
-// NaN in np.fmax with a quiet NaN, where a kernel that ignores NaN skips it.
+// Code that runs only for a kernel may use the instructions the kernels need.
+// The x86-64 kernels are written for the x86-64-v3 level, and install()
+// refuses a processor without it, so such a function may be compiled for
+// AVX2, which the rest of the binding, compiled for any x86-64, is not. Such
+// a function is not inlined into a caller compiled for any x86-64, so it is
+// one that loops over an array. ARM64 has one level and needs no attribute.
+#if defined(__x86_64__)
+#define HK_TARGET_KERNEL_LEVEL __attribute__((target("avx2")))
+#else
+#define HK_TARGET_KERNEL_LEVEL
+#endif
+
+// True when any of the `n` doubles at `values` is a signalling NaN: a NaN
+// whose quiet bit, the top bit of the fraction, is clear. NumPy answers a
+// signalling NaN in np.fmax with a quiet NaN, where a kernel that ignores NaN
+// skips it.
 //
-// The range test is written without a comparison, because SSE2, which the
-// binding is compiled for, has no 64-bit compare, and a loop with one runs at
-// about 0.25 ns per element against 0.17 for this one (Intel Core
-// i5-14600KF, in the first-level cache). `offset` is
-// the pattern's distance above the bottom of the range. Below the range it
-// wraps round and has its top bit set, so `~offset` has it clear; inside it,
-// `offset - SIZE` is negative and has its top bit set; above it, both are
-// below 2^63 and `offset - SIZE` does not. So the top bit of
-// `~offset & (offset - SIZE)` is set exactly inside the range. The bits are
-// copied out with memcpy, which the compiler turns into a plain load.
-static inline bool hk_has_signalling_nan(const double *values, size_t n) {
-    // Clears the sign bit.
-    const uint64_t magnitude = 0x7fffffffffffffffULL;
-    // The lowest signalling NaN, and the number of patterns in the range.
-    const uint64_t lowest = 0x7ff0000000000001ULL, size = 0x7ff8000000000000ULL - lowest;
-    uint64_t seen = 0;
+// A NaN is the one value that differs from itself. `nan` is all ones for a
+// NaN and zero otherwise, and `clear` gathers the bits that are clear in some
+// NaN: there is a signalling NaN exactly when the quiet bit is among them.
+// The loop has no branch, and with AVX2 the compiler makes it a compare and
+// two logical instructions per four elements: about 0.05 ns per element on
+// the Intel Core i5-14600KF in the first-level cache. A first version found
+// a NaN by comparing magnitudes as integers, which SSE2 cannot do in one
+// instruction, at 0.17 ns per element, and 0.08 with AVX2. The compare raises
+// the invalid-operation flag for a signalling NaN, never for a quiet one, and
+// a call that holds a signalling NaN goes to NumPy. The bits are copied out
+// with memcpy, which the compiler turns into a plain load.
+static inline HK_TARGET_KERNEL_LEVEL bool hk_has_signalling_nan(const double *values, size_t n) {
+    // The quiet bit of a NaN.
+    const uint64_t quiet = 0x0008000000000000ULL;
+    uint64_t clear = 0;
     for (size_t i = 0; i < n; i++) {
         uint64_t bits;
         memcpy(&bits, &values[i], sizeof bits);
-        const uint64_t offset = (bits & magnitude) - lowest;
-        seen |= ~offset & (offset - size);
+        const uint64_t nan = values[i] != values[i] ? ~0ULL : 0;
+        clear |= ~bits & nan;
     }
-    return (seen >> 63) != 0;
-}
-
-// What hk_survey_doubles found in an array of doubles.
-typedef struct {
-    // Some element is a signalling NaN.
-    bool signalling;
-    // Some element is a negative zero.
-    bool negative_zero;
-    // The NaNs do not all have the same bit pattern. False when there is no
-    // NaN or only one pattern of NaN.
-    bool mixed_nans;
-} hk_double_survey;
-
-// One pass over the `n` doubles at `values` for the three things a
-// NaN-ignoring maximum may get differently from NumPy: a signalling NaN (as
-// hk_has_signalling_nan, by the same test), a negative zero, and NaNs of more
-// than one bit pattern. Like that function it has no comparison and no
-// branch, so the compiler makes vector code of it with SSE2.
-//
-// - A NaN is a pattern whose magnitude is above that of infinity. `INF -
-//   magnitude` is then negative, so its top bit is set exactly for a NaN, and
-//   shifted down and negated it is a mask of all ones for a NaN, zeros
-//   otherwise.
-// - The NaNs all have one pattern exactly when the OR of their patterns
-//   equals their AND. The other elements are masked out of both: they add
-//   nothing to the OR and all ones to the AND. A NaN's pattern is never zero,
-//   so an OR of zero means there was no NaN.
-// - `v`, the pattern with its sign bit flipped, is zero exactly for a
-//   negative zero, and the top bit of `(v - 1) & ~v` is set exactly when `v`
-//   is zero: v - 1 has it set only for v = 0 or v above 2^63, and ~v has it
-//   clear for the latter.
-static inline hk_double_survey hk_survey_doubles(const double *values, size_t n) {
-    // Clears the sign bit, and is the sign bit.
-    const uint64_t magnitude = 0x7fffffffffffffffULL, sign = 0x8000000000000000ULL;
-    // The pattern of infinity, below which a magnitude is not a NaN.
-    const uint64_t infinity = 0x7ff0000000000000ULL;
-    // The lowest signalling NaN, and the number of patterns in the range.
-    const uint64_t lowest = 0x7ff0000000000001ULL, size = 0x7ff8000000000000ULL - lowest;
-    uint64_t signalling = 0, negative_zero = 0, nan_or = 0, nan_and = ~0ULL;
-    for (size_t i = 0; i < n; i++) {
-        uint64_t bits;
-        memcpy(&bits, &values[i], sizeof bits);
-        const uint64_t offset = (bits & magnitude) - lowest;
-        signalling |= ~offset & (offset - size);
-        const uint64_t nan = 0 - ((infinity - (bits & magnitude)) >> 63);
-        nan_or |= bits & nan;
-        nan_and &= bits | ~nan;
-        const uint64_t flipped = bits ^ sign;
-        negative_zero |= (flipped - 1) & ~flipped;
-    }
-    return (hk_double_survey){
-        .signalling = (signalling >> 63) != 0,
-        .negative_zero = (negative_zero >> 63) != 0,
-        .mixed_nans = nan_or != 0 && nan_or != nan_and,
-    };
+    return (clear & quiet) != 0;
 }
 
 // Convert a Python float or a Python int to a double, as NumPy does when such

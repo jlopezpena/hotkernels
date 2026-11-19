@@ -2096,6 +2096,13 @@ _WORKED_OUT = "worked out"
 _ROWS = next(variant for variant in VARIANTS if variant.name == "rows")
 
 
+def _early_signalling_nan(n: int) -> np.ndarray:
+    """Return random float64 values whose only signalling NaN is the first element."""
+    x = values("f64", n)
+    x.view(np.uint64)[0] = _UNUSUAL_NANS[8][1]
+    return x
+
+
 def _fmax_reduceat(x, starts):
     """Return `np.fmax.reduceat(x, starts)`."""
     return np.fmax.reduceat(x, starts)
@@ -2258,6 +2265,14 @@ def _reduceat_guard_cases() -> Iterator[Case]:
                              partial(unusual_nans, "f64", n), regular, expect=None)
         yield _reduceat_case(f"np.fmax.reduceat(x, s) n={n} x=negative NaNs with a payload s=runs of 16",
                              partial(_quiet_nans_only, n), regular)
+    # The array is read for signalling NaNs a block at a time ahead of the
+    # runs; one in an element no run uses still sends the call to NumPy.
+    yield _reduceat_case(f"np.fmax.reduceat(x, s) n={ACCUMULATE_LATE_N} x=signalling NaN first s=[n // 2]",
+                         partial(_early_signalling_nan, ACCUMULATE_LATE_N),
+                         partial(_fixed_starts, (ACCUMULATE_LATE_N // 2,)), expect=None)
+    yield _reduceat_case(f"np.fmax.reduceat(x, s) n={ACCUMULATE_LATE_N} x=signalling NaN last only s=decreasing",
+                         partial(_late_signalling_nan, ACCUMULATE_LATE_N),
+                         partial(_decreasing_starts, ACCUMULATE_LATE_N), expect=None)
     late = partial(_late_signalling_nan, ACCUMULATE_LATE_N)
     yield _reduceat_case(f"np.fmax.reduceat(x, s) n={ACCUMULATE_LATE_N} x=signalling NaN last only", late,
                          partial(_regular_starts, _REDUCEAT_RUN, ACCUMULATE_LATE_N), expect=None)
