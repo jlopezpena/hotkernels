@@ -59,6 +59,10 @@ PROBE_FILL = 2.5
 # kernel was timed for.
 PROBE_RUN = 16
 
+# Columns of the matrix the argmax(axis=1) probes search: narrower than the
+# rows the binding gives to the kernels, so its own loop takes them.
+PROBE_ROWS_COLS = 3
+
 # Columns of the matrix the any(axis=1) probes reduce: the width the kernel
 # was timed for. PROBE_N is a whole number of such rows' worth or more.
 PROBE_COLS = 22
@@ -186,6 +190,39 @@ def _argext_small_method(dtype: type, method: str, value: float) -> bool:
     """
     x = _marked(dtype, SMALL_PROBE_N, SMALL_PROBE_INDEX, value)
     return int(getattr(x, method)()) == SMALL_PROBE_INDEX
+
+
+def _argext_rows(dtype: type, rows: Callable[[np.ndarray], np.ndarray], value: float) -> bool:
+    """Probe the rows path of a function or method hook: argmax or argmin along axis 1 of a narrow matrix.
+
+    Row r holds `value` at column r modulo PROBE_ROWS_COLS and zeros
+    elsewhere, so the answer moves from row to row; a row's other zeros tie
+    with each other and never win.
+
+    Args:
+        dtype: Element type of the probe matrix.
+        rows: Makes the call on the matrix: `np.argmax(m, axis=1)` and so on.
+        value: The marked element: positive for argmax, negative for argmin.
+
+    Returns:
+        Whether the result is an np.intp array of the marked columns.
+    """
+    count = PROBE_N // PROBE_ROWS_COLS
+    m = np.zeros((count, PROBE_ROWS_COLS), dtype)
+    marked = np.arange(count) % PROBE_ROWS_COLS
+    m[np.arange(count), marked] = value
+    result = rows(m)
+    return result.dtype == np.intp and bool(np.array_equal(result, marked))
+
+
+def _argext_rows_function(function: Callable) -> Callable[[np.ndarray], np.ndarray]:
+    """Return `function(m, axis=1)` as a function of `m`, for `np.argmax` or `np.argmin`."""
+    return lambda m: function(m, axis=1)
+
+
+def _argext_rows_method(method: str) -> Callable[[np.ndarray], np.ndarray]:
+    """Return `m.argmax(axis=1)` or `m.argmin(axis=1)` as a function of `m`."""
+    return lambda m: getattr(m, method)(axis=1)
 
 
 def _clip_with(dtype: type, clip: Callable[[np.ndarray, float, float], np.ndarray]) -> bool:
@@ -643,10 +680,14 @@ HOOKS: tuple[Hook, ...] = (
     Hook("function.argmax", FUNCTION, (
         Probe("argmax_f32", partial(_argext_function, np.float32, np.argmax, 1.0)),
         Probe("argmax_f64", partial(_argext_function, np.float64, np.argmax, 1.0)),
+        Probe("argmax_rows_f32", partial(_argext_rows, np.float32, _argext_rows_function(np.argmax), 1.0)),
+        Probe("argmax_rows_f64", partial(_argext_rows, np.float64, _argext_rows_function(np.argmax), 1.0)),
     )),
     Hook("function.argmin", FUNCTION, (
         Probe("argmin_f32", partial(_argext_function, np.float32, np.argmin, -1.0)),
         Probe("argmin_f64", partial(_argext_function, np.float64, np.argmin, -1.0)),
+        Probe("argmin_rows_f32", partial(_argext_rows, np.float32, _argext_rows_function(np.argmin), -1.0)),
+        Probe("argmin_rows_f64", partial(_argext_rows, np.float64, _argext_rows_function(np.argmin), -1.0)),
     )),
     Hook("function.count_nonzero", FUNCTION, (
         Probe("count_nonzero_i64", partial(_count_nonzero, np.int64)),
@@ -701,10 +742,14 @@ HOOKS: tuple[Hook, ...] = (
     Hook("method.argmax", METHOD, (
         Probe("argmax_f32", partial(_argext_small_method, np.float32, "argmax", 1.0)),
         Probe("argmax_f64", partial(_argext_small_method, np.float64, "argmax", 1.0)),
+        Probe("argmax_rows_f32", partial(_argext_rows, np.float32, _argext_rows_method("argmax"), 1.0)),
+        Probe("argmax_rows_f64", partial(_argext_rows, np.float64, _argext_rows_method("argmax"), 1.0)),
     )),
     Hook("method.argmin", METHOD, (
         Probe("argmin_f32", partial(_argext_small_method, np.float32, "argmin", -1.0)),
         Probe("argmin_f64", partial(_argext_small_method, np.float64, "argmin", -1.0)),
+        Probe("argmin_rows_f32", partial(_argext_rows, np.float32, _argext_rows_method("argmin"), -1.0)),
+        Probe("argmin_rows_f64", partial(_argext_rows, np.float64, _argext_rows_method("argmin"), -1.0)),
     )),
     Hook("method.clip", METHOD, (
         Probe("clip_f32", partial(_clip_with, np.float32, _clip_method)),
@@ -738,8 +783,14 @@ COMPRESS_HOOKS = ("index.get", "function.compress", "function.extract")
 KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("argmax_f32", "np.argmax", "float32", "argmax", ("slot.argmax.f32", "function.argmax", "method.argmax")),
     KernelInfo("argmax_f64", "np.argmax", "float64", "argmax", ("slot.argmax.f64", "function.argmax", "method.argmax")),
+    # Loops built into the binding, for rows too narrow for the kernels:
+    # np.argmax(m, axis=1), indented under the rows above.
+    KernelInfo("argmax_rows_f32", "  axis=1", "float32", "argmax", ("function.argmax", "method.argmax"), builtin=True),
+    KernelInfo("argmax_rows_f64", "  axis=1", "float64", "argmax", ("function.argmax", "method.argmax"), builtin=True),
     KernelInfo("argmin_f32", "np.argmin", "float32", "argmin", ("slot.argmin.f32", "function.argmin", "method.argmin")),
     KernelInfo("argmin_f64", "np.argmin", "float64", "argmin", ("slot.argmin.f64", "function.argmin", "method.argmin")),
+    KernelInfo("argmin_rows_f32", "  axis=1", "float32", "argmin", ("function.argmin", "method.argmin"), builtin=True),
+    KernelInfo("argmin_rows_f64", "  axis=1", "float64", "argmin", ("function.argmin", "method.argmin"), builtin=True),
     KernelInfo("clip_f32", "np.clip", "float32", "clip", ("loop.clip.f32", "function.clip", "method.clip")),
     KernelInfo("clip_f64", "np.clip", "float64", "clip", ("loop.clip.f64", "function.clip", "method.clip")),
     # A loop built into the binding, for short arrays.

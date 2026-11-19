@@ -126,24 +126,195 @@ PyObject *hk_try_argext(PyObject *array, bool want_max) {
     return result;
 }
 
-// True when `array` is a plain float32 or float64 ndarray. NumPy sends such a
-// call on to the type slot, whose hook counts it, so it is not counted here.
-static bool reaches_type_slot(PyObject *array) {
-    if (!hk_is_plain_array(array)) return false;
+// ------------------------------------------ argmax and argmin along rows
+
+// Narrowest row, in elements, given to the operation's kernel once per row.
+// Narrower rows go to the binding's own loop, one row per vector lane. The
+// kernels take about 1.6 ns a row from four float64 or eight float32
+// elements, and read fewer than that one at a time, at 5 to 12 ns a row,
+// where NumPy takes 7 to 13. The loop takes 0.4 ns a row on rows of two and
+// grows by about 0.25 ns (float64) or 0.18 ns (float32) per column: it meets
+// the kernel at six float64 and nine float32 columns. Apple M1 Pro, from
+// Python, docs/argmax-rows-design.md. The same values are used on x86-64,
+// where they have not been timed.
+#define ARGEXT_ROWS_KERNEL_COLS_F64 6
+#define ARGEXT_ROWS_KERNEL_COLS_F32 9
+
+// Lanes of the binding's loop: 32 bytes of rows, one row per lane.
+#define ARGEXT_ROWS_LANES_F64 4
+#define ARGEXT_ROWS_LANES_F32 8
+
+// 32-byte vectors of the compiler's own vector types. clang and gcc compile
+// them to two NEON registers on ARM64 and to one AVX2 register inside a
+// function compiled for the kernels' level on x86-64. A comparison gives a
+// vector of signed integers of the element's width, all ones where it holds;
+// it is cast to the integer type below because the compilers name that
+// type differently (long or long long).
+typedef double hk_v4d __attribute__((vector_size(32)));
+typedef int64_t hk_v4l __attribute__((vector_size(32)));
+typedef float hk_v8f __attribute__((vector_size(32)));
+typedef int32_t hk_v8i __attribute__((vector_size(32)));
+
+// Element `j` of each of the rows that start `cols` elements apart at `x`.
+#define ARGEXT_ROWS_GATHER4(x, cols, j) {(x)[j], (x)[(cols) + (j)], (x)[2 * (cols) + (j)], (x)[3 * (cols) + (j)]}
+#define ARGEXT_ROWS_GATHER8(x, cols, j)                                                            \
+    {(x)[j], (x)[(cols) + (j)], (x)[2 * (cols) + (j)], (x)[3 * (cols) + (j)], (x)[4 * (cols) + (j)], \
+     (x)[5 * (cols) + (j)], (x)[6 * (cols) + (j)], (x)[7 * (cols) + (j)]}
+
+// One loop of the binding: out[r] = NumPy's argmax (or argmin) of row r of
+// the `rows` rows of `cols` elements at `m`, cols >= 1.
+//
+// Each lane keeps the best element so far and its column, and takes column j
+// when the best is a number and `!(x[j] NOT_BETTER best)`: for argmax, with
+// NOT_BETTER `<=`, when x[j] is larger or is a NaN. A NaN is then never
+// replaced, since every comparison with it is false, so the first NaN wins;
+// an equal element never replaces an earlier one, so the first of a tie wins,
+// and -0.0 and 0.0 are equal. These are NumPy's rules and naive.c's. Rows
+// after the last whole group of lanes take the same rule one at a time.
+//
+// The loop reads each element once and touches no Python object, so it runs
+// with the interpreter lock released for a large matrix.
+#define ARGEXT_ROWS_LOOP(name, c_type, v_type, i_type, lane_int, LANES, GATHER, NOT_BETTER)            \
+    static HK_TARGET_KERNEL_LEVEL void name(const c_type *m, size_t rows, size_t cols, npy_intp *out) { \
+        size_t r = 0;                                                                                 \
+        for (; r + LANES <= rows; r += LANES) {                                                       \
+            const c_type *x = m + r * cols;                                                           \
+            v_type best = GATHER(x, cols, 0);                                                         \
+            i_type index = {0};                                                                       \
+            for (size_t j = 1; j < cols; j++) {                                                       \
+                const v_type v = GATHER(x, cols, j);                                                  \
+                const i_type take = (i_type)(best == best) & ~(i_type)(v NOT_BETTER best);            \
+                best = (v_type)(((i_type)v & take) | ((i_type)best & ~take));                         \
+                index = (index & ~take) | (((i_type){0} + (lane_int)j) & take);                       \
+            }                                                                                         \
+            for (size_t k = 0; k < LANES; k++) out[r + k] = (npy_intp)index[k];                       \
+        }                                                                                             \
+        for (; r < rows; r++) {                                                                       \
+            const c_type *x = m + r * cols;                                                           \
+            c_type best = x[0];                                                                       \
+            npy_intp index = 0;                                                                       \
+            for (size_t j = 1; j < cols; j++) {                                                       \
+                const bool take = best == best && !(x[j] NOT_BETTER best);                            \
+                best = take ? x[j] : best;                                                            \
+                index = take ? (npy_intp)j : index;                                                   \
+            }                                                                                         \
+            out[r] = index;                                                                           \
+        }                                                                                             \
+    }
+
+ARGEXT_ROWS_LOOP(argmax_rows_f64, double, hk_v4d, hk_v4l, int64_t, ARGEXT_ROWS_LANES_F64, ARGEXT_ROWS_GATHER4, <=)
+ARGEXT_ROWS_LOOP(argmin_rows_f64, double, hk_v4d, hk_v4l, int64_t, ARGEXT_ROWS_LANES_F64, ARGEXT_ROWS_GATHER4, >=)
+ARGEXT_ROWS_LOOP(argmax_rows_f32, float, hk_v8f, hk_v8i, int32_t, ARGEXT_ROWS_LANES_F32, ARGEXT_ROWS_GATHER8, <=)
+ARGEXT_ROWS_LOOP(argmin_rows_f32, float, hk_v8f, hk_v8i, int32_t, ARGEXT_ROWS_LANES_F32, ARGEXT_ROWS_GATHER8, >=)
+
+// The kernel once per row: out[r] = kernel(row r). With the interpreter lock
+// held, as for the kernels everywhere in the function and method hooks: they
+// read a row twice (issue 9).
+static HK_NOINLINE void argext_rows_kernel(hk_kernel kernel, const void *m, size_t rows, size_t cols,
+                                           npy_intp *out) {
+    switch (kernel) {
+        case HK_ARGMAX_F32:
+            for (size_t r = 0; r < rows; r++) out[r] = (npy_intp)argmax_f32((const float *)m + r * cols, cols);
+            break;
+        case HK_ARGMIN_F32:
+            for (size_t r = 0; r < rows; r++) out[r] = (npy_intp)argmin_f32((const float *)m + r * cols, cols);
+            break;
+        case HK_ARGMAX_F64:
+            for (size_t r = 0; r < rows; r++) out[r] = (npy_intp)argmax_f64((const double *)m + r * cols, cols);
+            break;
+        default:
+            for (size_t r = 0; r < rows; r++) out[r] = (npy_intp)argmin_f64((const double *)m + r * cols, cols);
+            break;
+    }
+}
+
+// The binding's own loop on every row, with the lock released for a large matrix.
+static HK_NOINLINE void argext_rows_loop(hk_kernel loop, const void *m, size_t rows, size_t cols, npy_intp *out) {
+    HK_BEGIN_NOGIL(rows * cols)
+    switch (loop) {
+        case HK_ARGMAX_ROWS_F32: argmax_rows_f32(m, rows, cols, out); break;
+        case HK_ARGMIN_ROWS_F32: argmin_rows_f32(m, rows, cols, out); break;
+        case HK_ARGMAX_ROWS_F64: argmax_rows_f64(m, rows, cols, out); break;
+        default: argmin_rows_f64(m, rows, cols, out); break;
+    }
+    HK_END_NOGIL
+}
+
+PyObject *hk_try_argext_rows(PyObject *array, bool want_max) {
+    if (!hk_is_plain_array(array)) return NULL;
+    PyArrayObject *a = (PyArrayObject *)array;
+    const int type_num = PyArray_TYPE(a);
+    if (PyArray_NDIM(a) != 2 || !(type_num == NPY_FLOAT || type_num == NPY_DOUBLE) || !PyArray_ISNOTSWAPPED(a) ||
+        !PyArray_IS_C_CONTIGUOUS(a)) {
+        return NULL;
+    }
+    npy_intp rows = PyArray_DIM(a, 0);
+    const npy_intp cols = PyArray_DIM(a, 1);
+    // NumPy raises on rows of no element.
+    if (cols < 1) return NULL;
+    const bool f32 = type_num == NPY_FLOAT;
+    hk_kernel kernel = f32 ? (want_max ? HK_ARGMAX_F32 : HK_ARGMIN_F32) : (want_max ? HK_ARGMAX_F64 : HK_ARGMIN_F64);
+    const hk_kernel loop = f32 ? (want_max ? HK_ARGMAX_ROWS_F32 : HK_ARGMIN_ROWS_F32)
+                               : (want_max ? HK_ARGMAX_ROWS_F64 : HK_ARGMIN_ROWS_F64);
+    const npy_intp kernel_cols = f32 ? ARGEXT_ROWS_KERNEL_COLS_F32 : ARGEXT_ROWS_KERNEL_COLS_F64;
+    PyObject *result = PyArray_SimpleNew(1, &rows, NPY_INTP);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    npy_intp *out = PyArray_DATA((PyArrayObject *)result);
+    // A matrix of no rows is the loop's, which writes nothing: the kernels
+    // are never called for nothing.
+    if (cols >= kernel_cols && rows > 0) {
+        argext_rows_kernel(kernel, PyArray_DATA(a), (size_t)rows, (size_t)cols, out);
+    } else {
+        argext_rows_loop(loop, PyArray_DATA(a), (size_t)rows, (size_t)cols, out);
+        kernel = loop;
+    }
+    hk_take(kernel);
+    return result;
+}
+
+// True when `array` is an ndarray, or an instance of a subclass, of float32
+// or float64. Every Python-level argmax of such an array that the function
+// hook passes on reaches the method hook, which counts it there.
+static bool reaches_method_count(PyObject *array) {
+    if (!PyArray_Check(array)) return false;
     const int type_num = PyArray_TYPE((PyArrayObject *)array);
     return type_num == NPY_FLOAT || type_num == NPY_DOUBLE;
 }
 
+// The rows form of np.argmax and np.argmin: the array, the axis as the
+// Python int 1 or -1, and `out` absent or None, by position or by keyword.
+// The parameters are a, axis, out and, by keyword only, keepdims, which is
+// NumPy's.
+static HK_NOINLINE PyObject *try_argext_rows(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames,
+                                             bool want_max) {
+    enum { A, AXIS, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"a", "axis", "out"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[A] == NULL || bound[AXIS] == NULL || !hk_is_last_axis(bound[AXIS]) || !hk_is_absent(bound[OUT])) {
+        return NULL;
+    }
+    return hk_try_argext_rows(bound[A], want_max);
+}
+
 // np.argmax(a) and np.argmin(a) with nothing but the array: the kernel is
 // called directly, which skips NumPy's Python wrapper. That wrapper is most
-// of the cost of a call on a small array.
+// of the cost of a call on a small array. So is np.argmax(m, axis=1) on a
+// matrix (hk_try_argext_rows). A call passed on is counted here only when it
+// is not of a float32 or float64 array, whose call the method hook counts.
 static PyObject *call_argext(HK_VECTORCALL_PARAMETERS, int function, bool want_max, hk_operation operation) {
     const Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
     if (nargs == 1 && kwnames == NULL) {
         PyObject *result = hk_try_argext(args[0], want_max);
         if (result != NULL) return result;
+    } else if (nargs >= 1 && hk_is_plain_array(args[0]) && PyArray_NDIM((PyArrayObject *)args[0]) == 2) {
+        PyObject *result = try_argext_rows(args, nargs, kwnames, want_max);
+        if (result != NULL) return result;
     }
-    if (!(nargs >= 1 && reaches_type_slot(args[0]))) hk_pass(operation);
+    if (!(nargs >= 1 && reaches_method_count(args[0]))) hk_pass(operation);
     return functions[function].original(callable, args, nargsf, kwnames);
 }
 

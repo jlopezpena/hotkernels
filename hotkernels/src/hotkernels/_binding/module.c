@@ -8,6 +8,7 @@
 _Atomic uint64_t hk_taken[HK_KERNEL_COUNT];
 _Atomic uint64_t hk_passed[HK_OPERATION_COUNT];
 bool hk_inexact = false;
+_Thread_local hk_argext_call hk_argext_mark;
 PyTypeObject *hk_ndarray_type;
 
 // Kernel names, in the order of hk_kernel.
@@ -24,6 +25,7 @@ static const char *const HK_KERNEL_NAMES[HK_KERNEL_COUNT] = {
     // Built into the binding.
     "clip_i64", "round_f64", "median_f64",
     "cumsum_rows_f64", "cumprod_rows_f64", "cummax_rows_f64", "cumfmax_rows_f64",
+    "argmax_rows_f32", "argmax_rows_f64", "argmin_rows_f32", "argmin_rows_f64",
 };
 
 // Operation names, in the order of hk_operation.

@@ -401,22 +401,65 @@ static HK_NOINLINE bool argext_arguments_are_default(PyObject *const *args, Py_s
     return hk_is_absent(bound[AXIS]) && hk_is_absent(bound[OUT]);
 }
 
+// True when the arguments of an argmax or argmin call ask for the last axis
+// of a matrix: `axis` the Python int 1 or -1, by position or by keyword, and
+// `out` absent or None, as np.argmax(m, axis=1) passes it to the method.
+static HK_NOINLINE bool argext_arguments_are_rows(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { AXIS, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"axis", "out"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return false;
+    return bound[AXIS] != NULL && hk_is_last_axis(bound[AXIS]) && hk_is_absent(bound[OUT]);
+}
+
+// Hand an argmax or argmin call of a float32 or float64 array on to NumPy and
+// count it once, whatever NumPy does with it. NumPy may call the type slot
+// once per row (`axis=`); the slot hook records in hk_argext_mark what it did
+// instead of counting each row. The call is then counted under the kernel the
+// slot took, or as left to NumPy when it took none, which includes a call
+// NumPy raises on. The mark in place before is put back, so that a call made
+// while another is waiting, which NumPy does not do, is not lost.
+static HK_NOINLINE PyObject *argext_counted(PyObject *self, PyObject *const *args, Py_ssize_t nargs,
+                                            PyObject *kwnames, int method, hk_operation operation) {
+    const hk_argext_call outer = hk_argext_mark;
+    hk_argext_mark = (hk_argext_call){.active = true, .taken = false};
+    PyObject *result = ((hk_fast_keywords)(void (*)(void))methods[method].original)(self, args, nargs, kwnames);
+    const hk_argext_call call = hk_argext_mark;
+    hk_argext_mark = outer;
+    if (call.taken) {
+        hk_take(call.slot_kernel);
+    } else {
+        hk_pass(operation);
+    }
+    return result;
+}
+
 // x.argmax() and x.argmin() on a contiguous float32 or float64 array: the
 // kernel on the whole array, as the function hook calls it for np.argmax(x).
 // The type slot behind the method leaves runs under 128 elements to NumPy,
 // because it has to take the interpreter lock; a method already holds it, so
-// the kernel is called here at every size. A call passed on reaches the type
-// slot for float32 and float64, whose hook counts it, and no kernel for any
-// other type, so it is not counted here. The array's type is tested before
-// the arguments, as for clip below.
+// the kernel is called here at every size. m.argmax(axis=1) on a C-ordered
+// float32 or float64 matrix is taken too (hk_try_argext_rows). Every other
+// call of a float32 or float64 array, of any layout or subclass, is passed on
+// and counted once (argext_counted); a call of any other type has no kernel
+// behind it and goes on uncounted, as before. The array's type is tested
+// before the arguments, as for clip below.
 static PyObject *method_argext(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames,
                                int method, bool want_max) {
-    const bool float_array = hk_is_flat(self, NPY_FLOAT) || hk_is_flat(self, NPY_DOUBLE);
+    const int type_num = PyArray_TYPE((PyArrayObject *)self);
+    if (type_num != NPY_FLOAT && type_num != NPY_DOUBLE) {
+        return ((hk_fast_keywords)(void (*)(void))methods[method].original)(self, args, nargs, kwnames);
+    }
+    const bool float_array = hk_is_flat(self, type_num);
     if (float_array && ((nargs == 0 && kwnames == NULL) || argext_arguments_are_default(args, nargs, kwnames))) {
         PyObject *result = hk_try_argext(self, want_max);
         if (result != NULL) return result;
+    } else if (float_array && PyArray_NDIM((PyArrayObject *)self) == 2 &&
+               argext_arguments_are_rows(args, nargs, kwnames)) {
+        PyObject *result = hk_try_argext_rows(self, want_max);
+        if (result != NULL) return result;
     }
-    return ((hk_fast_keywords)(void (*)(void))methods[method].original)(self, args, nargs, kwnames);
+    return argext_counted(self, args, nargs, kwnames, method, want_max ? HK_OP_ARGMAX : HK_OP_ARGMIN);
 }
 
 static PyObject *method_argmax(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
