@@ -1,6 +1,41 @@
 # `np.clip(x, lo, hi, out=x)`: clipping in place through a buffer of the binding's
 
-This is a proposal for [issue 186](https://github.com/sofeikov/hotkernels/issues/186), and it settles the `clip` half of [issue 7](https://github.com/sofeikov/hotkernels/issues/7). The kernels and every figure here are ARM64's, measured on an Apple M1 Pro with NumPy 2.5.5, unless a line says otherwise.
+This began as a proposal for [issue 186](https://github.com/sofeikov/hotkernels/issues/186) and is now implemented; it settles the `clip` half of [issue 7](https://github.com/sofeikov/hotkernels/issues/7). Where the building departed from it, [What changed in the building](#what-changed-in-the-building) says so, and [Status](#status) holds the result. The rest of the text stands as proposed. The kernels and every figure here are ARM64's, measured on an Apple M1 Pro with NumPy 2.5.5, unless a line says otherwise.
+
+## Status
+
+Against the [exit criterion](#exit-criterion):
+
+| Criterion | Result |
+|---|---|
+| `delivery check` passes | Met on ARM64: 176,447 cases, none failing; `clip` has 42,738, 25,452 of them taken by a kernel. Calling the kernel directly with `out == x` in place of the buffer fails 286 of the in-place cases, so the cases see issue 7. x86-64: CI |
+| NumPy's own tests agree | Met for `-k clip`: 186 tests, same outcome with and without hotkernels |
+| Several times faster than NumPy at the issue's shapes, not slower at a million elements | Met; table below |
+| `min_char_rnn`'s clip calls are taken | Met: all 1,500, none left to NumPy (before: 1,500 left). The run is 1.01x to 1.02x over NumPy, against 0.99x recorded before; the clip was about 4% of the program |
+
+From Python, with paired, alternating batches, the best of nine each way. Taken while other jobs ran on the machine (load average 4.0 to 4.5), so the figures are rough; the ratios are what to read.
+
+| Statement | Array | NumPy | Before (hotkernels) | Now | Faster than NumPy |
+|---|---|---|---|---|---|
+| `np.clip(x, -5, 5, out=x)` | float64, 100 x 100 | 9.05 µs | 10.3 µs | 2.19 µs | 4.1x |
+| `np.clip(x, -5, 5, out=x)` | float64, 100 x 60 | 5.35 µs | 5.56 µs | 1.32 µs | 4.1x |
+| `np.clip(x, -5, 5, out=x)` | float64, 100 x 1 | 1.43 µs | 1.44 µs | 96 ns | 14.9x |
+| `np.clip(x, -5, 5, out=x)` | float64, 1000 x 1000 | 701 µs | 686 µs | 258 µs | 2.7x |
+| `x.clip(-5, 5, out=x)` | float64, 100 x 100 | 7.78 µs | 8.72 µs | 2.23 µs | 3.5x |
+| `np.clip(x, -5, 5, out=x)` | float32, 100 x 100 | 7.93 µs | 8.00 µs | 1.14 µs | 6.9x |
+| `np.clip(x, -5, 5, out=x)` | float32, 1000 x 1000 | 673 µs | 661 µs | 130 µs | 5.2x |
+
+For comparison, `np.clip(x, -5, 5)` into a new array, float64: 1.34 µs at 100 x 100 and 135 µs at a million elements. The copy costs the in-place call about 0.85 µs and 125 µs there; at 100 x 1 the in-place call is the faster of the two, since it allocates nothing. `delivery time --only clip` gives the same picture at its sizes: `np.clip(x, -0.5, 0.5, out=x)` on float64 14.8x at 16 elements, 3.7x at 4,096 and 2.5x at 1,048,576; `x.clip(-0.5, 0.5, out=x)` on float32 11.5x, 6.5x and 4.7x.
+
+x86-64 was not measured: there is no such machine here. There NumPy's own clip loop is vectorised, and the gain without `out` at a million elements is close to none, so in place it may be slower than NumPy at large sizes by about the cost of the copy. On small arrays the call path skipped is the same on both.
+
+## What changed in the building
+
+- **The copy goes the other way.** Proposed: the kernel clips a run into the buffer, then the buffer is copied over the run. Built: the run is copied into the buffer, and the kernel clips the buffer back over the run. The ARM64 kernels load with `ldnp`, a non-temporal hint, so the run the kernel had just read was not kept in the cache for the copy that wrote it: at a million float64 elements the proposed order took 295 µs and the built one 252 µs, and at 100 x 100 2.65 µs against 2.14 µs.
+- **The run is 4 KB.** Measured with the built order: 2 KB and 4 KB level, 8 KB 5% to 10% slower, and from 16 KB a million float64 elements took 1.2 ms or more, twice NumPy's time, the C library's copy of that size apparently leaving the cache. A float64 run is 512 elements and a float32 run 1,024, above every threshold of the kernels' fast paths. The buffer is 4 KB of stack, beside the 2 KB other hooks keep there.
+- **One element through the loop.** Given `out`, NumPy hands the clip loop a step other than the element size for a single element, and the loop hook leaves such a call to NumPy, as it did before. Only a one-element in-place clip whose bounds the function hook declines (a float32 denormal bound, say) is affected; `delivery check` states it.
+- **Flags.** As proposed, cleared once after the last run. A run with a NaN leaves the invalid flag set, so the next run's kernel finds it set and takes its slower path for a stale flag; on NaN-free data nothing changes.
+
 
 ## Summary
 
@@ -21,7 +56,7 @@ Each kernel computes every element of `out` from the same element of `x`, so ele
 | Fast (`Lfast`) | every other pair of bounds from 96 elements, `lo = -5, hi = 5` among them | After the loop, if the invalid flag is set, which a signalling NaN does, the whole array is done again by `Lexact` from `x0`. In place, `x0` now holds the fast path's output, in which `fmax` has already quieted the signalling NaN | Wrong for any signalling NaN |
 | Zero (`Lzero`) | `lo = +0.0` from 256 elements | A chunk that held a `-0.0` is done again by `Lzfix` from the chunk's start (`x10`), or the rest of the array by `Lexact` (`Lzgiveup`). In place, `fmax` has already turned the `-0.0` into `+0.0` | Wrong for any `-0.0` and any signalling NaN |
 
-Measured on the M1 Pro by calling the kernels with `out == x` (`repro7.py`, the issue's reproduction extended): with bounds `(-5, 5)` and one signalling NaN in random data, `clip_f64` is wrong from 96 elements and `clip_f32` from 192; with bounds `(0, 1)` and one `-0.0`, wrong from 256 and 512. Plain random data, no NaN and no negative zero, comes out right at every size, which is why the fault is easy to miss.
+Measured on the M1 Pro by calling the kernels through `ctypes` with `out == x`, as in issue 7's reproduction: with bounds `(-5, 5)` and one signalling NaN in random data, `clip_f64` is wrong from 96 elements and `clip_f32` from 192; with bounds `(0, 1)` and one `-0.0`, wrong from 256 and 512. Plain random data, no NaN and no negative zero, comes out right at every size, which is why the fault is easy to miss.
 
 The x86-64 kernels (`kernels/clip_f*/x86_64/kernel.s`) have one path: `vmaxpd` then `vminpd`, which return their second operand for a NaN, signalling or quiet, and for a tie, so each result is a pure, idempotent function of the element's bits. They too read some elements after storing them (the first vector overlaps the first aligned block, and the last block overlaps the one before), and by the argument above that re-read gives the same bits. So they are probably right in place. That is an argument from the source, not a test on the hardware; nothing here relies on it.
 
