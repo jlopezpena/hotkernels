@@ -119,7 +119,7 @@ A kernel takes a call only when the array is a plain, contiguous `ndarray` of th
 | `m.any(axis=1)`, `np.any(m, axis=1)` | bool | `m` is two-dimensional, in C order, with at least one column; `axis` is the number 1 or -1, by position or by name, and no other argument is given |
 | `w -= b`, `w += b`, `np.subtract(w, b, out=w)`, `np.add(w, b, out=w)` | float64, on arrays of 131,072 elements (1 MB) or more; Apple Silicon only | The result goes into the first operand, and `w` and `b` are contiguous arrays of one shape. Gains only in one situation: see below |
 | `np.median(x)` | float64, on arrays of up to 128 elements | The array alone, of any shape, with no other argument; no NaN. A zero median beside a negative zero, and a mean of the two middle elements that overflows, goes to NumPy: see below |
-| `np.argsort(x, kind="stable")`, `x.argsort(kind="stable")` | float64, int64, uint64 | `x` is one-dimensional with at least 256 elements; `kind` is `"stable"` or `"mergesort"`, or `stable=True` is given with no `kind`; no `order` or `descending`, and `axis` left out, 0 or -1. The default kind stays with NumPy: see below |
+| `np.argsort(x, kind="stable")`, `x.argsort(kind="stable")` | float64, int64, uint64 | `x` is one-dimensional with at least 256 elements, and need not be contiguous: a reversed view or one with a step is taken too; `kind` is `"stable"` or `"mergesort"`, or `stable=True` is given with no `kind`; no `order` or `descending`, and `axis` left out, 0 or -1. The default kind stays with NumPy: see below |
 | `np.sum(x)`, `x.sum()` | uint8, bool | No other arguments |
 | `np.count_nonzero(x)` | int64, float64 | No `axis` |
 | `np.histogram(x, bins, range)` | float64 | An integer bin count; no weights or density |

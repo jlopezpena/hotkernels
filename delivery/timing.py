@@ -580,6 +580,10 @@ TAKEN: tuple[Timed, ...] = (
           "argsort_u64", min_n=ARGSORT_MIN_N),
     Timed("argsort", "np.argsort(x, kind='stable')", "float64, already sorted", _sorted_floats, _stable_argsort,
           "argsort_f64", min_n=ARGSORT_MIN_N),
+    # What scikit-learn's ranking metrics call on their scores.
+    Timed("argsort", "np.argsort(np.flip(x), kind='stable')", "float64, a reversed view",
+          partial(_floats, np.float64), lambda x: np.argsort(np.flip(x), kind="stable"), "argsort_f64",
+          min_n=ARGSORT_MIN_N),
 )
 
 # Statements that reach a hook and are left to NumPy: what a hook costs a

@@ -4863,6 +4863,9 @@ ARGSORT_ORDER_SIZES = (ARGSORT_MIN_N, 1000, 100003)
 ARGSORT_TIE_VALUES = 5
 # How the label of a case on the masked-array layout ends.
 _MASKED_LAYOUT = "layout=masked_array"
+# The layouts that are one-dimensional views with a step, as the labels of
+# their cases end.
+_STEPPED_LAYOUTS = ("layout=strided", "layout=reversed")
 
 
 def _stable(x):
@@ -5010,12 +5013,24 @@ def argsort_cases() -> Iterator[Case]:
         Spelling("np.unique(x, return_index=True)", lambda x: np.unique(x, return_index=True), MAYBE,
                  normalises=True),
     )
+    by_text = {spelling.text: spelling for spelling in spellings}
     for case in unary_cases("argsort", ARGSORT_KERNELS, ARGSORT_NEIGHBOURS, spellings, empty_takes=False):
-        # A masked array's own argsort fills the masked elements and calls the
-        # method of the plain array underneath with the `kind` it was given,
-        # whatever else the caller passed, so a call no kernel may take on a
-        # plain array can reach one there.
-        yield replace(case, expect=ANY) if case.label.endswith(_MASKED_LAYOUT) else case
+        layout = case.label.rsplit(" ", 1)[-1]
+        if layout == _MASKED_LAYOUT:
+            # A masked array's own argsort fills the masked elements and calls
+            # the method of the plain array underneath with the `kind` it was
+            # given, whatever else the caller passed, so a call no kernel may
+            # take on a plain array can reach one there.
+            yield replace(case, expect=ANY)
+        elif layout in _STEPPED_LAYOUTS:
+            # The kernel sorts a copy, so a one-dimensional view with a step
+            # is taken like a contiguous array. scikit-learn sorts a reversed one.
+            text, dtype, size, _layout = case.label.rsplit(" ", 3)
+            takes = by_text[text].kind == TAKES and dtype in ARGSORT_KERNELS
+            elements = int(size.removeprefix("n="))
+            yield replace(case, expect=ARGSORT_KERNELS[dtype] if elements >= ARGSORT_MIN_N else None) if takes else case
+        else:
+            yield case
     yield from unusual_nan_cases("argsort", {"f64": "argsort_f64"}, "x.argsort(kind='stable')", _stable,
                                  min_n=ARGSORT_MIN_N)
     for dtype, kernel in ARGSORT_KERNELS.items():
@@ -5027,6 +5042,12 @@ def argsort_cases() -> Iterator[Case]:
                    partial(_argsort_nan_in_order, n, "end"), _stable, "argsort_f64")
         yield Case("argsort", f"x.argsort(kind='stable') f64 n={n} sorted, a NaN in the middle",
                    partial(_argsort_nan_in_order, n, "middle"), _stable, None)
+        # What scikit-learn's ranking metrics call: a stable sort of the scores, reversed.
+        yield Case("argsort", f"np.argsort(np.flip(x), axis=-1, kind='stable') f64 n={n}",
+                   lambda n=n: (values("f64", n),), lambda x: np.argsort(np.flip(x), axis=-1, kind="stable"),
+                   "argsort_f64")
+        yield Case("argsort", f"x[::-3].argsort(kind='stable') i64 n={n}",
+                   lambda n=n: (values("i64", 3 * n),), lambda x: x[::-3].argsort(kind="stable"), "argsort_i64")
         # C's `long long` is a NumPy type of its own, and 64 bits wide like `long`.
         yield Case("argsort", f"x.argsort(kind='stable') longlong n={n}",
                    lambda n=n: (values("i64", n).astype(np.longlong),), _stable, "argsort_i64")

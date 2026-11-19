@@ -13,7 +13,7 @@ Every figure here is ARM64's, measured on an Apple M1 Pro with NumPy 2.5.5, on a
 - **Three kernels, `argsort_f64`, `argsort_i64` and `argsort_u64`, as C.** The gain is the algorithm, and the loops that carry it are bound by memory, not by instructions. They ship as their C on both architectures, as `cast_u8_f32` does on ARM64.
 - **One method hook, on `ndarray.argsort`.** NumPy 2.5 no longer sorts through the per-type function table the `argmax` kernels are hooked into, so the hook is on the method, which `np.argsort` calls.
 - **One addition to the judge's spec format**: an output buffer whose capacity is a multiple of `n`, so that a kernel can be lent working memory in proportion to its input.
-- **What it is worth.** The four `argsort` calls of `sklearn_metrics` are half of that application.
+- **What it is worth.** The four `argsort` calls of `sklearn_metrics` are half of that application, and it runs 1.87x faster with them served: 998 ms to 533 ms, where it gained 3% before.
 
 ## What was measured
 
@@ -23,7 +23,7 @@ A trace of every sort NumPy ran, taken by wrapping NumPy's sort loops for the pu
 
 | Application | Calls | Served by this design |
 |---|---|---|
-| `sklearn_metrics` | 4 × `argsort`, float64, 1,000,000 elements, stable (`np.argsort(y_score, kind="mergesort")` in `_binary_clf_curve`) | Yes |
+| `sklearn_metrics` | 4 × `argsort`, float64, 1,000,000 elements, stable (`xp.argsort(y_score, stable=True, descending=True)` in `_binary_clf_curve`, which for NumPy becomes a stable sort of `np.flip(y_score)`) | Yes |
 | `sklearn_metrics` | 300,000 × `argsort`, float64, 10 elements, stable (one call, `axis=1`, in `top_k_accuracy_score`) | No: rows of ten |
 | `trimesh_mesh` | 2 × `argsort`, uint64, 245,760 elements, stable; 1 × 1,532 elements | Yes |
 | `trimesh_mesh` | 2 × `argsort`, uint64, 245,760 elements, and 2 × int64, 40,962 elements, default kind | No: not stable |
@@ -144,7 +144,49 @@ Both are in [issue 207](https://github.com/sofeikov/hotkernels/issues/207). `np.
 
 ## Status
 
-To be filled in when built.
+Against the [exit criterion](#exit-criterion), on an Apple M1 Pro with NumPy 2.5.5. Other work was running on the machine throughout (load average 5 to 17), so every timing is indicative and the ratios are what to read.
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | `judge selftest` passes with the spec format's addition | Met. Two steps were added for `Times`: its sizes, and that a bad factor is refused |
+| 2 | `judge check` passes for the three kernels, and `judge run` reports each faster than NumPy from 1,024 elements up | Met, with `--unlocked`, because the kernels are not on `main`: 22,696 cases for `argsort_f64` and 9,208 each for the integer kernels. Faster than NumPy at every size timed, from 16 to 16,777,216; the table is below |
+| 3 | `delivery check` passes with cases for `argsort` | Met. 13,015 cases for `argsort`, 2,597 of them taken by a kernel; the whole check and the check on NumPy 2.3.0, the oldest the package installs on, pass |
+| 4 | `delivery time` shows no `argsort` statement slower than NumPy at any size it measures | Not met for one statement. An array sorted but for its last hundredth is left to NumPy, and the look that decides it costs 3.6% to 5.4% of the call at 4,096 and 1,048,576 elements (3.88 ms to 4.04 ms at the larger). Every statement a kernel takes is faster, and the others left to NumPy are within 2% |
+| 5 | `sklearn_metrics` runs measurably faster with hotkernels than without | Met: 997.5 ms on plain NumPy, 532.8 ms installed, 1.87x, with identical results. The study recorded 1.03x. `trimesh_mesh`, whose three stable sorts of uint64 keys are taken, ran at 1.25x where the study recorded 1.12x; that one was not run both ways in one session, so it is weaker evidence |
+| 6 | `report()` shows the three kernels and counts their calls | Met: three rows, `np.argsort, stable` for float64, int64 and uint64, implementation C, result exact |
+
+The kernels alone, from `uv run judge run <kernel> --unlocked`, NumPy timed from Python:
+
+| Elements | float64, uniform | float64, normal | int64, the whole range | int64 below 1,000 | uint64, the whole range |
+|---|---|---|---|---|---|
+| 16 | 19.9x | 20.5x | 21.0x | 20.7x | 21.2x |
+| 64 | 1.69x | 1.39x | 1.12x | 8.02x | 1.10x |
+| 1,024 | 4.71x | 3.38x | 3.69x | 12.2x | 3.72x |
+| 16,384 | 11.1x | 8.14x | 7.71x | 38.6x | 7.72x |
+| 262,144 | 14.8x | 11.0x | 11.7x | 61.6x | 12.1x |
+| 1,048,576 | 17.3x (7.52 ms) | 13.4x (9.45 ms) | 17.3x (8.55 ms) | 64.9x (1.84 ms) | 14.7x (7.90 ms) |
+| 16,777,216 | 16.9x | 15.2x | 43.7x | 242x | 42.8x |
+
+From Python, with `uv run delivery time --only argsort`:
+
+| Statement | Data | 4,096 elements | 1,048,576 |
+|---|---|---|---|
+| `np.argsort(x, kind='stable')` | float64, normal | 6.13x | 13.0x (125 ms to 9.62 ms) |
+| `np.argsort(np.flip(x), kind='stable')` | float64, a reversed view | 6.04x | 13.1x |
+| `np.argsort(x, kind='stable')` | int64, the whole range | 5.77x | 15.8x |
+| `np.argsort(x, kind='stable')` | int64, ten values | 14.2x | 28.5x (67.5 ms to 2.37 ms) |
+| `np.argsort(x, kind='stable')` | uint64, the whole range | 6.07x | 15.4x |
+| `np.argsort(x, kind='stable')` | float64, already sorted | 1.94x | 2.03x (1.02 ms to 0.51 ms) |
+| `np.argsort(x, kind='stable')` | float64, sorted but for the last hundredth: left to NumPy | 3.6% slower | 4.2% slower |
+| `np.argsort(x)` | float64, the default kind: left to NumPy | 2.0% slower | 1.4% slower |
+
+Between the judge's figure and Python's lie the memory for the call and two copies: at a million float64 the kernel takes 7.5 to 9.5 ms and the statement 9.6 ms.
+
+Not done, and owed:
+
+- **Figures on a quiet machine.** Every figure above, the README's table and the recorded survey run were taken with other work running. The commands are `uv run judge run argsort_f64 --unlocked` (and `_i64`, `_u64`), `uv run delivery time --only argsort`, `uv run survey run --only argsort --out apple-m1-pro-argsort` and `uv run --group apps delivery apps --only sklearn_metrics`.
+- **x86-64.** The kernels ship as their C there and have not been run on an x86-64 machine: not checked, not timed. `kernels/argsort_*/x86_64/attempts.md` say what to time first. Their wheel needs clang ([What changed in the building](#what-changed-in-the-building)).
+- **A locked run and recorded results.** The judge ran `--unlocked` because the specs are new, and nothing is under `results/` or `delivery/results/` for these kernels yet.
 
 ## What changed in the building
 
@@ -154,6 +196,7 @@ To be filled in when built.
 | The binding walks out from the middle element to find one long run | It counts falls from the start, at most eight, and then measures the run that begins at the last fall in the first thirty-second of the array | The walk from the middle missed the commonest ordered input: a sorted array with one pair of elements swapped has no long run through its middle, takes NumPy 1.2 ms and the kernel 7. And a comparison per element cost 0.5 ms per million on sorted input, half of NumPy's whole time; the scan now passes over 64 elements at a time and costs 0.16 ms |
 | Input already in order is NumPy's | A sorted array is answered `0, 1, 2, ...` by the hook, and a strictly descending one `n-1, ..., 0` | Once the scan has reached the end without a fall the answer is known. From Python a million sorted float64 take 0.5 ms, against NumPy's 1.0 ms |
 | The kernel reads the caller's array | It reads a copy the binding makes: four words of memory per element, not three | The kernel reads its input three times and sizes the places it scatters to from the first reading. An array that changes in between can send a write outside its buffers. `argmax` has the same exposure and keeps the interpreter lock; a sort of a million elements is too long to hold it, and a copy made under the lock is safe against every writer for about a fiftieth of the sort |
+| A contiguous array | Any one-dimensional layout: a view with a step, a reversed view, an unaligned buffer | Found by running the application the kernel was written for. scikit-learn's metrics do not call `np.argsort(scores, kind="mergesort")`, as the trace of sort loops suggested; they sort `np.flip(scores)`, a reversed view, through its array-API layer, and the first build left all four calls to NumPy (1.02x). The kernel sorts a copy in any case, so the copy is made element by element for such a view. NumPy copies it before sorting too |
 | `ARGSORT_MIN_N`, to be measured | 256 | From Python the kernel was level with NumPy at 128 elements (0.95x to 1.30x by element type), 1.2x to 1.6x faster at 192 and 1.6x to 1.95x at 256. At 64 and 96 it took up to 1.6 times as long: NumPy sorts so few by insertion |
 | `descending` absent, None or False | Absent | NumPy 2.3, the oldest the package installs on, has no such parameter and raises for it. A call one supported NumPy rejects is not the hook's to take |
 | The counts take about 96 KB of stack | 112 KB | Two tables for digits of up to 13 bits and six for 11 |

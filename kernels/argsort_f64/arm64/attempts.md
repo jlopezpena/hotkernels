@@ -66,9 +66,24 @@ The attempts before the kernel had a spec were timed in a harness outside the re
 
 `uv run judge run argsort_f64 --unlocked`, on an Apple M1 Pro. Unlocked because the kernel is not yet on `main`. NumPy is timed from Python.
 
-RESULT_TABLE
+| Elements | uniform: C | NumPy | faster by | scores: C | NumPy | faster by | normal: C | NumPy | faster by |
+|---|---|---|---|---|---|---|---|---|---|
+| 16 | 52.2 ns | 1.0 us | 19.9x | 50.2 ns | 1.0 us | 20.6x | 49.9 ns | 1.0 us | 20.5x |
+| 64 | 1.3 us | 2.1 us | 1.69x | 1.2 us | 2.1 us | 1.71x | 1.5 us | 2.1 us | 1.39x |
+| 256 | 2.6 us | 7.4 us | 2.87x | 2.6 us | 7.5 us | 2.91x | 3.3 us | 7.1 us | 2.17x |
+| 1,024 | 7.8 us | 36.6 us | 4.71x | 7.9 us | 37.2 us | 4.72x | 10.6 us | 35.8 us | 3.38x |
+| 4,096 | 25.4 us | 230.3 us | 9.05x | 25.3 us | 233.8 us | 9.24x | 33.9 us | 224.4 us | 6.63x |
+| 16,384 | 105.8 us | 1.18 ms | 11.1x | 100.3 us | 1.21 ms | 12.1x | 147.4 us | 1.20 ms | 8.14x |
+| 65,536 | 421.3 us | 5.72 ms | 13.6x | 431.2 us | 5.85 ms | 13.6x | 592.1 us | 5.81 ms | 9.81x |
+| 262,144 | 1.84 ms | 27.16 ms | 14.8x | 1.84 ms | 27.63 ms | 15.0x | 2.49 ms | 27.46 ms | 11.0x |
+| 1,048,576 | 7.52 ms | 130.05 ms | 17.3x | 7.46 ms | 131.20 ms | 17.6x | 9.45 ms | 126.87 ms | 13.4x |
+| 4,194,304 | 39.97 ms | 624.13 ms | 15.6x | 40.21 ms | 619.92 ms | 15.4x | 44.77 ms | 616.78 ms | 13.8x |
+| 16,777,216 | 179.54 ms | 3029.18 ms | 16.9x | 170.96 ms | 3060.31 ms | 17.9x | 200.14 ms | 3034.74 ms | 15.2x |
+| overall | | | 9.24x [9.22 – 9.29] | | | 9.44x [9.42 – 9.50] | | | 7.36x [7.34 – 7.39] |
+
+Over every distribution: 8.63x [8.61 – 8.65]. Load average 6.49 when the run started, with other work running, so the figures are indicative.
 
 ## Not tried
 
 - **Two count tables for a skewed digit.** When most keys share a digit, each count update waits for the one before it.
-- **Insertion up to 48 elements.** Between 17 and 255 elements the kernel is no faster than NumPy, and the binding does not call it there.
+- **Insertion up to 48 elements.** Between 17 and 255 elements the kernel has nothing NumPy's insertion sort lacks (from Python it is level with NumPy at 128 elements and slower at 64 and 96), and the binding does not call it there.

@@ -1765,16 +1765,67 @@ static HK_NOINLINE bool argsort_arguments_are_stable(PyObject *const *args, Py_s
     return hk_text_is(kind, "stable") || hk_text_is(kind, "mergesort");
 }
 
-// x.argsort(kind='stable') for a one-dimensional contiguous float64, int64
-// or uint64 array: the argsort kernels. np.argsort(x, kind=...) calls the
-// method, as do np.unique(x, return_index=True) and scikit-learn's ranking
-// metrics.
+// What the look at an array's order means for the call.
+typedef enum {
+    // The kernel sorts it.
+    ARGSORT_SORT,
+    // In ascending order: the answer is 0, 1, 2, ...
+    ARGSORT_ASCENDING,
+    // In strictly descending order: the answer is n-1, ..., 1, 0.
+    ARGSORT_DESCENDING,
+    // Nearly in order one way or the other: NumPy's.
+    ARGSORT_LEAVE,
+} argsort_plan;
+
+// Look at the order of the `n` contiguous elements at `data`; see
+// ARGSORT_FALL_LIMIT. An array is tested for descending order only when it
+// is not in ascending order, so one whose elements are all equal is ascending.
+static argsort_plan argsort_look(argsort_keys keys, const void *data, npy_intp n) {
+    const argsort_order ascending = keys == ARGSORT_F64   ? argsort_ascending_f64(data, n)
+                                    : keys == ARGSORT_I64 ? argsort_ascending_i64(data, n)
+                                                          : argsort_ascending_u64(data, n);
+    if (ascending == ARGSORT_IN_ORDER) return ARGSORT_ASCENDING;
+    if (ascending == ARGSORT_NEARLY_IN_ORDER) return ARGSORT_LEAVE;
+    const argsort_order descending = keys == ARGSORT_F64   ? argsort_descending_f64(data, n)
+                                     : keys == ARGSORT_I64 ? argsort_descending_i64(data, n)
+                                                           : argsort_descending_u64(data, n);
+    if (descending == ARGSORT_IN_ORDER) return ARGSORT_DESCENDING;
+    return descending == ARGSORT_NEARLY_IN_ORDER ? ARGSORT_LEAVE : ARGSORT_SORT;
+}
+
+// The memory of one call: ARGSORT_WORDS_PER_ELEMENT words per element, or
+// NULL when it cannot be had.
+static uint64_t *argsort_memory(npy_intp n) {
+    return malloc((size_t)n * ARGSORT_WORDS_PER_ELEMENT * sizeof(uint64_t));
+}
+
+// Copy the `n` elements of a one-dimensional array of 8-byte elements, which
+// lie `stride` bytes apart from `data`, to `copy`. An element may sit at an
+// address that is not a multiple of 8, so each is moved as bytes.
+static void argsort_copy(uint64_t *copy, const char *data, npy_intp stride, npy_intp n) {
+    if (stride == (npy_intp)sizeof(uint64_t)) {
+        memcpy(copy, data, (size_t)n * sizeof(uint64_t));
+        return;
+    }
+    for (npy_intp i = 0; i < n; i++) memcpy(&copy[i], data + i * stride, sizeof(uint64_t));
+}
+
+// x.argsort(kind='stable') for a one-dimensional float64, int64 or uint64
+// array: the argsort kernels. np.argsort(x, kind=...) calls the method, as do
+// np.unique(x, return_index=True) and scikit-learn's ranking metrics.
 //
 // The kernel reads its input three times and sizes its buckets from the first
 // reading, so it must not see the array change in between: it would write
 // outside its buffers. It is therefore given a copy, made here with the
 // interpreter lock held, and sorts the copy with the lock released. The copy
 // costs about a fiftieth of the sort.
+//
+// Because the kernel sorts a copy, the array need not be contiguous: a view
+// with a step, or a reversed one, is copied element by element. NumPy copies
+// such an array before it sorts it too. scikit-learn's metrics sort
+// `np.flip(scores)`, a reversed view, so this is the call that matters there.
+// A contiguous array is looked at for order where it lies, before any memory
+// is asked for; any other is copied first and the copy looked at.
 //
 // The kernel's output is scratch: three words per element, of which the first
 // n are the result. It is a buffer of the binding's own, and the result is
@@ -1785,59 +1836,50 @@ static HK_NOINLINE PyObject *try_argsort(PyObject *self, argsort_keys keys, PyOb
     npy_intp n = PyArray_SIZE(x);
     if (n < ARGSORT_MIN_N || n >= ARGSORT_MAX_N) return NULL;
     if (!argsort_arguments_are_stable(args, nargs, kwnames)) return NULL;
-    const void *data = PyArray_DATA(x);
+    const char *data = PyArray_BYTES(x);
+    const npy_intp stride = PyArray_STRIDES(x)[0];
+    const bool in_place = stride == (npy_intp)sizeof(uint64_t) && PyArray_ISALIGNED(x);
     const hk_kernel kernel = keys == ARGSORT_F64 ? HK_ARGSORT_F64 : keys == ARGSORT_I64 ? HK_ARGSORT_I64 : HK_ARGSORT_U64;
 
-    // Input in order is answered here or left to NumPy; see ARGSORT_FALL_LIMIT.
-    const argsort_order ascending = keys == ARGSORT_F64   ? argsort_ascending_f64(data, n)
-                                    : keys == ARGSORT_I64 ? argsort_ascending_i64(data, n)
-                                                          : argsort_ascending_u64(data, n);
-    if (ascending == ARGSORT_NEARLY_IN_ORDER) return NULL;
-    argsort_order descending = ARGSORT_SHUFFLED;
-    if (ascending == ARGSORT_SHUFFLED) {
-        descending = keys == ARGSORT_F64   ? argsort_descending_f64(data, n)
-                     : keys == ARGSORT_I64 ? argsort_descending_i64(data, n)
-                                           : argsort_descending_u64(data, n);
-        if (descending == ARGSORT_NEARLY_IN_ORDER) return NULL;
+    uint64_t *memory = NULL;
+    if (!in_place) {
+        memory = argsort_memory(n);
+        if (memory == NULL) return NULL;
+        argsort_copy(memory, data, stride, n);
     }
-    if (ascending == ARGSORT_IN_ORDER || descending == ARGSORT_IN_ORDER) {
-        PyObject *result = PyArray_SimpleNew(1, &n, NPY_INTP);
-        if (result == NULL) {
-            PyErr_Clear();
-            return NULL;
-        }
-        npy_intp *indices = PyArray_DATA((PyArrayObject *)result);
-        if (ascending == ARGSORT_IN_ORDER) {
-            for (npy_intp i = 0; i < n; i++) indices[i] = i;
-        } else {
-            // Strictly descending, so no two elements are equal and the
-            // reversed order is the only sorted one.
-            for (npy_intp i = 0; i < n; i++) indices[i] = n - 1 - i;
-        }
-        hk_take(kernel);
-        return result;
-    }
-
-    uint64_t on_stack[HK_STACK_SCRATCH_BYTES / sizeof(uint64_t)];
-    const size_t words = (size_t)n * ARGSORT_WORDS_PER_ELEMENT;
-    uint64_t *memory = words <= sizeof on_stack / sizeof on_stack[0] ? on_stack : malloc(words * sizeof(uint64_t));
-    if (memory == NULL) return NULL;
-    PyObject *result = PyArray_SimpleNew(1, &n, NPY_INTP);
+    const argsort_plan plan = argsort_look(keys, in_place ? (const void *)data : (const void *)memory, n);
+    PyObject *result = plan == ARGSORT_LEAVE ? NULL : PyArray_SimpleNew(1, &n, NPY_INTP);
     if (result == NULL) {
+        // Left to NumPy, or no memory for the result, which is NumPy's to report.
         PyErr_Clear();
-        if (memory != on_stack) free(memory);
+        free(memory);
         return NULL;
     }
-    uint64_t *copy = memory;
-    int64_t *out = (int64_t *)(memory + n);
-    memcpy(copy, data, (size_t)n * sizeof(uint64_t));
-    HK_BEGIN_NOGIL(n)
-    if (keys == ARGSORT_F64) argsort_f64((const double *)copy, out, (size_t)n);
-    else if (keys == ARGSORT_I64) argsort_i64((const int64_t *)copy, out, (size_t)n);
-    else argsort_u64(copy, out, (size_t)n);
-    memcpy(PyArray_DATA((PyArrayObject *)result), out, (size_t)n * sizeof(int64_t));
-    HK_END_NOGIL
-    if (memory != on_stack) free(memory);
+    npy_intp *indices = PyArray_DATA((PyArrayObject *)result);
+    if (plan == ARGSORT_ASCENDING) {
+        for (npy_intp i = 0; i < n; i++) indices[i] = i;
+    } else if (plan == ARGSORT_DESCENDING) {
+        // No two elements are equal, so the reversed order is the only sorted one.
+        for (npy_intp i = 0; i < n; i++) indices[i] = n - 1 - i;
+    } else {
+        if (memory == NULL) {
+            memory = argsort_memory(n);
+            if (memory == NULL) {
+                Py_DECREF(result);
+                return NULL;
+            }
+            argsort_copy(memory, data, stride, n);
+        }
+        const uint64_t *copy = memory;
+        int64_t *out = (int64_t *)(memory + n);
+        HK_BEGIN_NOGIL(n)
+        if (keys == ARGSORT_F64) argsort_f64((const double *)copy, out, (size_t)n);
+        else if (keys == ARGSORT_I64) argsort_i64((const int64_t *)copy, out, (size_t)n);
+        else argsort_u64(copy, out, (size_t)n);
+        memcpy(indices, out, (size_t)n * sizeof(int64_t));
+        HK_END_NOGIL
+    }
+    free(memory);
     hk_take(kernel);
     return result;
 }
@@ -1848,9 +1890,10 @@ static HK_NOINLINE PyObject *try_argsort(PyObject *self, argsort_keys keys, PyOb
 // or nearly sorted array) is counted.
 static PyObject *method_argsort(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     if (hk_is_plain_array(self)) {
-        const argsort_keys keys = argsort_key_type((PyArrayObject *)self);
+        PyArrayObject *x = (PyArrayObject *)self;
+        const argsort_keys keys = argsort_key_type(x);
         if (keys != ARGSORT_NONE) {
-            if (hk_is_flat_1d(self, PyArray_TYPE((PyArrayObject *)self))) {
+            if (PyArray_NDIM(x) == 1 && PyArray_ISNOTSWAPPED(x)) {
                 PyObject *result = try_argsort(self, keys, args, nargs, kwnames);
                 if (result != NULL) return result;
             }

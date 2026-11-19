@@ -97,6 +97,16 @@ One `uv run judge run <kernel> --record` per kernel, one after another, at a loa
 
 One `uv run judge run unique_i64 --record`, `--unlocked` because its spec is not yet on `main`, at a load average of 22: rough. The report is in [`results/`](results). From Python, where the array is first read for its range, `np.unique(x)` on two values is about 18x faster than NumPy at a million elements and 13x at 16.
 
+The stable `argsort` kernels, on the Apple M1 Pro at 1,048,576 elements. They are a radix sort where NumPy merges, written in C: a merge sort in C only ties NumPy, and the radix sort's one hot loop tied the compiler's when written by hand.
+
+| Stable argsort | Elements | vs NumPy | |
+|---|---|---|---|
+| `np.argsort(x, kind="stable")` | float64 | 13.4x – 17.6x | ships as the C |
+| `np.argsort(x, kind="stable")` | int64 | 17.3x – 64.9x | ships as the C |
+| `np.argsort(x, kind="stable")` | uint64 | 14.7x – 78.0x | ships as the C |
+
+One `uv run judge run <kernel> --unlocked` per kernel, on a machine with other work running (load average 6 to 13), so the figures are indicative. The ranges are over the data the kernel is timed on: for float64, normal data at the low end and uniform data and classifier scores at the high end; for the integers, values over the whole range of the type at the low end and values below 1,000, which are sorted in one pass, at the high end. From Python the same calls are 13x to 28x faster ([docs/sort-design.md](docs/sort-design.md#status)).
+
 What stands behind the numbers:
 
 - **Checked against NumPy, not against a description of it.** Every kernel is compared with NumPy's own output on inputs that include NaN, infinities, signed zeros, ties and denormals. Thirty-three of the 35 match bit for bit. The two float `cumsum` kernels regroup the additions, which is where their speed comes from, and stay within a declared error bound.
