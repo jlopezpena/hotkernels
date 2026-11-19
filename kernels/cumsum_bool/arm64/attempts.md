@@ -29,3 +29,11 @@ The output is eight bytes for every byte read. Sixteen elements are 128 bytes of
 - **compare:** significantly faster, 1.071x [1.056 – 1.087]
 - **Kept:** yes
 - **Notes:** 1.06x at 16 and 64, 1.11x to 1.14x from 256 to 16,384 (0.106 ns per element at 4,096), 1.06x at 1,048,576; not significant at 65,536, 262,144 and 16,777,216, where the intervals were wide with the other run on the machine.
+
+## 4. Load the next block between widening the current one and storing it
+
+- **Idea:** the same instructions in another order. With one `stp` in place of four the loop of attempt 3 runs at the speed of eight stores alone, and so do eight stores alone, but together they take a quarter longer, and adding four `nop` or four integer adds changes nothing: the loop is not short of width or of ports. What it is short of looks like room for instructions that wait: the stores are issued long before their data is ready. So the loop widens the block it already holds, then loads, multiplies and moves the next one, then stores the current one; the first block is loaded before the loop and the last widened and stored after it.
+- **check:** pass
+- **compare:** significantly faster, 1.039x [1.028 – 1.049]
+- **Kept:** yes
+- **Notes:** 1.04x at 64, 1.07x to 1.08x from 256 to 16,384 (0.097 ns per element at 4,096); 16 unchanged, and nothing significant from 65,536 up, where the kernel already runs at the speed of a loop that only stores (see below).
