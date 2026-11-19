@@ -114,6 +114,24 @@
     orr     v\d\().16b, v\d\().16b, v29.16b
 .endm
 
+// The same for rows of 65 to 128: the first 64 bytes and the last 64, at
+// x8 = x0 + cols - 64.
+.macro ROW128 d, i
+    ldp     q\d, q30, [x0]
+    ldp     q29, q31, [x0, #32]
+    ldp     q24, q25, [x8]
+    ldp     q26, q27, [x8, #32]
+    add     x0, x0, x3
+    add     x8, x8, x3
+    orr     v\d\().16b, v\d\().16b, v30.16b
+    orr     v29.16b, v29.16b, v31.16b
+    orr     v24.16b, v24.16b, v25.16b
+    orr     v26.16b, v26.16b, v27.16b
+    orr     v\d\().16b, v\d\().16b, v29.16b
+    orr     v24.16b, v24.16b, v26.16b
+    orr     v\d\().16b, v\d\().16b, v24.16b
+.endm
+
 // ROW64 with non-temporal loads, for matrices larger than the second-level
 // cache.
 .macro ROW64NT d, i
@@ -368,7 +386,9 @@ Lmid64_few:
     add     x4, x4, #16
     FEW     ROW64
 Lgeneric:
-    // Rows of more than 64, one at a time, 64 bytes per step, and a row ends
+    cmp     x3, #128
+    b.ls    Lmid128
+    // Rows of more than 128, one at a time, 64 bytes per step, and a row ends
     // at the first step that holds a True: its four vectors are or'ed, one
     // `umaxp` halves them to 8 bytes, and those go to a general register to
     // test. The last 64 bytes end at the row's end and overlap the step
@@ -607,6 +627,33 @@ Lfour_one:
     subs    x4, x4, #1
     b.ne    Lfour_one
     b       Ldone
+
+Lmid128:
+    // Rows of 65 to 128 as rows of 33 to 64 are done, with no exit: a row
+    // is two steps at most, and on sparse rows the exit after the first was
+    // a branch that could not be predicted.
+    sub     x7, x3, #64
+    add     x8, x0, x7                  // start of the row's last 64 bytes
+    subs    x4, x4, #16
+    b.lo    Lmid128_few
+Lmid128_loop:
+    TREE16  ROW128
+    str     q0, [x1], #16
+    subs    x4, x4, #16
+    b.hs    Lmid128_loop
+    adds    x4, x4, #16
+    b.eq    Ldone
+    mov     x6, #16
+    sub     x6, x6, x4
+    msub    x0, x6, x3, x0
+    msub    x8, x6, x3, x8
+    sub     x1, x1, x6
+    TREE16  ROW128
+    str     q0, [x1]
+    b       Ldone
+Lmid128_few:
+    add     x4, x4, #16
+    FEW     ROW128
 
 .section __TEXT,__const
 .p2align 4
