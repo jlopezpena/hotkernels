@@ -87,12 +87,12 @@ REDUCEAT_NAN = 0.05
 # Bounds of the timed np.clip on int64: Python ints inside the range of the
 # small integers it clips, so that elements on both sides change.
 INT_LO, INT_HI = 2, 7
-# Largest element count each loop built into the binding takes: its limit in
-# the binding (CLIP_I64_MAX_N and MEDIAN_F64_MAX_N in hook_function.c,
-# ROUND_F64_MAX_N in hook_method.c).
+# Largest element count each loop built into the binding for short arrays
+# takes: its limit in the binding (CLIP_I64_MAX_N in hook_function.c,
+# ROUND_F64_MAX_N in hook_method.c). The median loop takes arrays of every
+# size timed.
 CLIP_I64_MAX_N = 4096
 ROUND_F64_MAX_N = 4096
-MEDIAN_F64_MAX_N = 128
 # Decimals of the timed np.round: the commonest in the program the second
 # shortlist came from.
 DECIMALS = 2
@@ -505,8 +505,7 @@ TAKEN: tuple[Timed, ...] = (
     Timed("inplace", "w -= b", "float64", _two_floats, _subtract_in_place, SUBTRACT_IN_PLACE,
           min_n=INPLACE_MIN_N),
     Timed("inplace", "w += b", "float64", _two_floats, _add_in_place, ADD_IN_PLACE, min_n=INPLACE_MIN_N),
-    Timed("median", "np.median(x)", "float64", partial(_floats, np.float64), np.median, "median_f64",
-          max_n=MEDIAN_F64_MAX_N),
+    Timed("median", "np.median(x)", "float64", partial(_floats, np.float64), np.median, "median_f64"),
     Timed("compress", "x[mask]", "float32, half selected", partial(_masked, np.float32, HALF), lambda x, m: x[m], "compress_f32"),
     Timed("compress", "x[mask]", "float64, half selected", partial(_masked, np.float64, HALF), lambda x, m: x[m], "compress_f64"),
     Timed("compress", "x[mask]", "float64, few selected", partial(_masked, np.float64, FEW), lambda x, m: x[m], "compress_f64"),
@@ -719,6 +718,11 @@ def _output_of(command: list[str]) -> str:
         return ""
 
 
+def load_average() -> float:
+    """Return the one-minute load average, to two decimals. Above 1.0 the machine is in use."""
+    return round(os.getloadavg()[0], 2)
+
+
 def describe_machine() -> dict:
     """Record what a run was measured on.
 
@@ -741,7 +745,7 @@ def describe_machine() -> dict:
         "numpy": np.__version__,
         "python": platform.python_version(),
         "git": _output_of(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"]),
-        "load_average": round(os.getloadavg()[0], 2),
+        "load_average": load_average(),
     }
 
 

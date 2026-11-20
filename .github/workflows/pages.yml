@@ -23,7 +23,14 @@ jobs:
     # assigned at once; hosted macOS runners can take a quarter of an hour.
     runs-on: ubuntu-latest
     steps:
+      # The page "Over time" marks the merges between the commits it timed,
+      # so it needs the full history of main.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The workloads' recorded runs (docs/workloads-history-design.md). Until
+      # the branch exists the page shows no runs, and the build goes on.
+      - run: git fetch origin perf-history:refs/remotes/origin/perf-history || echo "::warning::no perf-history branch"
       - uses: astral-sh/setup-uv@v5
       - run: uv run docsite build --out build/site
       - uses: actions/upload-pages-artifact@v3

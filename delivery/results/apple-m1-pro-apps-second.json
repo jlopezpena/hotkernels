@@ -1,0 +1,3495 @@
+{
+  "meta": {
+    "cpu": "Apple M1 Pro",
+    "pinned_cpu": null,
+    "os": "macOS-27.2.1-arm64-arm-64bit",
+    "numpy": "2.5.5",
+    "python": "3.12.7",
+    "git": "7a277a8",
+    "load_average": 3.41,
+    "set": "second",
+    "libraries": {
+      "trimesh": "5.2.1",
+      "scikit-learn": "1.9.1",
+      "empyrical-reloaded": "0.7.3",
+      "pandas": "3.1.1",
+      "scipy": "1.18.1",
+      "scikit-image": "0.26.0",
+      "astropy": "8.0.3"
+    },
+    "unfinished_ci_runs": 0,
+    "sampler": "`sample`, every thread once a millisecond"
+  },
+  "rows": [
+    {
+      "timing": {
+        "name": "particle_filter",
+        "size": "small",
+        "title": "A bootstrap particle filter tracking a target from range and bearing",
+        "source": "Written for this study",
+        "data": "2,000 particles, 100 steps",
+        "repeats": 5,
+        "numpy_ms": 20.23115,
+        "hotkernels_ms": 18.7717918,
+        "inexact_ms": 18.387700000000002,
+        "numpy_median_ms": 20.6461334,
+        "hotkernels_median_ms": 18.8910918,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.argmax",
+            "elements": "float64",
+            "calls": 100
+          },
+          {
+            "call": "x[mask]",
+            "elements": "float64",
+            "calls": 100
+          },
+          {
+            "call": "np.searchsorted",
+            "elements": "float64",
+            "calls": 41
+          }
+        ],
+        "left": [
+          {
+            "call": "np.cumsum",
+            "elements": "",
+            "calls": 41
+          },
+          {
+            "call": "x.astype(float32)",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.sum",
+            "elements": "",
+            "calls": 200
+          }
+        ]
+      },
+      "profile": {
+        "name": "particle_filter",
+        "size": "small",
+        "plain": {
+          "samples": 3785,
+          "classes": {
+            "Python interpreter": 0.03064729194187583,
+            "NumPy": 0.6470277410832237,
+            "BLAS": 0.022457067371202115,
+            "Maths library": 0.15746367239101716,
+            "hotkernels": 0.0,
+            "Memory and system": 0.14240422721268162,
+            "Other compiled code": 0.0
+          },
+          "functions": [
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.10620871862615588
+            },
+            {
+              "kind": "NumPy",
+              "name": "random_standard_normal",
+              "image": "_generator.cpython-312-darwin.so",
+              "share": 0.09854689564068692
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_contig",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.08560105680317041
+            },
+            {
+              "kind": "Maths library",
+              "name": "atan2",
+              "image": "libsystem_m.dylib",
+              "share": 0.06287978863936591
+            },
+            {
+              "kind": "NumPy",
+              "name": "PyArray_TransferNDimToStrided",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05785997357992074
+            },
+            {
+              "kind": "NumPy",
+              "name": "binsearch<npy::floating_point_type<double, (NPY_TYPES)12>, (side_t)0>(",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05706737120211361
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05310435931307794
+            },
+            {
+              "kind": "Maths library",
+              "name": "log",
+              "image": "libsystem_m.dylib",
+              "share": 0.040686922060766184
+            },
+            {
+              "kind": "NumPy",
+              "name": "__pyx_f_5numpy_6random_6_pcg64_pcg64_uint64",
+              "image": "_pcg64.cpython-312-darwin.so",
+              "share": 0.02906208718626156
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_remainder",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.028269484808454426
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.024834874504623513
+            },
+            {
+              "kind": "BLAS",
+              "name": "(functions without symbols)",
+              "image": "libBLAS.dylib",
+              "share": 0.022457067371202115
+            },
+            {
+              "kind": "Maths library",
+              "name": "exp",
+              "image": "libsystem_m.dylib",
+              "share": 0.01928665785997358
+            },
+            {
+              "kind": "NumPy",
+              "name": "DYLD-STUB$$memmove",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.018494055482166448
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.014795244385733158
+            }
+          ]
+        },
+        "installed": {
+          "samples": 3728,
+          "classes": {
+            "Python interpreter": 0.016094420600858368,
+            "NumPy": 0.6491416309012876,
+            "BLAS": 0.032457081545064374,
+            "Maths library": 0.16040772532188843,
+            "hotkernels": 0.008315450643776824,
+            "Memory and system": 0.1335836909871245,
+            "Other compiled code": 0.0
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "random_standard_normal",
+              "image": "_generator.cpython-312-darwin.so",
+              "share": 0.12285407725321888
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.10246781115879829
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_contig",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.08342274678111589
+            },
+            {
+              "kind": "Maths library",
+              "name": "atan2",
+              "image": "libsystem_m.dylib",
+              "share": 0.07564377682403434
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.06706008583690987
+            },
+            {
+              "kind": "NumPy",
+              "name": "PyArray_TransferNDimToStrided",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.054184549356223174
+            },
+            {
+              "kind": "NumPy",
+              "name": "__pyx_f_5numpy_6random_6_pcg64_pcg64_uint64",
+              "image": "_pcg64.cpython-312-darwin.so",
+              "share": 0.04560085836909871
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_remainder",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.032457081545064374
+            },
+            {
+              "kind": "BLAS",
+              "name": "(functions without symbols)",
+              "image": "libBLAS.dylib",
+              "share": 0.032457081545064374
+            },
+            {
+              "kind": "Maths library",
+              "name": "exp",
+              "image": "libsystem_m.dylib",
+              "share": 0.02736051502145923
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02682403433476395
+            },
+            {
+              "kind": "Maths library",
+              "name": "log",
+              "image": "libsystem_m.dylib",
+              "share": 0.021995708154506438
+            },
+            {
+              "kind": "NumPy",
+              "name": "random_standard_normal_fill",
+              "image": "_generator.cpython-312-darwin.so",
+              "share": 0.021995708154506438
+            },
+            {
+              "kind": "Maths library",
+              "name": "hypot",
+              "image": "libsystem_m.dylib",
+              "share": 0.016630901287553648
+            },
+            {
+              "kind": "NumPy",
+              "name": "DYLD-STUB$$memmove",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.01555793991416309
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "apps/particle_filter.py:98(run)",
+            "calls": 1,
+            "share": 0.8389970563011381
+          },
+          {
+            "where": "<method 'searchsorted' of 'numpy.ndarray' objects>",
+            "calls": 41,
+            "share": 0.07529995596041074
+          },
+          {
+            "where": "<method 'cumsum' of 'numpy.ndarray' objects>",
+            "calls": 41,
+            "share": 0.019333008831096586
+          },
+          {
+            "where": "apps/particle_filter.py:81(systematic_resample)",
+            "calls": 41,
+            "share": 0.011482882507011566
+          },
+          {
+            "where": "<method 'reduce' of 'numpy.ufunc' objects>",
+            "calls": 300,
+            "share": 0.011255128294277172
+          },
+          {
+            "where": "<method 'argmax' of 'numpy.ndarray' objects>",
+            "calls": 100,
+            "share": 0.009852954129290964
+          },
+          {
+            "where": "numpy/_core/fromnumeric.py:66(_wrapreduction)",
+            "calls": 300,
+            "share": 0.009057042857473982
+          },
+          {
+            "where": "numpy/_core/fromnumeric.py:2342(sum)",
+            "calls": 200,
+            "share": 0.004849778643117076
+          },
+          {
+            "where": "numpy/_core/fromnumeric.py:48(_wrapfunc)",
+            "calls": 182,
+            "share": 0.003270889831490624
+          },
+          {
+            "where": "numpy/_core/fromnumeric.py:1259(argmax)",
+            "calls": 100,
+            "share": 0.0027560902116218157
+          }
+        ]
+      }
+    },
+    {
+      "timing": {
+        "name": "particle_filter",
+        "size": "large",
+        "title": "A bootstrap particle filter tracking a target from range and bearing",
+        "source": "Written for this study",
+        "data": "100,000 particles, 100 steps",
+        "repeats": 1,
+        "numpy_ms": 895.405667,
+        "hotkernels_ms": 804.077209,
+        "inexact_ms": 792.780583,
+        "numpy_median_ms": 898.746417,
+        "hotkernels_median_ms": 811.518667,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.argmax",
+            "elements": "float64",
+            "calls": 100
+          },
+          {
+            "call": "x[mask]",
+            "elements": "float64",
+            "calls": 100
+          },
+          {
+            "call": "np.searchsorted",
+            "elements": "float64",
+            "calls": 42
+          },
+          {
+            "call": "x += y",
+            "elements": "float64",
+            "calls": 100
+          }
+        ],
+        "left": [
+          {
+            "call": "np.cumsum",
+            "elements": "",
+            "calls": 42
+          },
+          {
+            "call": "x.astype(float32)",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.sum",
+            "elements": "",
+            "calls": 200
+          }
+        ]
+      },
+      "profile": {
+        "name": "particle_filter",
+        "size": "large",
+        "plain": {
+          "samples": 3856,
+          "classes": {
+            "Python interpreter": 0.0012966804979253112,
+            "NumPy": 0.738070539419087,
+            "BLAS": 0.032935684647302906,
+            "Maths library": 0.13355809128630705,
+            "hotkernels": 0.0,
+            "Memory and system": 0.09413900414937759,
+            "Other compiled code": 0.0
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "random_standard_normal",
+              "image": "_generator.cpython-312-darwin.so",
+              "share": 0.15482365145228216
+            },
+            {
+              "kind": "NumPy",
+              "name": "binsearch<npy::floating_point_type<double, (NPY_TYPES)12>, (side_t)0>(",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.11047717842323651
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_contig",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.09699170124481328
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.09413900414937759
+            },
+            {
+              "kind": "Maths library",
+              "name": "atan2",
+              "image": "libsystem_m.dylib",
+              "share": 0.07339211618257262
+            },
+            {
+              "kind": "NumPy",
+              "name": "PyArray_TransferNDimToStrided",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05368257261410788
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.04590248962655602
+            },
+            {
+              "kind": "NumPy",
+              "name": "__pyx_f_5numpy_6random_6_pcg64_pcg64_uint64",
+              "image": "_pcg64.cpython-312-darwin.so",
+              "share": 0.0391597510373444
+            },
+            {
+              "kind": "BLAS",
+              "name": "(functions without symbols)",
+              "image": "libBLAS.dylib",
+              "share": 0.032935684647302906
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.028267634854771784
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_remainder",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.025155601659751038
+            },
+            {
+              "kind": "Maths library",
+              "name": "exp",
+              "image": "libsystem_m.dylib",
+              "share": 0.024636929460580912
+            },
+            {
+              "kind": "NumPy",
+              "name": "random_standard_normal_fill",
+              "image": "_generator.cpython-312-darwin.so",
+              "share": 0.022821576763485476
+            },
+            {
+              "kind": "NumPy",
+              "name": "DYLD-STUB$$memmove",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.016856846473029045
+            },
+            {
+              "kind": "Maths library",
+              "name": "log",
+              "image": "libsystem_m.dylib",
+              "share": 0.016856846473029045
+            }
+          ]
+        },
+        "installed": {
+          "samples": 3799,
+          "classes": {
+            "Python interpreter": 0.0,
+            "NumPy": 0.6830744932877073,
+            "BLAS": 0.04553829955251382,
+            "Maths library": 0.1434588049486707,
+            "hotkernels": 0.025269807844169517,
+            "Memory and system": 0.10265859436693867,
+            "Other compiled code": 0.0
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "random_standard_normal",
+              "image": "_generator.cpython-312-darwin.so",
+              "share": 0.16688602263753619
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_contig",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.11081863648328508
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.10265859436693867
+            },
+            {
+              "kind": "Maths library",
+              "name": "atan2",
+              "image": "libsystem_m.dylib",
+              "share": 0.07738878652276915
+            },
+            {
+              "kind": "NumPy",
+              "name": "PyArray_TransferNDimToStrided",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05369834166886023
+            },
+            {
+              "kind": "NumPy",
+              "name": "__pyx_f_5numpy_6random_6_pcg64_pcg64_uint64",
+              "image": "_pcg64.cpython-312-darwin.so",
+              "share": 0.04948670702816531
+            },
+            {
+              "kind": "BLAS",
+              "name": "(functions without symbols)",
+              "image": "libBLAS.dylib",
+              "share": 0.04553829955251382
+            },
+            {
+              "kind": "NumPy",
+              "name": "random_standard_normal_fill",
+              "image": "_generator.cpython-312-darwin.so",
+              "share": 0.03316662279547249
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.030271123979994735
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.029744669649907872
+            },
+            {
+              "kind": "Maths library",
+              "name": "exp",
+              "image": "libsystem_m.dylib",
+              "share": 0.029481442484864437
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_remainder",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.027638852329560412
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_square",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.022111081863648328
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_strided_to_contig_size8_srcstride0",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.01921558304817057
+            },
+            {
+              "kind": "NumPy",
+              "name": "DYLD-STUB$$memmove",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.018689128718083706
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "apps/particle_filter.py:98(run)",
+            "calls": 1,
+            "share": 0.8556252418503061
+          },
+          {
+            "where": "<method 'searchsorted' of 'numpy.ndarray' objects>",
+            "calls": 42,
+            "share": 0.10651314264444892
+          },
+          {
+            "where": "<method 'cumsum' of 'numpy.ndarray' objects>",
+            "calls": 42,
+            "share": 0.016432169144157398
+          },
+          {
+            "where": "<method 'argmax' of 'numpy.ndarray' objects>",
+            "calls": 100,
+            "share": 0.008012682993179398
+          },
+          {
+            "where": "<method 'reduce' of 'numpy.ufunc' objects>",
+            "calls": 300,
+            "share": 0.0058880876625834536
+          },
+          {
+            "where": "apps/particle_filter.py:81(systematic_resample)",
+            "calls": 42,
+            "share": 0.0039537640631003
+          },
+          {
+            "where": "<built-in method numpy.zeros>",
+            "calls": 43,
+            "share": 0.000935190514342527
+          },
+          {
+            "where": "<built-in method numpy.arange>",
+            "calls": 42,
+            "share": 0.000792264592424706
+          },
+          {
+            "where": "numpy/_core/fromnumeric.py:66(_wrapreduction)",
+            "calls": 300,
+            "share": 0.000562155722189195
+          },
+          {
+            "where": "numpy/_core/fromnumeric.py:1259(argmax)",
+            "calls": 100,
+            "share": 0.0002495195692925049
+          }
+        ]
+      }
+    },
+    {
+      "timing": {
+        "name": "veros_ocean",
+        "size": "small",
+        "title": "Three routines of the Veros ocean model: equation of state, isoneutral mixing, turbulent kinetic energy",
+        "source": "https://github.com/dionhaefner/pyhpc-benchmarks at d438ef8, NumPy implementations copied unchanged",
+        "data": "a grid of 81 \u00d7 81 \u00d7 11 points",
+        "repeats": 3,
+        "numpy_ms": 28.735861333333332,
+        "hotkernels_ms": 28.604347333333333,
+        "inexact_ms": 28.564305666666666,
+        "numpy_median_ms": 29.402152666666666,
+        "hotkernels_median_ms": 29.248389,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "float64",
+            "calls": 9
+          }
+        ],
+        "left": [
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "",
+            "calls": 1
+          }
+        ]
+      },
+      "profile": {
+        "name": "veros_ocean",
+        "size": "small",
+        "plain": {
+          "samples": 3823,
+          "classes": {
+            "Python interpreter": 0.003923620193565263,
+            "NumPy": 0.8252681140465601,
+            "BLAS": 0.026157467957101752,
+            "Maths library": 0.010986136541982735,
+            "hotkernels": 0.0,
+            "Memory and system": 0.13366466126079,
+            "Other compiled code": 0.0
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.21056761705466912
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.1250326968349464
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_tanh",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.1208475019618101
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.11247711221553754
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_contig",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.07036358880460371
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_subtract",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.04656029296364112
+            },
+            {
+              "kind": "NumPy",
+              "name": "PyArray_TransferNDimToStrided",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.04446769552707298
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_strided_to_contig_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03818990321736856
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_divide",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.035312581742087366
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_to_strided_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02641904263667277
+            },
+            {
+              "kind": "BLAS",
+              "name": "(functions without symbols)",
+              "image": "libLAPACK.dylib",
+              "share": 0.026157467957101752
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_minimum",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.020664399686110384
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_strided_to_contig_size8_srcstride0",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.014909756735547999
+            },
+            {
+              "kind": "NumPy",
+              "name": "raw_array_assign_array",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.012294009939837824
+            },
+            {
+              "kind": "NumPy",
+              "name": "DYLD-STUB$$memmove",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.010462987182840701
+            }
+          ]
+        },
+        "installed": {
+          "samples": 3826,
+          "classes": {
+            "Python interpreter": 0.0031364349189754314,
+            "NumPy": 0.8222686879247254,
+            "BLAS": 0.028750653423941452,
+            "Maths library": 0.010716152639832723,
+            "hotkernels": 0.004181913225300575,
+            "Memory and system": 0.13094615786722427,
+            "Other compiled code": 0.0
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.22895974908520647
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.1244119184526921
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_tanh",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.11029796131730267
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.10716152639832724
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_contig",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.061944589649764764
+            },
+            {
+              "kind": "NumPy",
+              "name": "PyArray_TransferNDimToStrided",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.0483533716675379
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_subtract",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03972817564035546
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_strided_to_contig_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03972817564035546
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_divide",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03476215368531103
+            },
+            {
+              "kind": "BLAS",
+              "name": "(functions without symbols)",
+              "image": "libLAPACK.dylib",
+              "share": 0.028750653423941452
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_to_strided_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02326189231573445
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_minimum",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.019079979090433873
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_strided_to_contig_size8_srcstride0",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.017773131207527444
+            },
+            {
+              "kind": "NumPy",
+              "name": "DYLD-STUB$$memmove",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.014898065865133299
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_negative",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.014636696288552013
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "isoneutral_mixing/isoneutral_numpy.py:24(isoneutral_diffusion_pre)",
+            "calls": 1,
+            "share": 0.3526856397283657
+          },
+          {
+            "where": "equation_of_state/eos_numpy.py:63(gsw_dHdT)",
+            "calls": 1,
+            "share": 0.2227685163805305
+          },
+          {
+            "where": "isoneutral_mixing/isoneutral_numpy.py:115(dm_taper)",
+            "calls": 16,
+            "share": 0.13932608014234363
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:61(_adv_superbee)",
+            "calls": 3,
+            "share": 0.07347743284034892
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:137(integrate_tke)",
+            "calls": 1,
+            "share": 0.07276703554382104
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:30(solve_tridiag)",
+            "calls": 1,
+            "share": 0.03542599426729194
+          },
+          {
+            "where": "<built-in method numpy.array>",
+            "calls": 47,
+            "share": 0.02423558585724458
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:9(solve_implicit)",
+            "calls": 1,
+            "share": 0.011350554414145116
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:41(_calc_cr)",
+            "calls": 3,
+            "share": 0.010544635568781295
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:57(limiter)",
+            "calls": 3,
+            "share": 0.010349549230947082
+          }
+        ]
+      }
+    },
+    {
+      "timing": {
+        "name": "veros_ocean",
+        "size": "large",
+        "title": "Three routines of the Veros ocean model: equation of state, isoneutral mixing, turbulent kinetic energy",
+        "source": "https://github.com/dionhaefner/pyhpc-benchmarks at d438ef8, NumPy implementations copied unchanged",
+        "data": "a grid of 204 \u00d7 204 \u00d7 26 points",
+        "repeats": 1,
+        "numpy_ms": 491.052,
+        "hotkernels_ms": 488.074834,
+        "inexact_ms": 487.398167,
+        "numpy_median_ms": 495.194708,
+        "hotkernels_median_ms": 489.455709,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "float64",
+            "calls": 9
+          },
+          {
+            "call": "x += y",
+            "elements": "float64",
+            "calls": 86
+          },
+          {
+            "call": "x -= y",
+            "elements": "float64",
+            "calls": 35
+          }
+        ],
+        "left": [
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "",
+            "calls": 1
+          }
+        ]
+      },
+      "profile": {
+        "name": "veros_ocean",
+        "size": "large",
+        "plain": {
+          "samples": 3864,
+          "classes": {
+            "Python interpreter": 0.0012939958592132505,
+            "NumPy": 0.8103002070393377,
+            "BLAS": 0.024327122153209108,
+            "Maths library": 0.013975155279503106,
+            "hotkernels": 0.0,
+            "Memory and system": 0.15010351966873706,
+            "Other compiled code": 0.0
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.2562111801242236
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.13509316770186336
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.12060041407867494
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_tanh",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.11076604554865424
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_subtract",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05201863354037267
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_divide",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.044772256728778465
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_contig",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03700828157349897
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_to_strided_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.033385093167701864
+            },
+            {
+              "kind": "BLAS",
+              "name": "(functions without symbols)",
+              "image": "libLAPACK.dylib",
+              "share": 0.024327122153209108
+            },
+            {
+              "kind": "NumPy",
+              "name": "PyArray_TransferNDimToStrided",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02044513457556936
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_strided_to_contig_size8_srcstride0",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.017857142857142856
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_strided_to_contig_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.015527950310559006
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_minimum",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.015010351966873706
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_kernelrpc_mach_vm_deallocate_trap",
+              "image": "libsystem_kernel.dylib",
+              "share": 0.015010351966873706
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_negative",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.014492753623188406
+            }
+          ]
+        },
+        "installed": {
+          "samples": 3864,
+          "classes": {
+            "Python interpreter": 0.0,
+            "NumPy": 0.7556935817805384,
+            "BLAS": 0.025362318840579712,
+            "Maths library": 0.011645962732919256,
+            "hotkernels": 0.06288819875776398,
+            "Memory and system": 0.14440993788819875,
+            "Other compiled code": 0.0
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.27251552795031053
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.12939958592132506
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_tanh",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.11024844720496894
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.07919254658385093
+            },
+            {
+              "kind": "hotkernels",
+              "name": "add_inplace_f64",
+              "image": "_binding.cpython-312-darwin.so",
+              "share": 0.039596273291925464
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_divide",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.039337474120082816
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_contig",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.035196687370600416
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_to_strided_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.032349896480331264
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_subtract",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.027950310559006212
+            },
+            {
+              "kind": "BLAS",
+              "name": "(functions without symbols)",
+              "image": "libLAPACK.dylib",
+              "share": 0.025362318840579712
+            },
+            {
+              "kind": "NumPy",
+              "name": "PyArray_TransferNDimToStrided",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.020703933747412008
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_strided_to_contig_size8_srcstride0",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.020186335403726708
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_negative",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.018892339544513456
+            },
+            {
+              "kind": "hotkernels",
+              "name": "subtract_inplace_f64",
+              "image": "_binding.cpython-312-darwin.so",
+              "share": 0.018115942028985508
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_minimum",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.015786749482401656
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "isoneutral_mixing/isoneutral_numpy.py:24(isoneutral_diffusion_pre)",
+            "calls": 1,
+            "share": 0.29925129709585224
+          },
+          {
+            "where": "equation_of_state/eos_numpy.py:63(gsw_dHdT)",
+            "calls": 1,
+            "share": 0.26782103744469704
+          },
+          {
+            "where": "isoneutral_mixing/isoneutral_numpy.py:115(dm_taper)",
+            "calls": 16,
+            "share": 0.13868159742821065
+          },
+          {
+            "where": "<built-in method numpy.array>",
+            "calls": 47,
+            "share": 0.063705432403325
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:137(integrate_tke)",
+            "calls": 1,
+            "share": 0.0567381174561776
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:61(_adv_superbee)",
+            "calls": 3,
+            "share": 0.055415127456212784
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:30(solve_tridiag)",
+            "calls": 1,
+            "share": 0.03546712530196036
+          },
+          {
+            "where": "equation_of_state/eos_numpy.py:253(run)",
+            "calls": 1,
+            "share": 0.013042149617255826
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:5(where)",
+            "calls": 10,
+            "share": 0.01092097492544065
+          },
+          {
+            "where": "turbulent_kinetic_energy/tke_numpy.py:57(limiter)",
+            "calls": 3,
+            "share": 0.010659411038243426
+          }
+        ]
+      }
+    },
+    {
+      "timing": {
+        "name": "skimage_pipeline",
+        "size": "small",
+        "title": "Segmenting and measuring objects in images: CLAHE, Otsu, labels, region properties, Canny, HOG",
+        "source": "scikit-image (skimage.exposure, filters, morphology, measure, feature), called as a library",
+        "data": "4 images of 256 \u00d7 256",
+        "repeats": 1,
+        "numpy_ms": 96.63325,
+        "hotkernels_ms": 93.977,
+        "inexact_ms": 94.102541,
+        "numpy_median_ms": 96.800125,
+        "hotkernels_median_ms": 94.2385,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.argmax",
+            "elements": "float64",
+            "calls": 4
+          },
+          {
+            "call": "np.clip",
+            "elements": "float64",
+            "calls": 40
+          },
+          {
+            "call": "x[mask]",
+            "elements": "float64",
+            "calls": 1411
+          },
+          {
+            "call": "np.sum",
+            "elements": "uint8",
+            "calls": 256
+          },
+          {
+            "call": "np.histogram",
+            "elements": "float64",
+            "calls": 4
+          }
+        ],
+        "left": [
+          {
+            "call": "x[mask]",
+            "elements": "",
+            "calls": 154
+          },
+          {
+            "call": "x[mask] = v",
+            "elements": "",
+            "calls": 1049
+          },
+          {
+            "call": "np.nonzero",
+            "elements": "",
+            "calls": 260
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "",
+            "calls": 20
+          },
+          {
+            "call": "x.astype(float32)",
+            "elements": "",
+            "calls": 1376
+          },
+          {
+            "call": "np.sum",
+            "elements": "",
+            "calls": 7992
+          },
+          {
+            "call": "np.count_nonzero",
+            "elements": "",
+            "calls": 554
+          },
+          {
+            "call": "np.bincount",
+            "elements": "",
+            "calls": 260
+          },
+          {
+            "call": "np.unique",
+            "elements": "",
+            "calls": 4
+          },
+          {
+            "call": "np.round",
+            "elements": "",
+            "calls": 12
+          }
+        ]
+      },
+      "profile": {
+        "name": "skimage_pipeline",
+        "size": "small",
+        "plain": {
+          "samples": 3551,
+          "classes": {
+            "Python interpreter": 0.1836102506336244,
+            "NumPy": 0.32695015488594664,
+            "BLAS": 0.0,
+            "Maths library": 0.11405237961137708,
+            "hotkernels": 0.0,
+            "Memory and system": 0.09997183891861448,
+            "Other compiled code": 0.27541537595043647
+          },
+          "functions": [
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.09659250915235144
+            },
+            {
+              "kind": "Maths library",
+              "name": "atan2",
+              "image": "libsystem_m.dylib",
+              "share": 0.07462686567164178
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_Correlate1D",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.0698394818361025
+            },
+            {
+              "kind": "NumPy",
+              "name": "mapiter_get",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05294283300478738
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_tlv_get_addr",
+              "image": "libdyld.dylib",
+              "share": 0.05209800056322163
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_1__pyx_pw_7skimage_7feature_13_hoghistogram_5hog_histograms",
+              "image": "_hoghistogram.cpython-312-darwin.so",
+              "share": 0.049281892424669106
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_LineBufferToArray",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.040270346381301045
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_Correlate",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.02900591382709096
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_remainder",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.023092086736130668
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_ArrayToLineBuffer",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.021402421852999155
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_7skimage_7feature_9_canny_cy_5__pyx_fuse_1_nonmaximum_suppres",
+              "image": "_canny_cy.cpython-312-darwin.so",
+              "share": 0.01943114615601239
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.019149535342157138
+            },
+            {
+              "kind": "NumPy",
+              "name": "arr_bincount",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.01689664883131512
+            },
+            {
+              "kind": "NumPy",
+              "name": "NpyIter_AdvancedNew",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.01661503801745987
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_f_9_ni_label_label_line_with_neighbor",
+              "image": "_ni_label.cpython-312-darwin.so",
+              "share": 0.016333427203604617
+            }
+          ]
+        },
+        "installed": {
+          "samples": 3589,
+          "classes": {
+            "Python interpreter": 0.19308999721370856,
+            "NumPy": 0.30732794650320383,
+            "BLAS": 0.0019504040122596824,
+            "Maths library": 0.1156310950125383,
+            "hotkernels": 0.004458066313736417,
+            "Memory and system": 0.0986347171914182,
+            "Other compiled code": 0.2789077737531346
+          },
+          "functions": [
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.10615770409584843
+            },
+            {
+              "kind": "Maths library",
+              "name": "atan2",
+              "image": "libsystem_m.dylib",
+              "share": 0.07634438562273614
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_Correlate1D",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.06297018668152689
+            },
+            {
+              "kind": "NumPy",
+              "name": "mapiter_get",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05544719977709668
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_1__pyx_pw_7skimage_7feature_13_hoghistogram_5hog_histograms",
+              "image": "_hoghistogram.cpython-312-darwin.so",
+              "share": 0.05154639175257732
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_LineBufferToArray",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.051267762607968795
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_tlv_get_addr",
+              "image": "libdyld.dylib",
+              "share": 0.049874616884926164
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_Correlate",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.032320980774589024
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_remainder",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02256896071329061
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_ArrayToLineBuffer",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.020618556701030927
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_7skimage_7feature_9_canny_cy_5__pyx_fuse_1_nonmaximum_suppres",
+              "image": "_canny_cy.cpython-312-darwin.so",
+              "share": 0.020339927556422402
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_f_9_ni_label_label_line_with_neighbor",
+              "image": "_ni_label.cpython-312-darwin.so",
+              "share": 0.01755363611033714
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.017275006965728614
+            },
+            {
+              "kind": "NumPy",
+              "name": "arr_bincount",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.016160490387294512
+            },
+            {
+              "kind": "Maths library",
+              "name": "fetestexcept",
+              "image": "libsystem_m.dylib",
+              "share": 0.015881861242685986
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "skimage/feature/_hog.py:48(hog)",
+            "calls": 4,
+            "share": 0.11600264054485607
+          },
+          {
+            "where": "skimage/feature/_hog.py:7(_hog_normalize_block)",
+            "calls": 3600,
+            "share": 0.0940019248346256
+          },
+          {
+            "where": "<built-in method scipy.ndimage._nd_image.correlate1d>",
+            "calls": 40,
+            "share": 0.08206594232920572
+          },
+          {
+            "where": "numpy/_core/einsumfunc.py:634(einsum_path)",
+            "calls": 1024,
+            "share": 0.04392309337932774
+          },
+          {
+            "where": "skimage/measure/_moments.py:201(moments_central)",
+            "calls": 512,
+            "share": 0.03989296575645558
+          },
+          {
+            "where": "numpy/_core/einsumfunc.py:445(_parse_einsum_input)",
+            "calls": 1024,
+            "share": 0.03548705745943261
+          },
+          {
+            "where": "numpy/lib/_shape_base_impl.py:60(take_along_axis)",
+            "calls": 16,
+            "share": 0.03415942482287115
+          },
+          {
+            "where": "<method 'reduce' of 'numpy.ufunc' objects>",
+            "calls": 9136,
+            "share": 0.031404075748614535
+          },
+          {
+            "where": "numpy/_core/fromnumeric.py:66(_wrapreduction)",
+            "calls": 8008,
+            "share": 0.028204667594121283
+          },
+          {
+            "where": "scipy/ndimage/_measurements.py:43(label)",
+            "calls": 12,
+            "share": 0.022655254885456295
+          }
+        ]
+      }
+    },
+    {
+      "timing": {
+        "name": "skimage_pipeline",
+        "size": "large",
+        "title": "Segmenting and measuring objects in images: CLAHE, Otsu, labels, region properties, Canny, HOG",
+        "source": "scikit-image (skimage.exposure, filters, morphology, measure, feature), called as a library",
+        "data": "4 images of 1,024 \u00d7 1,024",
+        "repeats": 1,
+        "numpy_ms": 1180.172958,
+        "hotkernels_ms": 1152.793625,
+        "inexact_ms": 1154.052,
+        "numpy_median_ms": 1183.644416,
+        "hotkernels_median_ms": 1156.587083,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.argmax",
+            "elements": "float64",
+            "calls": 4
+          },
+          {
+            "call": "np.clip",
+            "elements": "float64",
+            "calls": 520
+          },
+          {
+            "call": "x[mask]",
+            "elements": "float64",
+            "calls": 1926
+          },
+          {
+            "call": "np.sum",
+            "elements": "uint8",
+            "calls": 473
+          },
+          {
+            "call": "np.histogram",
+            "elements": "float64",
+            "calls": 4
+          },
+          {
+            "call": "x += y",
+            "elements": "float64",
+            "calls": 12
+          }
+        ],
+        "left": [
+          {
+            "call": "x[mask]",
+            "elements": "",
+            "calls": 127
+          },
+          {
+            "call": "x[mask] = v",
+            "elements": "",
+            "calls": 1320
+          },
+          {
+            "call": "np.nonzero",
+            "elements": "",
+            "calls": 477
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "",
+            "calls": 20
+          },
+          {
+            "call": "x.astype(float32)",
+            "elements": "",
+            "calls": 2461
+          },
+          {
+            "call": "np.sum",
+            "elements": "",
+            "calls": 128017
+          },
+          {
+            "call": "np.count_nonzero",
+            "elements": "",
+            "calls": 1096
+          },
+          {
+            "call": "np.bincount",
+            "elements": "",
+            "calls": 260
+          },
+          {
+            "call": "np.unique",
+            "elements": "",
+            "calls": 4
+          },
+          {
+            "call": "np.round",
+            "elements": "",
+            "calls": 12
+          }
+        ]
+      },
+      "profile": {
+        "name": "skimage_pipeline",
+        "size": "large",
+        "plain": {
+          "samples": 3839,
+          "classes": {
+            "Python interpreter": 0.09690023443605106,
+            "NumPy": 0.3414951810367283,
+            "BLAS": 0.0,
+            "Maths library": 0.12477207606147435,
+            "hotkernels": 0.0,
+            "Memory and system": 0.06616306329773379,
+            "Other compiled code": 0.3706694451680124
+          },
+          "functions": [
+            {
+              "kind": "Other compiled code",
+              "name": "NI_LineBufferToArray",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.09794217244073977
+            },
+            {
+              "kind": "Maths library",
+              "name": "atan2",
+              "image": "libsystem_m.dylib",
+              "share": 0.09481635842667362
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_Correlate1D",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.07762438134930971
+            },
+            {
+              "kind": "NumPy",
+              "name": "mapiter_get",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.06486064079187288
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_1__pyx_pw_7skimage_7feature_13_hoghistogram_5hog_histograms",
+              "image": "_hoghistogram.cpython-312-darwin.so",
+              "share": 0.0646001562907007
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.042198489189893204
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_Correlate",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.0382912216723105
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_remainder",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03125814014066163
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_ArrayToLineBuffer",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.03125814014066163
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_tlv_get_addr",
+              "image": "libdyld.dylib",
+              "share": 0.03047668663714509
+            },
+            {
+              "kind": "NumPy",
+              "name": "arr_bincount",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.022662151601979683
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_7skimage_7feature_9_canny_cy_5__pyx_fuse_1_nonmaximum_suppres",
+              "image": "_canny_cy.cpython-312-darwin.so",
+              "share": 0.014847616566814275
+            },
+            {
+              "kind": "Maths library",
+              "name": "fetestexcept",
+              "image": "libsystem_m.dylib",
+              "share": 0.014847616566814275
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_f_9_ni_label_label_line_with_neighbor",
+              "image": "_ni_label.cpython-312-darwin.so",
+              "share": 0.014066163063297733
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_2__pyx_f_9_ni_label_fused_write_line",
+              "image": "_ni_label.cpython-312-darwin.so",
+              "share": 0.013024225058609012
+            }
+          ]
+        },
+        "installed": {
+          "samples": 3872,
+          "classes": {
+            "Python interpreter": 0.10098140495867772,
+            "NumPy": 0.32308884297520674,
+            "BLAS": 0.0,
+            "Maths library": 0.1190599173553719,
+            "hotkernels": 0.005940082644628099,
+            "Memory and system": 0.07179752066115702,
+            "Other compiled code": 0.3791322314049587
+          },
+          "functions": [
+            {
+              "kind": "Other compiled code",
+              "name": "NI_LineBufferToArray",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.0981404958677686
+            },
+            {
+              "kind": "Maths library",
+              "name": "atan2",
+              "image": "libsystem_m.dylib",
+              "share": 0.09297520661157024
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_Correlate1D",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.08264462809917356
+            },
+            {
+              "kind": "NumPy",
+              "name": "mapiter_get",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.06585743801652892
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_1__pyx_pw_7skimage_7feature_13_hoghistogram_5hog_histograms",
+              "image": "_hoghistogram.cpython-312-darwin.so",
+              "share": 0.06353305785123967
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.04132231404958678
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_Correlate",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.04003099173553719
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "NI_ArrayToLineBuffer",
+              "image": "_nd_image.cpython-312-darwin.so",
+              "share": 0.032799586776859506
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_remainder",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.030733471074380167
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_tlv_get_addr",
+              "image": "libdyld.dylib",
+              "share": 0.030475206611570247
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_f_9_ni_label_label_line_with_neighbor",
+              "image": "_ni_label.cpython-312-darwin.so",
+              "share": 0.017303719008264464
+            },
+            {
+              "kind": "NumPy",
+              "name": "arr_bincount",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.017303719008264464
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.015754132231404958
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_7skimage_7feature_9_canny_cy_5__pyx_fuse_1_nonmaximum_suppres",
+              "image": "_canny_cy.cpython-312-darwin.so",
+              "share": 0.014979338842975207
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.013429752066115703
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "skimage/feature/_hog.py:48(hog)",
+            "calls": 4,
+            "share": 0.19634607329741294
+          },
+          {
+            "where": "<built-in method scipy.ndimage._nd_image.correlate1d>",
+            "calls": 40,
+            "share": 0.1672885255367596
+          },
+          {
+            "where": "skimage/feature/_hog.py:7(_hog_normalize_block)",
+            "calls": 63504,
+            "share": 0.16423969937081465
+          },
+          {
+            "where": "numpy/lib/_shape_base_impl.py:60(take_along_axis)",
+            "calls": 16,
+            "share": 0.05118853315889174
+          },
+          {
+            "where": "numpy/_core/fromnumeric.py:66(_wrapreduction)",
+            "calls": 128467,
+            "share": 0.04253174385137637
+          },
+          {
+            "where": "<method 'reduce' of 'numpy.ufunc' objects>",
+            "calls": 130089,
+            "share": 0.03978005961400154
+          },
+          {
+            "where": "numpy/_core/fromnumeric.py:2342(sum)",
+            "calls": 127954,
+            "share": 0.035696843871766575
+          },
+          {
+            "where": "<built-in method scipy.ndimage._nd_image.correlate>",
+            "calls": 8,
+            "share": 0.03122041870843245
+          },
+          {
+            "where": "scipy/ndimage/_measurements.py:43(label)",
+            "calls": 12,
+            "share": 0.028210220831662188
+          },
+          {
+            "where": "skimage/feature/_canny.py:103(canny)",
+            "calls": 4,
+            "share": 0.02399509902325654
+          }
+        ]
+      }
+    },
+    {
+      "timing": {
+        "name": "pandas_sales",
+        "size": "small",
+        "title": "Analysing a table of sales: filters, group-by, pivot, resample, rolling, merge, rank, binning",
+        "source": "pandas, called as a library",
+        "data": "100,000 sales in 200 stores over 365 days",
+        "repeats": 3,
+        "numpy_ms": 30.754541666666668,
+        "hotkernels_ms": 29.392139,
+        "inexact_ms": 29.276097333333336,
+        "numpy_median_ms": 31.238874999999997,
+        "hotkernels_median_ms": 29.55904166666667,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.clip",
+            "elements": "int64",
+            "calls": 2
+          },
+          {
+            "call": "x[mask]",
+            "elements": "float64",
+            "calls": 21
+          },
+          {
+            "call": "x[mask] = v",
+            "elements": "float64",
+            "calls": 2
+          },
+          {
+            "call": "np.nonzero",
+            "elements": "bool",
+            "calls": 27
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "bool",
+            "calls": 2
+          },
+          {
+            "call": "np.sum",
+            "elements": "uint8",
+            "calls": 6
+          },
+          {
+            "call": "np.bincount",
+            "elements": "int64",
+            "calls": 2
+          },
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "float64",
+            "calls": 1
+          },
+          {
+            "call": "np.unique",
+            "elements": "int64",
+            "calls": 1
+          },
+          {
+            "call": "np.argsort, stable",
+            "elements": "int64",
+            "calls": 1
+          }
+        ],
+        "left": [
+          {
+            "call": "x[mask]",
+            "elements": "",
+            "calls": 24
+          },
+          {
+            "call": "x[mask] = v",
+            "elements": "",
+            "calls": 8
+          },
+          {
+            "call": "np.nonzero",
+            "elements": "",
+            "calls": 4
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "",
+            "calls": 3
+          },
+          {
+            "call": "x.astype(float32)",
+            "elements": "",
+            "calls": 60
+          },
+          {
+            "call": "np.bincount",
+            "elements": "",
+            "calls": 6
+          },
+          {
+            "call": "np.searchsorted",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "",
+            "calls": 1
+          },
+          {
+            "call": "m.any(axis=1)",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.unique",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.argsort, stable",
+            "elements": "",
+            "calls": 5
+          }
+        ]
+      },
+      "profile": {
+        "name": "pandas_sales",
+        "size": "small",
+        "plain": {
+          "samples": 3731,
+          "classes": {
+            "Python interpreter": 0.2181720718306085,
+            "NumPy": 0.336102921468775,
+            "BLAS": 0.0,
+            "Maths library": 0.002680246582685607,
+            "hotkernels": 0.0,
+            "Memory and system": 0.05601715357812919,
+            "Other compiled code": 0.3870276065398017
+          },
+          "functions": [
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.11551862771374967
+            },
+            {
+              "kind": "NumPy",
+              "name": "binsearch<npy::floating_point_type<double, (NPY_TYPES)12>, (side_t)0>(",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.07424283034039132
+            },
+            {
+              "kind": "NumPy",
+              "name": "introselect_<npy::floating_point_type<double, (NPY_TYPES)12>, false, d",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.061109622085231845
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_14Int64HashTable_29_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.047172339855266684
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_0__pyx_pw_6pandas_5_libs_7groupby_67group_sum",
+              "image": "groupby.cpython-312-darwin.so",
+              "share": 0.03805950147413562
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "kh_put_int64",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.03484320557491289
+            },
+            {
+              "kind": "NumPy",
+              "name": "aquicksort_<npy::integral_type<long, (NPY_TYPES)7>, long, false>(long*",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03430715625837577
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_15StringHashTable_21_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.03377110694183865
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_tlv_get_addr",
+              "image": "libdyld.dylib",
+              "share": 0.02680246582685607
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_13Int8HashTable_27_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.02626641651031895
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_9__pyx_f_6pandas_5_libs_5algos_kth_smallest_c",
+              "image": "algos.cpython-312-darwin.so",
+              "share": 0.024122219244170465
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.01929777539533637
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "PyType_IsSubtype",
+              "image": "libpython3.12.dylib",
+              "share": 0.01902975073706781
+            },
+            {
+              "kind": "NumPy",
+              "name": "aquicksort_<npy::datetime_type<long, (NPY_TYPES)21>, long, false>(long",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.017153578129187885
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_5algos_229take_2d_axis0_float64_float64",
+              "image": "algos.cpython-312-darwin.so",
+              "share": 0.016617528812650766
+            }
+          ]
+        },
+        "installed": {
+          "samples": 3670,
+          "classes": {
+            "Python interpreter": 0.21771117166212536,
+            "NumPy": 0.2825613079019075,
+            "BLAS": 0.0,
+            "Maths library": 0.0,
+            "hotkernels": 0.007084468664850137,
+            "Memory and system": 0.08065395095367849,
+            "Other compiled code": 0.4119891008174388
+          },
+          "functions": [
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.11743869209809264
+            },
+            {
+              "kind": "NumPy",
+              "name": "binsearch<npy::floating_point_type<double, (NPY_TYPES)12>, (side_t)0>(",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.08119891008174387
+            },
+            {
+              "kind": "NumPy",
+              "name": "introselect_<npy::floating_point_type<double, (NPY_TYPES)12>, false, d",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.06430517711171663
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_14Int64HashTable_29_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.04959128065395095
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_0__pyx_pw_6pandas_5_libs_7groupby_67group_sum",
+              "image": "groupby.cpython-312-darwin.so",
+              "share": 0.043596730245231606
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "kh_put_int64",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.041961852861035424
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_tlv_get_addr",
+              "image": "libdyld.dylib",
+              "share": 0.038692098092643054
+            },
+            {
+              "kind": "NumPy",
+              "name": "aquicksort_<npy::integral_type<long, (NPY_TYPES)7>, long, false>(long*",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.036239782016348775
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_15StringHashTable_21_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.03514986376021798
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_13Int8HashTable_27_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.027520435967302453
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_9__pyx_f_6pandas_5_libs_5algos_kth_smallest_c",
+              "image": "algos.cpython-312-darwin.so",
+              "share": 0.02561307901907357
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.022888283378746595
+            },
+            {
+              "kind": "NumPy",
+              "name": "aquicksort_<npy::datetime_type<long, (NPY_TYPES)21>, long, false>(long",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.020163487738419618
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "PyType_IsSubtype",
+              "image": "libpython3.12.dylib",
+              "share": 0.018256130790190735
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_f_6pandas_5_libs_7missing_is_matching_na",
+              "image": "missing.cpython-312-darwin.so",
+              "share": 0.017166212534059946
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "pandas/core/algorithms.py:727(factorize_array)",
+            "calls": 15,
+            "share": 0.0934591461675196
+          },
+          {
+            "where": "pandas/core/groupby/ops.py:374(_call_cython_op)",
+            "calls": 8,
+            "share": 0.06468547514596078
+          },
+          {
+            "where": "<method 'argsort' of 'numpy.ndarray' objects>",
+            "calls": 20,
+            "share": 0.058554671801074806
+          },
+          {
+            "where": "<method 'searchsorted' of 'numpy.ndarray' objects>",
+            "calls": 2,
+            "share": 0.05032796267210775
+          },
+          {
+            "where": "<method 'partition' of 'numpy.ndarray' objects>",
+            "calls": 2,
+            "share": 0.04573082567807377
+          },
+          {
+            "where": "<built-in method builtins.isinstance>",
+            "calls": 9967,
+            "share": 0.02720948964040945
+          },
+          {
+            "where": "pandas/core/array_algos/take.py:130(_take_nd_ndarray)",
+            "calls": 69,
+            "share": 0.025454780038840864
+          },
+          {
+            "where": "pandas/core/groupby/generic.py:890(nunique)",
+            "calls": 1,
+            "share": 0.02109825882667515
+          },
+          {
+            "where": "pandas/core/arrays/datetimes.py:147(f)",
+            "calls": 1,
+            "share": 0.018291138277858516
+          },
+          {
+            "where": "pandas/core/algorithms.py:473(unique_with_mask)",
+            "calls": 6,
+            "share": 0.01736729573560557
+          }
+        ]
+      }
+    },
+    {
+      "timing": {
+        "name": "pandas_sales",
+        "size": "large",
+        "title": "Analysing a table of sales: filters, group-by, pivot, resample, rolling, merge, rank, binning",
+        "source": "pandas, called as a library",
+        "data": "2,000,000 sales in 200 stores over 365 days",
+        "repeats": 1,
+        "numpy_ms": 477.626833,
+        "hotkernels_ms": 446.500166,
+        "inexact_ms": 447.144875,
+        "numpy_median_ms": 477.977916,
+        "hotkernels_median_ms": 447.10325,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.clip",
+            "elements": "int64",
+            "calls": 2
+          },
+          {
+            "call": "x[mask]",
+            "elements": "float64",
+            "calls": 21
+          },
+          {
+            "call": "x[mask] = v",
+            "elements": "float64",
+            "calls": 2
+          },
+          {
+            "call": "np.nonzero",
+            "elements": "bool",
+            "calls": 27
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "bool",
+            "calls": 2
+          },
+          {
+            "call": "np.sum",
+            "elements": "uint8",
+            "calls": 6
+          },
+          {
+            "call": "np.bincount",
+            "elements": "int64",
+            "calls": 2
+          },
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "float64",
+            "calls": 1
+          },
+          {
+            "call": "np.unique",
+            "elements": "int64",
+            "calls": 1
+          },
+          {
+            "call": "np.argsort, stable",
+            "elements": "int64",
+            "calls": 1
+          }
+        ],
+        "left": [
+          {
+            "call": "x[mask]",
+            "elements": "",
+            "calls": 24
+          },
+          {
+            "call": "x[mask] = v",
+            "elements": "",
+            "calls": 8
+          },
+          {
+            "call": "np.nonzero",
+            "elements": "",
+            "calls": 4
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "",
+            "calls": 3
+          },
+          {
+            "call": "x.astype(float32)",
+            "elements": "",
+            "calls": 60
+          },
+          {
+            "call": "np.bincount",
+            "elements": "",
+            "calls": 6
+          },
+          {
+            "call": "np.searchsorted",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "",
+            "calls": 1
+          },
+          {
+            "call": "m.any(axis=1)",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.unique",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.argsort, stable",
+            "elements": "",
+            "calls": 5
+          }
+        ]
+      },
+      "profile": {
+        "name": "pandas_sales",
+        "size": "large",
+        "plain": {
+          "samples": 4098,
+          "classes": {
+            "Python interpreter": 0.045143972669594926,
+            "NumPy": 0.4189848706686188,
+            "BLAS": 0.0,
+            "Maths library": 0.0019521717911176184,
+            "hotkernels": 0.0,
+            "Memory and system": 0.041971693509028796,
+            "Other compiled code": 0.49194729136163984
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "binsearch<npy::floating_point_type<double, (NPY_TYPES)12>, (side_t)0>(",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.09004392386530015
+            },
+            {
+              "kind": "NumPy",
+              "name": "introselect_<npy::floating_point_type<double, (NPY_TYPES)12>, false, d",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.06759394826744754
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "kh_put_int64",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.06515373352855051
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_14Int64HashTable_29_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.06173743289409468
+            },
+            {
+              "kind": "NumPy",
+              "name": "aquicksort_<npy::integral_type<long, (NPY_TYPES)7>, long, false>(long*",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05222059541239629
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_0__pyx_pw_6pandas_5_libs_7groupby_67group_sum",
+              "image": "groupby.cpython-312-darwin.so",
+              "share": 0.043923865300146414
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_15StringHashTable_21_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.035627135187896536
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.028306490971205467
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_13Int8HashTable_27_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.028062469497315765
+            },
+            {
+              "kind": "NumPy",
+              "name": "aquicksort_<npy::datetime_type<long, (NPY_TYPES)21>, long, false>(long",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02635431918008785
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "PyType_IsSubtype",
+              "image": "libpython3.12.dylib",
+              "share": 0.025866276232308444
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_9__pyx_f_6pandas_5_libs_5algos_kth_smallest_c",
+              "image": "algos.cpython-312-darwin.so",
+              "share": 0.02562225475841874
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pf_6pandas_5_libs_7groupby_74group_sum",
+              "image": "groupby.cpython-312-darwin.so",
+              "share": 0.02440214738897023
+            },
+            {
+              "kind": "NumPy",
+              "name": "amerge_at_<npy::integral_type<long, (NPY_TYPES)7>, long, false>(long*,",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.021717911176183505
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_3__pyx_f_6pandas_5_libs_9hashtable_value_count",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.02000976085895559
+            }
+          ]
+        },
+        "installed": {
+          "samples": 4100,
+          "classes": {
+            "Python interpreter": 0.046341463414634146,
+            "NumPy": 0.378048780487805,
+            "BLAS": 0.0,
+            "Maths library": 0.0,
+            "hotkernels": 0.008048780487804878,
+            "Memory and system": 0.046341463414634146,
+            "Other compiled code": 0.5212195121951222
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "binsearch<npy::floating_point_type<double, (NPY_TYPES)12>, (side_t)0>(",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.09707317073170732
+            },
+            {
+              "kind": "NumPy",
+              "name": "introselect_<npy::floating_point_type<double, (NPY_TYPES)12>, false, d",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.07365853658536585
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "kh_put_int64",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.06804878048780488
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_14Int64HashTable_29_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.06317073170731707
+            },
+            {
+              "kind": "NumPy",
+              "name": "aquicksort_<npy::integral_type<long, (NPY_TYPES)7>, long, false>(long*",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05585365853658537
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_0__pyx_pw_6pandas_5_libs_7groupby_67group_sum",
+              "image": "groupby.cpython-312-darwin.so",
+              "share": 0.0475609756097561
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_15StringHashTable_21_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.03878048780487805
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pw_6pandas_5_libs_9hashtable_13Int8HashTable_27_unique",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.029512195121951218
+            },
+            {
+              "kind": "NumPy",
+              "name": "aquicksort_<npy::datetime_type<long, (NPY_TYPES)21>, long, false>(long",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02878048780487805
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "PyType_IsSubtype",
+              "image": "libpython3.12.dylib",
+              "share": 0.027804878048780488
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_pf_6pandas_5_libs_7groupby_74group_sum",
+              "image": "groupby.cpython-312-darwin.so",
+              "share": 0.027560975609756098
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_platform_memmove",
+              "image": "libsystem_platform.dylib",
+              "share": 0.027073170731707317
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_9__pyx_f_6pandas_5_libs_5algos_kth_smallest_c",
+              "image": "algos.cpython-312-darwin.so",
+              "share": 0.026097560975609755
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "__pyx_fuse_3__pyx_f_6pandas_5_libs_9hashtable_value_count",
+              "image": "hashtable.cpython-312-darwin.so",
+              "share": 0.023902439024390244
+            },
+            {
+              "kind": "NumPy",
+              "name": "hwy::N_NEON::detail::Recurse<(hwy::N_NEON::detail::RecurseMode)0, hwy:",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.01975609756097561
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "pandas/core/algorithms.py:727(factorize_array)",
+            "calls": 15,
+            "share": 0.16683655214831936
+          },
+          {
+            "where": "<method 'argsort' of 'numpy.ndarray' objects>",
+            "calls": 20,
+            "share": 0.12627314125477332
+          },
+          {
+            "where": "pandas/core/groupby/ops.py:374(_call_cython_op)",
+            "calls": 8,
+            "share": 0.10888826395147744
+          },
+          {
+            "where": "<method 'searchsorted' of 'numpy.ndarray' objects>",
+            "calls": 2,
+            "share": 0.08435241504619233
+          },
+          {
+            "where": "<method 'partition' of 'numpy.ndarray' objects>",
+            "calls": 2,
+            "share": 0.07381574356036695
+          },
+          {
+            "where": "pandas/core/groupby/generic.py:890(nunique)",
+            "calls": 1,
+            "share": 0.0488348053556038
+          },
+          {
+            "where": "pandas/core/array_algos/take.py:130(_take_nd_ndarray)",
+            "calls": 69,
+            "share": 0.03869573347064091
+          },
+          {
+            "where": "pandas/core/arrays/datetimes.py:147(f)",
+            "calls": 1,
+            "share": 0.031599395140529396
+          },
+          {
+            "where": "pandas/core/algorithms.py:473(unique_with_mask)",
+            "calls": 6,
+            "share": 0.027678388268173326
+          },
+          {
+            "where": "pandas/core/algorithms.py:1123(value_counts_arraylike)",
+            "calls": 1,
+            "share": 0.02080551053421683
+          }
+        ]
+      }
+    },
+    {
+      "timing": {
+        "name": "astropy_timeseries",
+        "size": "small",
+        "title": "Survey statistics: sigma clipping, biweight, Lomb\u2013Scargle periodograms, Bayesian blocks",
+        "source": "Astropy (astropy.stats, astropy.timeseries), called as a library",
+        "data": "10 light curves of 1,000 points, 4 images of 256 \u00d7 256",
+        "repeats": 1,
+        "numpy_ms": 206.197584,
+        "hotkernels_ms": 205.729334,
+        "inexact_ms": 205.745625,
+        "numpy_median_ms": 207.387,
+        "hotkernels_median_ms": 206.30275,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.argmax",
+            "elements": "float64",
+            "calls": 1010
+          },
+          {
+            "call": "x[mask]",
+            "elements": "float64",
+            "calls": 230
+          },
+          {
+            "call": "x[mask] = v",
+            "elements": "float64",
+            "calls": 12
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "bool",
+            "calls": 2
+          },
+          {
+            "call": "np.argsort, stable",
+            "elements": "float64",
+            "calls": 2
+          }
+        ],
+        "left": [
+          {
+            "call": "x[mask] = v",
+            "elements": "",
+            "calls": 30
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "",
+            "calls": 2000
+          },
+          {
+            "call": "x.astype(float32)",
+            "elements": "",
+            "calls": 128
+          },
+          {
+            "call": "np.sum",
+            "elements": "",
+            "calls": 60
+          },
+          {
+            "call": "np.bincount",
+            "elements": "",
+            "calls": 840
+          },
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "",
+            "calls": 60
+          },
+          {
+            "call": "np.unique",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.round",
+            "elements": "",
+            "calls": 10
+          },
+          {
+            "call": "np.median",
+            "elements": "",
+            "calls": 44
+          },
+          {
+            "call": "bn.nanmean",
+            "elements": "",
+            "calls": 4
+          },
+          {
+            "call": "bn.nanstd",
+            "elements": "",
+            "calls": 50
+          }
+        ]
+      },
+      "profile": {
+        "name": "astropy_timeseries",
+        "size": "small",
+        "plain": {
+          "samples": 3761,
+          "classes": {
+            "Python interpreter": 0.11566072852964636,
+            "NumPy": 0.6487636266950282,
+            "BLAS": 0.0018612071257644244,
+            "Maths library": 0.0412124434990694,
+            "hotkernels": 0.0,
+            "Memory and system": 0.08481786758840733,
+            "Other compiled code": 0.10768412656208455
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "introselect_<npy::floating_point_type<double, (NPY_TYPES)12>, false, d",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.07657537888859346
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "nanmedian_all_float64",
+              "image": "reduce.cpython-312-darwin.so",
+              "share": 0.07338473810156873
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.07072587077904813
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::cfftp<double>::pass3<false, pocketfft::detail::cmpl",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.05955862802446158
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::cfftp<double>::pass8<false, pocketfft::detail::cmpl",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.05902685455995746
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.05291145971816007
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_cast_double_to_cdouble",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.052645572985908
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::general_nd<pocketfft::detail::pocketfft_c<double>, ",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.052379686253655945
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_tlv_get_addr",
+              "image": "libdyld.dylib",
+              "share": 0.04387131082159
+            },
+            {
+              "kind": "NumPy",
+              "name": "CDOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.04227599042807764
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_subtract",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03908534964105291
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_strided_size16",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.032704068067003454
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "nanstd_all_float64",
+              "image": "reduce.cpython-312-darwin.so",
+              "share": 0.030311087476734912
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_to_strided_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02924754054772667
+            },
+            {
+              "kind": "NumPy",
+              "name": "npyiter_buffered_reduce_iternext_iters2",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02127093858016485
+            }
+          ]
+        },
+        "installed": {
+          "samples": 3801,
+          "classes": {
+            "Python interpreter": 0.12628255722178375,
+            "NumPy": 0.6495659037095499,
+            "BLAS": 0.0013154433043935806,
+            "Maths library": 0.04288345172323073,
+            "hotkernels": 0.0013154433043935806,
+            "Memory and system": 0.06866614048934491,
+            "Other compiled code": 0.10997106024730334
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "introselect_<npy::floating_point_type<double, (NPY_TYPES)12>, false, d",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.08418837148118916
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "nanmedian_all_float64",
+              "image": "reduce.cpython-312-darwin.so",
+              "share": 0.07629571165482768
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.07524335701131281
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::cfftp<double>::pass3<false, pocketfft::detail::cmpl",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.0652459878979216
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::cfftp<double>::pass8<false, pocketfft::detail::cmpl",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.06393054459352802
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_cast_double_to_cdouble",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.056827150749802685
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::general_nd<pocketfft::detail::pocketfft_c<double>, ",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.055248618784530384
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.049723756906077346
+            },
+            {
+              "kind": "Memory and system",
+              "name": "_tlv_get_addr",
+              "image": "libdyld.dylib",
+              "share": 0.03946329913180742
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_subtract",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.037095501183898975
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_strided_size16",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.034201525914233095
+            },
+            {
+              "kind": "NumPy",
+              "name": "CDOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03314917127071823
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "nanstd_all_float64",
+              "image": "reduce.cpython-312-darwin.so",
+              "share": 0.03157063930544594
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_to_strided_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02709813207050776
+            },
+            {
+              "kind": "NumPy",
+              "name": "CDOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.022625624835569586
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "astropy/timeseries/periodograms/lombscargle/implementations/utils.py:327(nufft1_lra)",
+            "calls": 30,
+            "share": 0.1288599681634882
+          },
+          {
+            "where": "numpy/fft/_pocketfft.py:58(_raw_fft)",
+            "calls": 30,
+            "share": 0.11904391900535634
+          },
+          {
+            "where": "astropy/timeseries/periodograms/lombscargle/implementations/utils.py:217(chebyshev_polynomials)",
+            "calls": 60,
+            "share": 0.07504003860547799
+          },
+          {
+            "where": "python3.12/inspect.py:2393(_signature_from_function)",
+            "calls": 5006,
+            "share": 0.0562727612785029
+          },
+          {
+            "where": "<method 'partition' of 'numpy.ndarray' objects>",
+            "calls": 44,
+            "share": 0.05084503631885928
+          },
+          {
+            "where": "<built-in method bottleneck.reduce.nanmedian>",
+            "calls": 50,
+            "share": 0.04823097312711527
+          },
+          {
+            "where": "python3.12/inspect.py:2497(_signature_from_callable)",
+            "calls": 10012,
+            "share": 0.04796118486034855
+          },
+          {
+            "where": "python3.12/inspect.py:3025(__init__)",
+            "calls": 10012,
+            "share": 0.037946770473482
+          },
+          {
+            "where": "python3.12/inspect.py:2739(__init__)",
+            "calls": 15018,
+            "share": 0.034481727191283916
+          },
+          {
+            "where": "<method 'reduce' of 'numpy.ufunc' objects>",
+            "calls": 312,
+            "share": 0.03130237235746796
+          }
+        ]
+      }
+    },
+    {
+      "timing": {
+        "name": "astropy_timeseries",
+        "size": "large",
+        "title": "Survey statistics: sigma clipping, biweight, Lomb\u2013Scargle periodograms, Bayesian blocks",
+        "source": "Astropy (astropy.stats, astropy.timeseries), called as a library",
+        "data": "10 light curves of 5,000 points, 4 images of 1,024 \u00d7 1,024",
+        "repeats": 1,
+        "numpy_ms": 1534.909375,
+        "hotkernels_ms": 1529.324125,
+        "inexact_ms": 1530.161125,
+        "numpy_median_ms": 1561.389459,
+        "hotkernels_median_ms": 1560.467333,
+        "identical": true,
+        "inexact_identical": true,
+        "taken": [
+          {
+            "call": "np.argmax",
+            "elements": "float64",
+            "calls": 4010
+          },
+          {
+            "call": "x[mask]",
+            "elements": "float64",
+            "calls": 235
+          },
+          {
+            "call": "x[mask] = v",
+            "elements": "float64",
+            "calls": 12
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "bool",
+            "calls": 2
+          },
+          {
+            "call": "np.argsort, stable",
+            "elements": "float64",
+            "calls": 2
+          }
+        ],
+        "left": [
+          {
+            "call": "x[mask] = v",
+            "elements": "",
+            "calls": 30
+          },
+          {
+            "call": "np.cumsum",
+            "elements": "",
+            "calls": 8000
+          },
+          {
+            "call": "x.astype(float32)",
+            "elements": "",
+            "calls": 128
+          },
+          {
+            "call": "np.sum",
+            "elements": "",
+            "calls": 60
+          },
+          {
+            "call": "np.bincount",
+            "elements": "",
+            "calls": 840
+          },
+          {
+            "call": "np.where(c, a, b)",
+            "elements": "",
+            "calls": 60
+          },
+          {
+            "call": "np.unique",
+            "elements": "",
+            "calls": 2
+          },
+          {
+            "call": "np.round",
+            "elements": "",
+            "calls": 10
+          },
+          {
+            "call": "np.median",
+            "elements": "",
+            "calls": 44
+          },
+          {
+            "call": "bn.nanmean",
+            "elements": "",
+            "calls": 4
+          },
+          {
+            "call": "bn.nanstd",
+            "elements": "",
+            "calls": 55
+          }
+        ]
+      },
+      "profile": {
+        "name": "astropy_timeseries",
+        "size": "large",
+        "plain": {
+          "samples": 4036,
+          "classes": {
+            "Python interpreter": 0.04335976214073341,
+            "NumPy": 0.6709613478691772,
+            "BLAS": 0.0,
+            "Maths library": 0.033201189296333006,
+            "hotkernels": 0.0,
+            "Memory and system": 0.03221010901883053,
+            "Other compiled code": 0.22026759167492568
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "introselect_<npy::floating_point_type<double, (NPY_TYPES)12>, false, d",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.17393458870168485
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "nanmedian_all_float64",
+              "image": "reduce.cpython-312-darwin.so",
+              "share": 0.15386521308225967
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::cfftp<double>::pass8<false, pocketfft::detail::cmpl",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.09489593657086225
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::general_nd<pocketfft::detail::pocketfft_c<double>, ",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.0777998017839445
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "nanstd_all_float64",
+              "image": "reduce.cpython-312-darwin.so",
+              "share": 0.062438057482656094
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.04162537165510406
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_cast_double_to_cdouble",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.035678889990089196
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_strided_size16",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03146679881070367
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.027502477700693757
+            },
+            {
+              "kind": "NumPy",
+              "name": "CDOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.027254707631318136
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_subtract",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.025024777006937563
+            },
+            {
+              "kind": "Maths library",
+              "name": "pow",
+              "image": "libsystem_m.dylib",
+              "share": 0.020317145688800792
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_to_strided_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.018830525272547076
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.018334985133795837
+            },
+            {
+              "kind": "NumPy",
+              "name": "CDOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.01684836471754212
+            }
+          ]
+        },
+        "installed": {
+          "samples": 4007,
+          "classes": {
+            "Python interpreter": 0.03918143249313701,
+            "NumPy": 0.6618417768904415,
+            "BLAS": 0.0014973795857249812,
+            "Maths library": 0.03718492637883704,
+            "hotkernels": 0.0029947591714499623,
+            "Memory and system": 0.03419016720738707,
+            "Other compiled code": 0.2231095582730222
+          },
+          "functions": [
+            {
+              "kind": "NumPy",
+              "name": "introselect_<npy::floating_point_type<double, (NPY_TYPES)12>, false, d",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.17519341152982282
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "nanmedian_all_float64",
+              "image": "reduce.cpython-312-darwin.so",
+              "share": 0.15647616670826053
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::cfftp<double>::pass8<false, pocketfft::detail::cmpl",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.0960818567506863
+            },
+            {
+              "kind": "NumPy",
+              "name": "pocketfft::detail::general_nd<pocketfft::detail::pocketfft_c<double>, ",
+              "image": "_pocketfft_umath.cpython-312-darwin.so",
+              "share": 0.07811330172198652
+            },
+            {
+              "kind": "Other compiled code",
+              "name": "nanstd_all_float64",
+              "image": "reduce.cpython-312-darwin.so",
+              "share": 0.06214125280758672
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.03543798352882456
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_cast_double_to_cdouble",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.029947591714499625
+            },
+            {
+              "kind": "NumPy",
+              "name": "_contig_to_strided_size16",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.029198901921637134
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_subtract",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02795108560019965
+            },
+            {
+              "kind": "NumPy",
+              "name": "CDOUBLE_multiply",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.025954579485899677
+            },
+            {
+              "kind": "NumPy",
+              "name": "_aligned_contig_to_strided_size8",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.023458946843024707
+            },
+            {
+              "kind": "Maths library",
+              "name": "pow",
+              "image": "libsystem_m.dylib",
+              "share": 0.02320938357873721
+            },
+            {
+              "kind": "Python interpreter",
+              "name": "_PyEval_EvalFrameDefault",
+              "image": "libpython3.12.dylib",
+              "share": 0.022710257050162216
+            },
+            {
+              "kind": "NumPy",
+              "name": "DOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.02246069378587472
+            },
+            {
+              "kind": "NumPy",
+              "name": "CDOUBLE_add",
+              "image": "_multiarray_umath.cpython-312-darwin.so",
+              "share": 0.017219865235837285
+            }
+          ]
+        },
+        "python": [
+          {
+            "where": "numpy/fft/_pocketfft.py:58(_raw_fft)",
+            "calls": 30,
+            "share": 0.15538684226167296
+          },
+          {
+            "where": "<method 'partition' of 'numpy.ndarray' objects>",
+            "calls": 44,
+            "share": 0.12881779123654782
+          },
+          {
+            "where": "<built-in method bottleneck.reduce.nanmedian>",
+            "calls": 55,
+            "share": 0.11606418381734611
+          },
+          {
+            "where": "astropy/timeseries/periodograms/lombscargle/implementations/utils.py:327(nufft1_lra)",
+            "calls": 30,
+            "share": 0.09866076041628216
+          },
+          {
+            "where": "astropy/timeseries/periodograms/lombscargle/implementations/utils.py:217(chebyshev_polynomials)",
+            "calls": 60,
+            "share": 0.05618592988667936
+          },
+          {
+            "where": "<built-in method bottleneck.reduce.nanstd>",
+            "calls": 55,
+            "share": 0.047729686228420845
+          },
+          {
+            "where": "python3.12/inspect.py:2393(_signature_from_function)",
+            "calls": 20006,
+            "share": 0.03528600780145638
+          },
+          {
+            "where": "python3.12/inspect.py:2497(_signature_from_callable)",
+            "calls": 40012,
+            "share": 0.029586369080139844
+          },
+          {
+            "where": "astropy/stats/biweight.py:339(biweight_midvariance)",
+            "calls": 4,
+            "share": 0.02642932823969451
+          },
+          {
+            "where": "<method 'reduce' of 'numpy.ufunc' objects>",
+            "calls": 312,
+            "share": 0.02416930211806307
+          }
+        ]
+      }
+    }
+  ]
+}

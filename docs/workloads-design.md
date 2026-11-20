@@ -4,7 +4,7 @@ This began as a proposal and is being built in the steps of [Order of work](#ord
 
 It adds a third level of timing, above the judge and above `delivery time`: whole programs and library functions that a user runs, written by other people, timed with and without `hotkernels.install()`.
 
-A study of five whole applications, with a native profile of each, is in [applications-findings.md](applications-findings.md). It is separate from the runner proposed here.
+A study of five whole applications, with a native profile of each, is in [applications-findings.md](applications-findings.md), and of five more in [applications-second-findings.md](applications-second-findings.md). They are separate from the runner proposed here.
 
 ## Summary
 
@@ -149,6 +149,7 @@ The output is a table per size, rendered from a Jinja template under `delivery/t
 
 - **README and site.** A short table, "Code we did not write", beside "From Python" in [README.md](../README.md): one line per workload at size `M`. It states the workloads that did not get faster as well as those that did.
 - **Issues.** Each call left to NumPy that a workload reaches gets one issue, with the workload as its reproduction. The probe already gives five: strided `searchsorted` needles, `argmax(axis=1)` on short rows, weighted `np.histogram`, `np.interp` over more than 64 sample points, and the two calls whose reason is not known.
+- **History.** Every run kept, and drawn over time: [workloads-history-design.md](workloads-history-design.md).
 - **Fusion.** [core-design.md](core-design.md#later) says that fusion first needs a way to find which chains of calls are worth fusing. The workloads are where the chains are.
 
 ### Considered and not proposed

@@ -1542,15 +1542,496 @@ static PyObject *call_around(HK_VECTORCALL_PARAMETERS) {
 //   worth reproducing.
 //
 // Infinities of one sign are numbers here: their sum raises no flag.
+//
+// Up to MEDIAN_F64_SORT_MAX_N elements the middle elements are found by
+// sorting a copy on the stack. Above it they are selected, exactly, by their
+// bits: see median_select and docs/median-large-design.md.
 
-// Most elements of a float64 array whose median the binding's loop takes, and
-// the length of the buffer on the stack they are copied to: 1 KB. The sort
-// takes time in the square of the count, and NumPy's partition does not.
-// Measured from Python on the Intel Core i5-14600KF, on normally distributed
-// values, np.median(x) was 47x faster than NumPy at 16 elements, 13x at 64,
-// 3.2x at 128 and 0.86x at 256. On values in descending order, the sort's
-// worst case, it was 1.48x at 128: still ahead of NumPy.
-#define MEDIAN_F64_MAX_N 128
+// Most elements of a float64 array whose median is found by sorting a copy,
+// and the length of the buffer on the stack they are copied to: 512 bytes.
+// The sort takes time in the square of the count; the selection takes about
+// 0.6 us however short the array, for its counters. Measured from Python on
+// the Apple M1 Pro on normally distributed values, the call took 0.17 us by
+// the sort at 32 elements, 0.46 at 64, 1.4 at 96 and 2.2 at 128, and 0.6 by
+// the selection at 129. (When the sort served up to 128 elements, on the
+// Intel Core i5-14600KF np.median(x) was 47x faster than NumPy at 16
+// elements and 13x at 64.)
+#define MEDIAN_F64_SORT_MAX_N 64
+
+// Most elements of a float64 array whose median the binding takes: the
+// selection's counters are 32 bits wide. A larger array is NumPy's.
+#define MEDIAN_F64_MAX_N ((npy_intp)UINT32_MAX)
+
+// The selection orders doubles by a key: their bits, with every bit flipped
+// for a negative number and only the sign bit set for a positive one. As
+// unsigned integers the keys are in the order of the numbers, -inf lowest
+// and +inf highest, with -0.0 just below +0.0. A signed compare of 64-bit
+// lanes is one instruction on both architectures and an unsigned one is not
+// on x86-64, so the range of a buffer of keys is found on the keys with the
+// top bit flipped, whose order as signed integers is the same.
+#define MEDIAN_KEY_TOP ((uint64_t)1 << 63)
+
+// Width of a digit of the selection, in bits: each pass counts the elements
+// by the next MEDIAN_DIGIT_BITS bits of their keys below the bits all of
+// them share. Measured on the Apple M1 Pro from 10,000 to 1,048,576
+// elements, eleven bits were as fast as twelve or better on most data, and
+// sixteen, whose counters leave the first-level cache, slower on most.
+#define MEDIAN_DIGIT_BITS 11
+#define MEDIAN_DIGITS ((size_t)1 << MEDIAN_DIGIT_BITS)
+// Sets of counters a count over many elements uses, element i of a block of
+// MEDIAN_BLOCK going to set i. Most of the elements of real data fall in a
+// few digits, and of data in order in one digit at a time; with a single
+// set each increment would wait for the one before it to the same counter.
+// Eight sets of 2,048 counters are 64 KB, half the first-level data cache of
+// the M1 Pro's performance cores. They are added together afterwards.
+#define MEDIAN_WAYS 8
+// Fewest elements counted into MEDIAN_WAYS sets; fewer go into one, where
+// clearing 64 KB would cost more than the sets save. At 10,000 elements in
+// ascending order eight sets took 7 us where one took 21.
+#define MEDIAN_WAYS_MIN_N 4096
+// Elements the loops over a set read at a time, as vectors: the keys and
+// digits of a block are computed in vectors, and the block is then counted,
+// or tested and gathered, one element at a time.
+#define MEDIAN_BLOCK 8
+// A digit is dense when it holds more than one element in
+// 2^MEDIAN_DENSE_SHIFT of the set it is gathered from. A dense digit is
+// gathered without a branch on each element, which would be mispredicted
+// often; a sparse one by testing each block first and looking at its
+// elements only when one of them is in the digit. A sixty-fourth was the
+// best of a sixteenth, a thirty-second and a sixty-fourth on an
+// astronomical image, whose middle digit holds about 4% of its pixels.
+#define MEDIAN_DENSE_SHIFT 6
+// Most candidates that are sorted by insertion rather than counted again.
+#define MEDIAN_SORT_CANDIDATES 64
+
+// The loops read vectors of the compiler's vector types: 16 bytes on ARM64,
+// NEON's width, and 32 on x86-64, AVX2's, where the functions that use them
+// are compiled for the kernels' instruction level (HK_TARGET_KERNEL_LEVEL).
+#if defined(__aarch64__)
+#define MEDIAN_VECTOR_BYTES 16
+#else
+#define MEDIAN_VECTOR_BYTES 32
+#endif
+typedef int64_t median_i64xv __attribute__((vector_size(MEDIAN_VECTOR_BYTES)));
+typedef uint64_t median_u64xv __attribute__((vector_size(MEDIAN_VECTOR_BYTES)));
+// Elements of one vector.
+#define MEDIAN_LANES (MEDIAN_VECTOR_BYTES / sizeof(uint64_t))
+// Vectors of running minima and maxima the range scans keep, so that the
+// scan is bound by its loads rather than by the latency of one chain.
+#define MEDIAN_SCAN_VECTORS 4
+#define MEDIAN_SCAN_STEP (MEDIAN_SCAN_VECTORS * MEDIAN_LANES)
+
+// The unsigned key of the double whose bits are `bits`.
+static inline uint64_t median_key(uint64_t bits) {
+    return bits ^ ((uint64_t)((int64_t)bits >> 63) | MEDIAN_KEY_TOP);
+}
+
+// The unsigned keys of the doubles whose bits are the lanes of `bits`.
+static inline HK_TARGET_KERNEL_LEVEL median_u64xv median_vector_key(median_u64xv bits) {
+    return bits ^ ((median_u64xv)((median_i64xv)bits >> 63) | MEDIAN_KEY_TOP);
+}
+
+// The double whose unsigned key is `key`.
+static inline double median_value(uint64_t key) {
+    const uint64_t bits = key & MEDIAN_KEY_TOP ? key ^ MEDIAN_KEY_TOP : ~key;
+    double value;
+    memcpy(&value, &bits, sizeof value);
+    return value;
+}
+
+// The smallest and largest key of a set of elements, unsigned.
+typedef struct {
+    // The smallest key.
+    uint64_t low;
+    // The largest key.
+    uint64_t high;
+} median_range;
+
+// The signed keys of the doubles whose bits are the lanes of `bits`: all but
+// the sign bit flipped for a negative number. In the order of the numbers as
+// signed integers, the NaNs outside the infinities.
+static inline HK_TARGET_KERNEL_LEVEL median_i64xv median_signed_keys(median_i64xv bits) {
+    return bits ^ ((bits >> 63) & (int64_t)~MEDIAN_KEY_TOP);
+}
+
+// The signed keys of +inf and -inf. A signed key above the first or below the
+// second is a NaN's.
+#define MEDIAN_SIGNED_KEY_PLUS_INF ((int64_t)0x7ff0000000000000)
+#define MEDIAN_SIGNED_KEY_MINUS_INF ((int64_t)0x800fffffffffffffULL)
+
+// The smallest and largest key of the `n` doubles, n >= 1, whose bits are at
+// `x`, into `range`, and into `in_order` whether they are in order, either
+// no element below the one before it or none above it, in the order of the
+// keys; false, with neither set, when one of them is a NaN. Integer operations only, so
+// no floating-point flag is raised, by a signalling NaN either.
+//
+// Each step of MEDIAN_SCAN_STEP elements also compares every element with
+// the one before it, until a fall and a rise have both been seen; on data in
+// no order that is within the first step, and the rest of the scan is the
+// minimum and maximum alone. The last step ends at n and overlaps the one
+// before it, which none of this minds.
+static HK_TARGET_KERNEL_LEVEL bool median_scan(const uint64_t *x, size_t n, median_range *range, bool *in_order) {
+    int64_t first;
+    memcpy(&first, x, sizeof first);
+    first ^= (first >> 63) & (int64_t)~MEDIAN_KEY_TOP;
+    int64_t lo = first, hi = first;
+    bool falls = false, rises = false;
+    if (n > MEDIAN_SCAN_STEP) {
+        median_i64xv low[MEDIAN_SCAN_VECTORS], high[MEDIAN_SCAN_VECTORS];
+        median_i64xv fell = {0}, rose = {0};
+        for (size_t k = 0; k < MEDIAN_SCAN_VECTORS; k++) low[k] = high[k] = (median_i64xv){0} + first;
+        // Steps start at 1, so that every element from the second on is
+        // compared with the one before it.
+        for (size_t i = 1;; i += MEDIAN_SCAN_STEP) {
+            if (i > n - MEDIAN_SCAN_STEP) i = n - MEDIAN_SCAN_STEP;
+            const bool ordering = !(falls && rises);
+            for (size_t k = 0; k < MEDIAN_SCAN_VECTORS; k++) {
+                median_i64xv v;
+                memcpy(&v, x + i + k * MEDIAN_LANES, sizeof v);
+                v = median_signed_keys(v);
+                if (ordering) {
+                    median_i64xv before;
+                    memcpy(&before, x + i + k * MEDIAN_LANES - 1, sizeof before);
+                    before = median_signed_keys(before);
+                    fell |= (median_i64xv)(v < before);
+                    rose |= (median_i64xv)(v > before);
+                }
+                const median_i64xv below = (median_i64xv)(v < low[k]), above = (median_i64xv)(v > high[k]);
+                low[k] = (v & below) | (low[k] & ~below);
+                high[k] = (v & above) | (high[k] & ~above);
+            }
+            if (ordering) {
+                for (size_t j = 0; j < MEDIAN_LANES; j++) {
+                    falls |= fell[j] != 0;
+                    rises |= rose[j] != 0;
+                }
+            }
+            if (i == n - MEDIAN_SCAN_STEP) break;
+        }
+        for (size_t k = 0; k < MEDIAN_SCAN_VECTORS; k++) {
+            for (size_t j = 0; j < MEDIAN_LANES; j++) {
+                lo = low[k][j] < lo ? low[k][j] : lo;
+                hi = high[k][j] > hi ? high[k][j] : hi;
+            }
+        }
+    } else {
+        int64_t before = first;
+        for (size_t i = 1; i < n; i++) {
+            int64_t v;
+            memcpy(&v, x + i, sizeof v);
+            v ^= (v >> 63) & (int64_t)~MEDIAN_KEY_TOP;
+            falls |= v < before;
+            rises |= v > before;
+            before = v;
+            lo = v < lo ? v : lo;
+            hi = v > hi ? v : hi;
+        }
+    }
+    if (lo < MEDIAN_SIGNED_KEY_MINUS_INF || hi > MEDIAN_SIGNED_KEY_PLUS_INF) return false;
+    // The unsigned form: the signed one with its top bit flipped.
+    range->low = (uint64_t)lo ^ MEDIAN_KEY_TOP;
+    range->high = (uint64_t)hi ^ MEDIAN_KEY_TOP;
+    *in_order = !falls || !rises;
+    return true;
+}
+
+// The smallest and largest of the `n` unsigned keys at `x`, n >= 1, into
+// `range`, by signed compares of the keys with their top bit flipped. The
+// last step ends at n and overlaps the one before it, which a minimum and a
+// maximum do not mind.
+static HK_TARGET_KERNEL_LEVEL void median_key_range(const uint64_t *x, size_t n, median_range *range) {
+    const int64_t flip = (int64_t)MEDIAN_KEY_TOP;
+    int64_t lo = (int64_t)x[0] ^ flip, hi = lo;
+    if (n >= MEDIAN_SCAN_STEP) {
+        median_i64xv low[MEDIAN_SCAN_VECTORS], high[MEDIAN_SCAN_VECTORS];
+        for (size_t k = 0; k < MEDIAN_SCAN_VECTORS; k++) low[k] = high[k] = (median_i64xv){0} + lo;
+        for (size_t i = 0;; i += MEDIAN_SCAN_STEP) {
+            if (i > n - MEDIAN_SCAN_STEP) i = n - MEDIAN_SCAN_STEP;
+            for (size_t k = 0; k < MEDIAN_SCAN_VECTORS; k++) {
+                median_i64xv v;
+                memcpy(&v, x + i + k * MEDIAN_LANES, sizeof v);
+                v ^= flip;
+                const median_i64xv below = (median_i64xv)(v < low[k]), above = (median_i64xv)(v > high[k]);
+                low[k] = (v & below) | (low[k] & ~below);
+                high[k] = (v & above) | (high[k] & ~above);
+            }
+            if (i == n - MEDIAN_SCAN_STEP) break;
+        }
+        for (size_t k = 0; k < MEDIAN_SCAN_VECTORS; k++) {
+            for (size_t j = 0; j < MEDIAN_LANES; j++) {
+                lo = low[k][j] < lo ? low[k][j] : lo;
+                hi = high[k][j] > hi ? high[k][j] : hi;
+            }
+        }
+    } else {
+        for (size_t i = 1; i < n; i++) {
+            const int64_t v = (int64_t)x[i] ^ flip;
+            lo = v < lo ? v : lo;
+            hi = v > hi ? v : hi;
+        }
+    }
+    range->low = (uint64_t)(lo ^ flip);
+    range->high = (uint64_t)(hi ^ flip);
+}
+
+// The elements one pass of the selection reads: the array itself, whose
+// elements are bits to be turned into keys, or the binding's buffer of the
+// candidates, which holds keys.
+typedef struct {
+    // The elements. The array's need not be aligned, so they are read with
+    // memcpy, which the compiler turns into plain loads.
+    const uint64_t *elements;
+    // How many.
+    size_t count;
+    // Whether they are the array's bits rather than keys.
+    bool raw;
+} median_source;
+
+// Key `i` of `source`.
+static inline uint64_t median_source_key(median_source source, size_t i) {
+    uint64_t value;
+    memcpy(&value, source.elements + i, sizeof value);
+    return source.raw ? median_key(value) : value;
+}
+
+// The keys of the MEDIAN_LANES elements of `source` from `i`.
+static inline HK_TARGET_KERNEL_LEVEL median_u64xv median_source_keys(median_source source, size_t i) {
+    median_u64xv value;
+    memcpy(&value, source.elements + i, sizeof value);
+    return source.raw ? median_vector_key(value) : value;
+}
+
+// The digit of `key`: its MEDIAN_DIGIT_BITS bits from bit `shift` up.
+static inline size_t median_digit(uint64_t key, unsigned shift) {
+    return (size_t)(key >> shift) & (MEDIAN_DIGITS - 1);
+}
+
+// Count the elements of `source` by their digit at `shift` into the first
+// MEDIAN_DIGITS of `counts`, which holds MEDIAN_WAYS * MEDIAN_DIGITS: in
+// MEDIAN_WAYS sets added together afterwards when there are at least
+// MEDIAN_WAYS_MIN_N elements, else in one. Every element is counted once,
+// whatever its value, so the counts add up to source.count.
+static HK_TARGET_KERNEL_LEVEL void median_count(median_source source, unsigned shift, uint32_t *counts) {
+    const size_t n = source.count;
+    const bool ways = n >= MEDIAN_WAYS_MIN_N;
+    memset(counts, 0, (ways ? MEDIAN_WAYS : 1) * MEDIAN_DIGITS * sizeof counts[0]);
+    size_t i = 0;
+    for (; i + MEDIAN_BLOCK <= n; i += MEDIAN_BLOCK) {
+        uint64_t digits[MEDIAN_BLOCK];
+        for (size_t k = 0; k < MEDIAN_BLOCK; k += MEDIAN_LANES) {
+            const median_u64xv digit = (median_source_keys(source, i + k) >> shift) & (MEDIAN_DIGITS - 1);
+            memcpy(digits + k, &digit, sizeof digit);
+        }
+        if (ways) {
+            for (size_t k = 0; k < MEDIAN_BLOCK; k++) counts[k * MEDIAN_DIGITS + digits[k]]++;
+        } else {
+            for (size_t k = 0; k < MEDIAN_BLOCK; k++) counts[digits[k]]++;
+        }
+    }
+    for (; i < n; i++) counts[median_digit(median_source_key(source, i), shift)]++;
+    if (!ways) return;
+    for (size_t w = 1; w < MEDIAN_WAYS; w++) {
+        for (size_t d = 0; d < MEDIAN_DIGITS; d++) counts[d] += counts[w * MEDIAN_DIGITS + d];
+    }
+}
+
+// The largest key of `source` whose digit at `shift` is `low_digit` and the
+// smallest whose digit is `high_digit`, into keys[0] and keys[1]: the two
+// middle elements when they lie in different digits. False when either
+// digit holds no element, which happens only when the array changed while it
+// was read.
+static HK_TARGET_KERNEL_LEVEL bool median_edges(median_source source, unsigned shift, size_t low_digit,
+                                                size_t high_digit, uint64_t keys[2]) {
+    uint64_t largest = 0, smallest = UINT64_MAX;
+    bool low_seen = false, high_seen = false;
+    for (size_t i = 0; i < source.count; i++) {
+        const uint64_t key = median_source_key(source, i);
+        const size_t digit = median_digit(key, shift);
+        if (digit == low_digit) {
+            low_seen = true;
+            largest = key > largest ? key : largest;
+        } else if (digit == high_digit) {
+            high_seen = true;
+            smallest = key < smallest ? key : smallest;
+        }
+    }
+    keys[0] = largest;
+    keys[1] = smallest;
+    return low_seen && high_seen;
+}
+
+// Copy the keys of the elements of `source` whose digit at `shift` is
+// `digit`, of which the count said there are `capacity`, to `out`, which
+// holds capacity + MEDIAN_BLOCK. `out` may be `source.elements` itself: no
+// key is written before the element at its place has been read. Returns how
+// many there were, or capacity + 1 when there were more, which happens only
+// when the array changed while it was read; nothing is then written past
+// out[capacity + MEDIAN_BLOCK - 1].
+//
+// A dense digit (see MEDIAN_DENSE_SHIFT) is gathered without a branch: each
+// key is stored at the next free place, which advances only when it is in
+// the digit, and the count is checked once a block, so a block may store up
+// to MEDIAN_BLOCK - 1 keys past the capacity before the check. A sparse one
+// is gathered by testing a block's digits in vectors first.
+static HK_TARGET_KERNEL_LEVEL size_t median_gather(median_source source, unsigned shift, size_t digit, uint64_t *out,
+                                                   size_t capacity) {
+    const size_t n = source.count;
+    const bool dense = capacity > n >> MEDIAN_DENSE_SHIFT;
+    size_t kept = 0, i = 0;
+    for (; i + MEDIAN_BLOCK <= n; i += MEDIAN_BLOCK) {
+        if (dense) {
+            for (size_t k = 0; k < MEDIAN_BLOCK; k++) {
+                const uint64_t key = median_source_key(source, i + k);
+                out[kept] = key;
+                kept += median_digit(key, shift) == digit;
+            }
+            if (kept > capacity) return capacity + 1;
+            continue;
+        }
+        median_u64xv hits = {0};
+        for (size_t k = 0; k < MEDIAN_BLOCK; k += MEDIAN_LANES) {
+            hits |= (median_u64xv)(((median_source_keys(source, i + k) >> shift) & (MEDIAN_DIGITS - 1)) == digit);
+        }
+        uint64_t any = 0;
+        for (size_t j = 0; j < MEDIAN_LANES; j++) any |= hits[j];
+        if (!any) continue;
+        for (size_t k = 0; k < MEDIAN_BLOCK; k++) {
+            const uint64_t key = median_source_key(source, i + k);
+            if (median_digit(key, shift) != digit) continue;
+            if (kept == capacity) return capacity + 1;
+            out[kept++] = key;
+        }
+    }
+    for (; i < n; i++) {
+        const uint64_t key = median_source_key(source, i);
+        if (median_digit(key, shift) != digit) continue;
+        if (kept == capacity) return capacity + 1;
+        out[kept++] = key;
+    }
+    return kept;
+}
+
+// Sort the `n` keys at `v` into ascending order by insertion.
+static void median_sort_keys(uint64_t *v, size_t n) {
+    for (size_t i = 1; i < n; i++) {
+        const uint64_t value = v[i];
+        size_t j = i;
+        for (; j > 0 && v[j - 1] > value; j--) v[j] = v[j - 1];
+        v[j] = value;
+    }
+}
+
+// What a selection found.
+typedef enum {
+    // The two middle keys.
+    MEDIAN_SELECTED,
+    // A NaN: the call is NumPy's.
+    MEDIAN_HAS_NAN,
+    // No memory for the counters or the candidates: the call is NumPy's.
+    MEDIAN_NO_MEMORY,
+    // The array changed while it was read: the call is NumPy's.
+    MEDIAN_CHANGED,
+} median_outcome;
+
+// Find the keys of the elements of rank `ranks[0]` and `ranks[1]`, counted
+// from 0 in ascending order, among the `n` doubles whose bits are at `x`,
+// into `keys`: for an even count the two middle elements, for an odd one the
+// middle element twice. Exact: it works on the bits alone, with integer
+// operations.
+//
+// The first read of the array finds the range of the keys and whether the
+// array is already in order; one in order, ascending or descending, has its
+// middle elements at known places, where NumPy's partition is also quick.
+// Otherwise it is a radix selection that looks only at the bits that vary.
+// The range of the keys gives the bits all of them share; the elements are counted by
+// the next MEDIAN_DIGIT_BITS bits below those, which says which digit holds
+// each rank. If both ranks fall in one digit, the elements with that digit
+// are copied to a buffer, and the selection goes on among them, whose keys
+// share MEDIAN_DIGIT_BITS more bits; the array itself is read three times
+// (range, count, copy). If the ranks fall in two digits, the lower is the
+// largest key in its digit and the upper the smallest in its, which one
+// more pass finds. A set whose keys are all equal is its own answer, and one
+// of at most MEDIAN_SORT_CANDIDATES elements is sorted. Each count leaves
+// MEDIAN_DIGIT_BITS fewer bits that vary, so there are at most six.
+//
+// The array may change while it is read if another thread writes to it,
+// with the interpreter lock released or not. Every write is then still
+// inside the binding's buffers, and a count that disagrees with what is
+// copied gives MEDIAN_CHANGED. Memory: MEDIAN_WAYS * MEDIAN_DIGITS counters,
+// 64 KB, and a buffer as long as the digit that holds the middle, at most
+// eight bytes an element.
+static median_outcome median_select(const uint64_t *x, size_t n, size_t ranks[2], uint64_t keys[2]) {
+    median_range range;
+    bool in_order;
+    if (!median_scan(x, n, &range, &in_order)) return MEDIAN_HAS_NAN;
+    if (in_order) {
+        // The two middle places hold the two middle elements: in ascending
+        // order the one of rank (n-1)/2 first, in descending order the one
+        // of rank n/2, which is the other for an even count and the same for
+        // an odd one.
+        uint64_t first, second;
+        memcpy(&first, x + ranks[0], sizeof first);
+        memcpy(&second, x + ranks[1], sizeof second);
+        first = median_key(first);
+        second = median_key(second);
+        keys[0] = first < second ? first : second;
+        keys[1] = first < second ? second : first;
+        return MEDIAN_SELECTED;
+    }
+    uint32_t *counts = malloc(MEDIAN_WAYS * MEDIAN_DIGITS * sizeof(uint32_t));
+    if (counts == NULL) return MEDIAN_NO_MEMORY;
+    uint64_t *candidates = NULL;
+    median_source source = {x, n, true};
+    median_outcome outcome = MEDIAN_SELECTED;
+    for (;;) {
+        if (range.low == range.high) {
+            keys[0] = keys[1] = range.low;
+            break;
+        }
+        if (!source.raw && source.count <= MEDIAN_SORT_CANDIDATES) {
+            median_sort_keys(candidates, source.count);
+            keys[0] = candidates[ranks[0]];
+            keys[1] = candidates[ranks[1]];
+            break;
+        }
+        // The bits from `varying` up are the same in every key. The digit is
+        // the MEDIAN_DIGIT_BITS bits just below them, or the lowest bits.
+        const unsigned varying = 64 - (unsigned)__builtin_clzll(range.low ^ range.high);
+        const unsigned shift = varying > MEDIAN_DIGIT_BITS ? varying - MEDIAN_DIGIT_BITS : 0;
+        median_count(source, shift, counts);
+        // The digits that hold the two ranks, and the elements below the first.
+        // The counts add up to more than either rank, so the walks end inside
+        // the counters.
+        size_t low_digit = 0, below = 0;
+        while (below + counts[low_digit] <= ranks[0]) below += counts[low_digit++];
+        size_t high_digit = low_digit, below_high = below;
+        while (below_high + counts[high_digit] <= ranks[1]) below_high += counts[high_digit++];
+        if (high_digit != low_digit) {
+            if (!median_edges(source, shift, low_digit, high_digit, keys)) outcome = MEDIAN_CHANGED;
+            break;
+        }
+        const size_t kept = counts[low_digit];
+        if (source.raw) {
+            // Later rounds gather in place, from fewer elements.
+            candidates = malloc((kept + MEDIAN_BLOCK) * sizeof candidates[0]);
+            if (candidates == NULL) {
+                outcome = MEDIAN_NO_MEMORY;
+                break;
+            }
+        }
+        if (median_gather(source, shift, low_digit, candidates, kept) != kept) {
+            outcome = MEDIAN_CHANGED;
+            break;
+        }
+        source = (median_source){candidates, kept, false};
+        median_key_range(candidates, kept, &range);
+        ranks[0] -= below;
+        ranks[1] -= below;
+    }
+    free(candidates);
+    free(counts);
+    return outcome;
+}
 
 // Sort the `n` doubles at `v`, none of them NaN, into ascending order: an
 // insertion sort, which on a few dozen elements is quicker than anything
@@ -1588,47 +2069,91 @@ static bool median_has_negative_zero(const double *v, size_t n) {
     return false;
 }
 
+// The two middle elements of the `n` doubles at `data`, 1 <= n <=
+// MEDIAN_F64_SORT_MAX_N, into `middle`, by sorting a copy on the stack; for
+// an odd count the middle element twice. False when one is a NaN. A
+// signalling NaN raises the invalid flag in the test; the call is then
+// NumPy's, whose ufuncs clear the flags before they compute. The lock stays
+// held, as the array is short.
+static bool median_middle_by_sort(const double *data, size_t n, double middle[2]) {
+    if (hk_has_nan(data, n)) return false;
+    double sorted[MEDIAN_F64_SORT_MAX_N];
+    memcpy(sorted, data, n * sizeof sorted[0]);
+    median_sort(sorted, n);
+    middle[0] = sorted[(n - 1) / 2];
+    middle[1] = sorted[n / 2];
+    return true;
+}
+
+// The two middle elements of the `n` doubles at `data`, n >
+// MEDIAN_F64_SORT_MAX_N, into `middle`, by median_select; for an odd count
+// the middle element twice. False for a call that is NumPy's. The array is
+// not copied first, and the interpreter lock is released from
+// HK_NOGIL_MIN_N elements: median_select stays inside its own buffers
+// whatever another thread writes to the array meanwhile.
+static bool median_middle_by_select(const double *data, size_t n, double middle[2]) {
+    size_t ranks[2] = {(n - 1) / 2, n / 2};
+    uint64_t keys[2];
+    median_outcome outcome;
+    HK_BEGIN_NOGIL(n)
+    outcome = median_select((const uint64_t *)data, n, ranks, keys);
+    HK_END_NOGIL
+    if (outcome != MEDIAN_SELECTED) return false;
+    middle[0] = median_value(keys[0]);
+    middle[1] = median_value(keys[1]);
+    return true;
+}
+
 // np.median(x) for a contiguous float64 array: the caller has tested the
 // type. Returns the np.float64 NumPy returns, or NULL with no exception set
-// for a call that is NumPy's. The array is read twice, for NaN and by the
-// copy; the lock stays held, as the array is short.
+// for a call that is NumPy's.
 static HK_NOINLINE PyObject *try_median(PyArrayObject *x) {
     const npy_intp n = PyArray_SIZE(x);
     // NumPy warns and answers NaN for an empty array.
     if (n < 1 || n > MEDIAN_F64_MAX_N) return NULL;
     const double *data = PyArray_DATA(x);
-    // A signalling NaN raises the invalid flag in this comparison; the call
-    // is then NumPy's, whose ufuncs clear the flags before they compute.
-    if (hk_has_nan(data, (size_t)n)) return NULL;
-    double sorted[MEDIAN_F64_MAX_N];
-    memcpy(sorted, data, (size_t)n * sizeof sorted[0]);
-    median_sort(sorted, (size_t)n);
-    const size_t half = (size_t)n / 2;
-    double median = sorted[half];
+    double middle[2];
+    const bool found = n <= MEDIAN_F64_SORT_MAX_N ? median_middle_by_sort(data, (size_t)n, middle)
+                                                  : median_middle_by_select(data, (size_t)n, middle);
+    if (!found) return NULL;
+    double median = middle[0];
     if (n % 2 == 0) {
         // The two operations of NumPy's mean, in its order.
-        const double sum = sorted[half - 1] + sorted[half];
+        const double sum = middle[0] + middle[1];
         median = sum / 2.0;
-        if (median_raises(sorted[half - 1], sorted[half], sum, median)) return NULL;
+        if (median_raises(middle[0], middle[1], sum, median)) return NULL;
         // The sum may have raised the precision flag, which NumPy's own loops
         // leave clear. The test above depends on the arithmetic, so this
         // cannot run before it. A call passed on leaves the flags to NumPy,
         // whose ufuncs clear them before they compute.
         hk_clear_float_flags();
     }
-    if (median == 0.0 && median_has_negative_zero(sorted, (size_t)n)) return NULL;
+    // The array holds no NaN, so these comparisons raise no flag.
+    if (median == 0.0 && median_has_negative_zero(data, (size_t)n)) return NULL;
     PyObject *result = hk_scalar(NPY_DOUBLE, (void *)&median);
     if (result != NULL) hk_take(HK_MEDIAN_F64);
     return result;
 }
 
-// np.median(x) with the array alone, by position. Its other parameters,
-// axis, out, overwrite_input and keepdims, are NumPy's even at their
-// defaults, and so is `a=` by keyword. The argument count and the array's
-// type are tested first, so that a call left to NumPy costs two comparisons
-// and a count. Every call not taken is counted.
+// True when the arguments of np.median after the array ask for the median of
+// all its elements and for nothing else: none, or `axis` as None, by
+// position or by keyword. NumPy flattens the array either way. Every other
+// argument, and `a=` by keyword, is NumPy's even at its default. Astropy's
+// biweight statistics and median absolute deviation call
+// np.median(data, axis=None).
+static inline bool median_arguments_are_plain(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    const Py_ssize_t keywords = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
+    if (nargs < 1 || nargs + keywords > 2) return false;
+    if (nargs + keywords == 1) return true;
+    return args[1] == Py_None && (keywords == 0 || hk_text_is(PyTuple_GET_ITEM(kwnames, 0), "axis"));
+}
+
+// np.median(x) and np.median(x, axis=None). The array's type is tested
+// first, so that a call left to NumPy costs that test, at most a look at the
+// arguments, and a count. Every call not taken is counted.
 static PyObject *call_median(HK_VECTORCALL_PARAMETERS) {
-    if (PyVectorcall_NARGS(nargsf) == 1 && kwnames == NULL && hk_is_flat(args[0], NPY_DOUBLE)) {
+    const Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    if (nargs >= 1 && hk_is_flat(args[0], NPY_DOUBLE) && median_arguments_are_plain(args, nargs, kwnames)) {
         PyObject *result = try_median((PyArrayObject *)args[0]);
         if (result != NULL) return result;
     }
