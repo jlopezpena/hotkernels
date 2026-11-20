@@ -1,0 +1,91 @@
+{# The recorded result of `delivery apps --record`. #}
+# Applications with and without hotkernels: {{ meta.cpu }}
+
+Written by `uv run --group apps delivery apps --profile --record`. Do not edit. What the figures mean is in [docs/applications-findings.md](../../docs/applications-findings.md).
+
+- **Machine:** {{ meta.cpu }}, {{ meta.os }}
+- **Software:** Python {{ meta.python }}, NumPy {{ meta.numpy }}{% for library, version in meta.libraries.items() %}, {{ library }} {{ version }}{% endfor %}, hotkernels at {{ meta.git }}
+- **Load average when the run started:** {{ meta.load_average }}{{ ", a busy machine: the times are rough" if meta.load_average > busy_load else "" }}
+{% if meta.unfinished_ci_runs is defined and meta.unfinished_ci_runs is not none %}
+- **GitHub Actions runs unfinished when it started:** {{ meta.unfinished_ci_runs }}
+{% endif %}
+- **Method:** {{ rounds }} alternating rounds of each side, the best of each. A round is one run, or as many runs as last {{ "%.0f" | format(shortest_round_ms) }} ms where one is shorter; the times are of one run. Results compared bit for bit on every round.
+{% if meta.sampler is defined and meta.sampler %}
+- **Profile:** sampled with {{ meta.sampler }}.
+{% endif %}
+
+## Times
+
+| Application | Size | Data | NumPy | `install()` | Faster by | Results | `install(inexact=True)` | Faster by | Kernel calls | Left to NumPy |
+|---|---|---|---|---|---|---|---|---|---|---|
+{% for item in items %}
+| `{{ item.timing.name }}` | {{ item.timing.size }} | {{ item.timing.data }} | {{ "%.1f" | format(item.timing.numpy_ms) }} ms | {{ "%.1f" | format(item.timing.hotkernels_ms) }} ms | {{ item.timing.speedup | times }} | {{ "identical" if item.timing.identical else "**different**" }} | {{ "%.1f" | format(item.timing.inexact_ms) }} ms | {{ item.timing.inexact_speedup | times }} | {{ item.timing.kernel_calls | thousands }} | {{ item.timing.left_calls | thousands }} |
+{% endfor %}
+
+The median of the {{ rounds }} rounds, to show the noise, and the runs in each round:
+
+| Application | Size | Runs per round | NumPy, best | NumPy, median | `install()`, best | `install()`, median |
+|---|---|---|---|---|---|---|
+{% for item in items %}
+| `{{ item.timing.name }}` | {{ item.timing.size }} | {{ item.timing.repeats }} | {{ "%.1f" | format(item.timing.numpy_ms) }} ms | {{ "%.1f" | format(item.timing.numpy_median_ms) }} ms | {{ "%.1f" | format(item.timing.hotkernels_ms) }} ms | {{ "%.1f" | format(item.timing.hotkernels_median_ms) }} ms |
+{% endfor %}
+{% for application in applications %}
+
+## `{{ application.name }}`
+
+{{ application.title }}. Source: {{ application.source }}.
+{% for item in application["items"] %}
+
+### {{ item.timing.size | capitalize }}: {{ item.timing.data }}
+
+#### Calls in one run
+
+| NumPy call | Elements | Kernel calls | Left to NumPy |
+|---|---|---|---|
+{% for count in item.timing.taken %}
+| `{{ count.call }}` | {{ count.elements }} | {{ count.calls | thousands }} | |
+{% endfor %}
+{% for count in item.timing.left %}
+| `{{ count.call }}` | | | {{ count.calls | thousands }} |
+{% endfor %}
+{% if not item.timing.taken and not item.timing.left %}
+| none reached a hook | | | |
+{% endif %}
+{% if item.profile %}
+
+#### Where the time goes
+
+Share of the samples of working threads, by the class of the function at the top of the stack.
+
+| Class | Plain NumPy | After `install()` |
+|---|---|---|
+{% for kind, share in item.profile.plain.classes.items() %}
+| {{ kind }} | {{ "%.1f%%" | format(100 * share) }} | {{ "%.1f%%" | format(100 * item.profile.installed.classes[kind]) }} |
+{% endfor %}
+
+The largest functions on plain NumPy ({{ item.profile.plain.samples | thousands }} samples):
+
+| Share | Class | Function | In |
+|---|---|---|---|
+{% for function in item.profile.plain.functions %}
+| {{ "%.1f%%" | format(100 * function.share) }} | {{ function.kind }} | `{{ function.name }}` | `{{ function.image }}` |
+{% endfor %}
+
+The largest after `install()` ({{ item.profile.installed.samples | thousands }} samples):
+
+| Share | Class | Function | In |
+|---|---|---|---|
+{% for function in item.profile.installed.functions %}
+| {{ "%.1f%%" | format(100 * function.share) }} | {{ function.kind }} | `{{ function.name }}` | `{{ function.image }}` |
+{% endfor %}
+
+The Python functions with the most time of their own, in one plain run under `cProfile`:
+
+| Share | Calls | Function |
+|---|---|---|
+{% for function in item.profile.python %}
+| {{ "%.1f%%" | format(100 * function.share) }} | {{ function.calls | thousands }} | `{{ function.where }}` |
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endfor %}

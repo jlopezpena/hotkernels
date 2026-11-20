@@ -15,9 +15,13 @@ import typer
 
 import hotkernels
 
+from . import app_profile as P
+from . import app_timing as A
+from . import apps as applications
 from . import check as C
 from . import demo as D
 from . import history as H
+from .gradient_step import study as G
 from . import numpy_suite
 from . import timing as T
 from . import workload_timing as W
@@ -36,6 +40,8 @@ EXIT_FAILED = 1
 SHOWN_FAILURES = 5
 # Recorded timings, committed to the repository: one JSON file and one report per machine.
 RESULTS = Path(__file__).resolve().parent / "results"
+# What the file names of a recorded run of `delivery apps` end with.
+APPS_SUFFIX = "-apps"
 # Load average above which a timing run is marked as taken on a busy machine.
 BUSY_LOAD = H.BUSY_LOAD
 # A kernel-taking call counts as slower than NumPy below this speedup. The
@@ -321,6 +327,126 @@ def history_report(
                           machines=H.machines(runs), busy_load=BUSY_LOAD).rstrip("\n"))
 
 
+def _apps_context(meta: dict, items: list[dict], skipped: dict[str, list[str]], passed: bool) -> dict:
+    """Build the variables both templates of `delivery apps` take.
+
+    Args:
+        meta: What the run was measured on.
+        items: One {"timing": AppTiming, "profile": AppProfile or None} per
+            application and size, in the order they ran.
+        skipped: Application -> the modules it needs that are missing.
+        passed: Whether every result was identical.
+
+    Returns:
+        The items, and the same items grouped by application: a list of
+        {"name", "title", "source", "items"}, each application once, its
+        sizes in the order they ran.
+    """
+    groups: dict[str, dict] = {}
+    for item in items:
+        timing = item["timing"]
+        group = groups.setdefault(timing.name, {"name": timing.name, "title": timing.title, "source": timing.source,
+                                                "items": []})
+        group["items"].append(item)
+    return {"meta": meta, "items": items, "applications": list(groups.values()), "skipped": skipped,
+            "busy_load": BUSY_LOAD, "rounds": A.ROUNDS, "shortest_round_ms": A.SHORTEST_ROUND_MS, "passed": passed}
+
+
+def _apps_stem(meta: dict) -> str:
+    """Return the file name, without suffix, of a machine's record of `delivery apps`."""
+    return (_slug(meta["cpu"]) or "unknown-machine") + APPS_SUFFIX
+
+
+@app.command()
+def apps(
+    only: Optional[str] = typer.Option(None, help="Run one application, for example `mlp_train`."),
+    size: Optional[str] = typer.Option(None, help="Run one size, `small` or `large`. Both by default."),
+    profile: bool = typer.Option(False, help="Also sample where the time goes: `sample` on macOS, `perf` on Linux."),
+    record: bool = typer.Option(False, help="Write the results to delivery/results/."),
+    allow_busy: bool = typer.Option(False, help="Record even while GitHub Actions runs are unfinished."),
+) -> None:
+    """Run whole applications with and without hotkernels, and say where their time goes.
+
+    Needs the libraries of the `apps` dependency group: `uv run --group apps
+    delivery apps`. Only meaningful on native hardware and an idle machine.
+
+    Args:
+        only: Application to restrict the run to.
+        size: Size to restrict the run to, one of `apps.SIZE_NAMES`.
+        profile: Whether to sample each application's native stacks both ways.
+        record: Whether to write a JSON file and a Markdown report.
+        allow_busy: Whether to record although `gh run list` shows runs that
+            have not finished. This machine hosts the CI runners, and a run
+            taken beside them inflates the shares of the profile.
+    """
+    if size not in (None, *applications.SIZE_NAMES):
+        log.error("no size %r: the sizes are %s", size, ", ".join(applications.SIZE_NAMES))
+        raise typer.Exit(EXIT_FAILED)
+    unfinished = A.unfinished_runs() if record else None
+    if record and unfinished is None:
+        log.warning("could not ask `gh run list` whether CI runs are unfinished; recording anyway")
+    elif record and unfinished and not allow_busy:
+        log.error("%d GitHub Actions runs are unfinished (`gh run list`). They share this machine and would "
+                  "inflate the profile's shares. Wait for them, or pass --allow-busy.", unfinished)
+        raise typer.Exit(EXIT_FAILED)
+    sampler = None
+    if profile:
+        sampler, reason = P.find_sampler()
+        if sampler is None:
+            log.info("no profile: %s. Times and counts only.", reason)
+    meta = T.describe_machine() | {"libraries": A.library_versions(), "unfinished_ci_runs": unfinished,
+                                   "sampler": sampler.description if sampler else None}
+    if record and meta["load_average"] > BUSY_LOAD:
+        log.warning("load average %s: the times will be marked rough", meta["load_average"])
+    names = [name for name in applications.NAMES if only in (None, name)]
+    sizes = [name for name in applications.SIZE_NAMES if size in (None, name)]
+    skipped = {name: applications.missing(name) for name in names if applications.missing(name)}
+    items = []
+    for name in names:
+        if name in skipped:
+            continue
+        for chosen in sizes:
+            log.info("running %s, %s", name, chosen)
+            items.append({"timing": A.measure(name, chosen),
+                          "profile": P.profile(name, chosen, sampler) if sampler else None})
+    passed = bool(items) and all(item["timing"].identical for item in items)
+    context = _apps_context(meta, items, skipped, passed)
+    log.info("%s", render("apps.txt.j2", **context).rstrip("\n"))
+    if record:
+        RESULTS.mkdir(exist_ok=True)
+        stem = _apps_stem(meta)
+        rows = [{"timing": A.as_row(item["timing"]),
+                 "profile": P.as_row(item["profile"]) if item["profile"] else None} for item in items]
+        (RESULTS / f"{stem}.json").write_text(json.dumps({"meta": meta, "rows": rows}, indent=2) + "\n")
+        (RESULTS / f"{stem}.md").write_text(render("apps.md.j2", **context))
+        log.info("recorded in %s", RESULTS / f"{stem}.md")
+    raise typer.Exit(EXIT_OK if passed else EXIT_FAILED)
+
+
+@app.command(name="apps-report")
+def apps_report(
+    path: Path = typer.Argument(..., help="A JSON record written by `delivery apps --record`."),
+) -> None:
+    """Write the Markdown report of a recorded run of `delivery apps` again from its JSON.
+
+    Reads records written before the applications had two sizes as well. The
+    report goes beside the JSON, under the same name.
+
+    Args:
+        path: The JSON record.
+    """
+    recorded = json.loads(path.read_text())
+    items = []
+    for row in recorded["rows"]:
+        timing = A.from_row(row["timing"])
+        items.append({"timing": timing,
+                      "profile": P.from_row(row["profile"], timing.size) if row["profile"] else None})
+    context = _apps_context(recorded["meta"], items, {}, all(item["timing"].identical for item in items))
+    report = path.with_suffix(".md")
+    report.write_text(render("apps.md.j2", **context))
+    log.info("written %s", report)
+
+
 @app.command(name="numpy-tests")
 def numpy_tests(
     select: Optional[str] = typer.Option(None, help="A pytest -k expression, to run part of the suite."),
@@ -339,3 +465,32 @@ def numpy_tests(
 
 if __name__ == "__main__":
     app()
+
+
+@app.command("gradient-step")
+def gradient_step(
+    rounds: int = typer.Option(G.ROUNDS, help="Trainings and runs per way of writing the update."),
+) -> None:
+    """Measure where the time of the gradient step `w -= lr * g` goes, and what fusing it would save.
+
+    The study of docs/gradient-step-findings.md: mlp_train and min_char_rnn,
+    with loops and a caching allocator of its own. macOS on ARM64 only, and
+    only meaningful on an idle machine.
+
+    Args:
+        rounds: Trainings and application runs per way, alternating.
+    """
+    meta = T.describe_machine()
+    log.info("timing the update inside mlp_train")
+    ways, split = G.in_loop(rounds)
+    log.info("timing w -= b after each reader")
+    readers = G.after_reader()
+    log.info("running both applications on two allocators")
+    allocators, cache_counts = G.allocator(rounds)
+    log.info("timing min_char_rnn's accumulations")
+    accumulations = G.accumulations()
+    log.info("%s", render("gradient_step.txt.j2", meta=meta, threads_variable=G.THREADS_VARIABLE,
+                            threads=G.threads_setting(), measured=G.MEASURED, rounds=rounds, ways=ways,
+                            split=split, repeats=G.REPEATS, readers=readers, prefetch_ahead=G.PREFETCH_AHEAD,
+                            allocators=allocators, cache_counts=cache_counts,
+                            accumulations=accumulations).rstrip("\n"))

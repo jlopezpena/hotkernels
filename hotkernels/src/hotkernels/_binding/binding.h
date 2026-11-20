@@ -45,9 +45,13 @@
 // One entry per kernel the binding can call. The order is the order of
 // HK_KERNEL_NAMES in module.c.
 //
-// The entries after the kernels are loops built into the binding for calls
+// The entries after the kernels are loops built into the binding: for calls
 // on short arrays, where NumPy's own call path is nearly all of a call's
-// cost and the loop hardly matters. They are plain C in the hook files, not
+// cost and the loop hardly matters; for accumulations along the first axis
+// of a matrix, where the gain is the order in which memory is walked; and,
+// on ARM64, for float64 adds and subtracts in place, where what decides the
+// speed is which core's cache holds the output (hook_loop.c). They are plain
+// C in the hook files, not
 // kernels from `kernels/`, and the judge does not see them; `delivery check`
 // compares them with NumPy as it does the rest of the binding. They are
 // counted like kernels so that report() and the self-test of install() can
@@ -61,9 +65,15 @@ typedef enum {
     HK_HISTOGRAM_F64, HK_BINCOUNT_U8, HK_ISIN_I64,
     HK_SEARCHSORTED_F64, HK_SEARCHSORTED_RIGHT_F64, HK_INTERP_F64,
     HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64, HK_FMAX_REDUCE_F64, HK_ANY_ROWS_BOOL,
-    HK_BINCOUNT_I16, HK_BINCOUNT_I64,
+    HK_BINCOUNT_I16, HK_BINCOUNT_I64, HK_UNIQUE_I64,
+    HK_ARGSORT_F64, HK_ARGSORT_I64, HK_ARGSORT_U64,
+    // Served through bottleneck's functions, not NumPy's (hook_bottleneck.c).
+    HK_NANMEAN_COLS_F64, HK_NANSTD_COLS_F64, HK_NANMIN_COLS_F64, HK_NANMAX_COLS_F64,
     // Built into the binding.
     HK_CLIP_I64, HK_ROUND_F64, HK_MEDIAN_F64,
+    HK_CUMSUM_ROWS_F64, HK_CUMPROD_ROWS_F64, HK_CUMMAX_ROWS_F64, HK_CUMFMAX_ROWS_F64,
+    HK_ARGMAX_ROWS_F32, HK_ARGMAX_ROWS_F64, HK_ARGMIN_ROWS_F32, HK_ARGMIN_ROWS_F64,
+    HK_ADD_INPLACE_F64, HK_SUBTRACT_INPLACE_F64,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -75,6 +85,9 @@ typedef enum {
     HK_OP_NONZERO, HK_OP_CUMSUM, HK_OP_ASTYPE, HK_OP_SUM, HK_OP_COUNT_NONZERO,
     HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN, HK_OP_SEARCHSORTED, HK_OP_INTERP,
     HK_OP_WHERE, HK_OP_ACCUMULATE, HK_OP_REDUCEAT, HK_OP_ANY, HK_OP_ROUND, HK_OP_MEDIAN,
+    HK_OP_UNIQUE, HK_OP_ARGSORT,
+    // bottleneck's functions: a call counted here was left to bottleneck.
+    HK_OP_BN_NANMEAN, HK_OP_BN_NANSTD, HK_OP_BN_NANMIN, HK_OP_BN_NANMAX,
     HK_OPERATION_COUNT
 } hk_operation;
 
@@ -105,6 +118,26 @@ static inline void hk_take(hk_kernel k) {
 static inline void hk_pass(hk_operation op) {
     hk_count(&hk_passed[op]);
 }
+
+// One Python call of argmax or argmin that NumPy may split into many calls of
+// the type slot, one per row. The method hook sets `active` before it hands
+// a float32 or float64 array on to NumPy; while it is set the slot hook
+// records here what it did with each row instead of counting, and the method
+// hook counts the whole call once when NumPy returns. One per thread: NumPy
+// runs the slot on the calling thread with the interpreter lock released,
+// while other threads may be in calls of their own. See
+// docs/argmax-rows-design.md.
+typedef struct {
+    // True while a method hook waits for NumPy to return.
+    bool active;
+    // True when the slot took a kernel for at least one row.
+    bool taken;
+    // The kernel the slot took. Every row of one call has the same length,
+    // so it is the same kernel for all of them.
+    hk_kernel slot_kernel;
+} hk_argext_call;
+
+extern _Thread_local hk_argext_call hk_argext_mark;
 
 // True when install(inexact=True) was given: kernels that are not
 // bit-identical to NumPy may then take calls.
@@ -423,15 +456,36 @@ static inline bool hk_as_exact_double(PyObject *obj, double *out) {
 PyObject *hk_try_sum(PyObject *array);
 PyObject *hk_try_argext(PyObject *array, bool want_max);
 
+// argmax or argmin along the last axis of a matrix, as the new
+// one-dimensional np.intp array NumPy's `m.argmax(axis=1)` returns: the
+// operation's kernel once per row for rows of at least ARGEXT_ROWS_KERNEL_COLS
+// elements, and a loop of the binding's own (argmax_rows_f32 and the rest)
+// for narrower ones. The caller has tested that the axis is 1 or -1 and that
+// there is no other argument but an `out` of None; the array's type, shape and
+// layout are tested here. In hook_function.c.
+PyObject *hk_try_argext_rows(PyObject *array, bool want_max);
+
 // The array NumPy's clip returns for `array` clamped to the bounds `lo` and
 // `hi`, as given by the caller: the clip kernels, or for int64 the binding's
 // own loop, on a new array. `array` is contiguous float32 or float64 with at
 // least one element, or contiguous int64 with 1 to CLIP_I64_MAX_N elements;
 // each bound is an object that leaves the result in the array's element type
 // and converts to it exactly as NumPy converts it, with lo <= hi after the
-// conversion. A caller whose NumPy operation needs more, such as no `out`,
-// tests that first. In hook_function.c.
-PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi);
+// conversion. `out` is the caller's `out` argument, NULL when it was not
+// given: absent or None gives a new array, the array itself (float32 and
+// float64, writeable) clips it in place and returns it, and anything else is
+// NumPy's. A caller whose NumPy operation needs more tests that first. In
+// hook_function.c.
+PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi, PyObject *out);
+
+// Clip the `n` elements at `data` to [lo, hi] in place with the clip kernel
+// `kernel` (HK_CLIP_F32 or HK_CLIP_F64; for float32 the bounds are float32
+// values held as doubles). The kernels are wrong when their output is their
+// input (issue 7), so each run of the array is copied to a buffer on the
+// stack and the kernel clips the copy back over the run: every kernel call
+// sees two buffers that do not overlap. Leaves the floating-point flags as the kernels leave them. Needs
+// no interpreter lock. In hook_function.c.
+void hk_clip_in_place(hk_kernel kernel, void *data, size_t n, double lo, double hi);
 
 // The elements of `x` where `mask` is True, as a new one-dimensional array:
 // the compress kernels. `x` is contiguous float32, float64 or int64 (which
@@ -535,5 +589,6 @@ extern hk_hook hk_loop_hooks[];
 extern hk_hook hk_function_hooks[];
 extern hk_hook hk_method_hooks[];
 extern hk_hook hk_index_hooks[];
+extern hk_hook hk_bottleneck_hooks[];
 
 #endif

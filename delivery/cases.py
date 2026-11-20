@@ -16,6 +16,7 @@ import atexit
 import ctypes
 import ctypes.util
 import itertools
+import operator
 import tempfile
 from dataclasses import dataclass, replace
 from functools import partial
@@ -24,6 +25,7 @@ from typing import Callable, Iterator
 
 import numpy as np
 
+from hotkernels.hooks import ON_ARM64
 from judge import cases as judge_cases
 from judge.spec import DEFAULT_SCALARS, Kernel, load_spec, np_dtype
 
@@ -459,11 +461,21 @@ def argext_cases(name: str) -> Iterator[Case]:
     yield from unary_cases(name, kernels, ("i64", "i32", "u8"), spellings, empty_takes=False)
     yield from unusual_nan_cases(name, kernels, f"np.{name}(x)", function)
     yield from unusual_nan_cases(name, kernels, f"x.{name}()", spellings[1].call)
+    yield from argext_rows_cases(name)
 
 
-# Layouts NumPy passes to the clip loop as they are, so that an in-place
-# call arrives with the output equal to the input.
-IN_PLACE_UNBUFFERED = frozenset({"contiguous", "rows", "readonly"})
+# Shapes of the gradients the in-place clip was asked for by: issue 186, from
+# the min_char_rnn application's weights and biases.
+CLIP_GRADIENT_SHAPES = ((100, 100), (100, 60), (100, 1))
+# The bounds that application clips its gradients to, as Python ints and as
+# Python floats.
+CLIP_GRADIENT_BOUNDS = ((-5, 5), (-5.0, 5.0))
+# What the judge's random values are multiplied by to make a gradient, so
+# that some elements lie beyond those bounds.
+CLIP_GRADIENT_SCALE = 10
+# Text in a spelling of clip that marks a call writing into the array it
+# clips: `out=x` and its views, or `x` passed as `out` by position.
+_CLIP_IN_PLACE_MARKERS = ("out=x", ", x)")
 
 
 def _clip_bounds(kernel: str) -> Iterator[tuple[str, float, float]]:
@@ -475,13 +487,121 @@ def _clip_bounds(kernel: str) -> Iterator[tuple[str, float, float]]:
 
 
 def _clip_in_place(x, lo, hi):
-    """Clip `x` into itself and return it."""
-    return np.clip(x, lo, hi, out=x)
+    """Clip `x` into itself.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        Whether NumPy returned `x` itself, as it does for `out=x`, and what
+        it returned. `x` is compared afterwards as an argument.
+    """
+    result = np.clip(x, lo, hi, out=x)
+    return result is x, result
 
 
 def _clip_method_in_place(x, lo, hi):
-    """Clip `x` into itself with the method and return it."""
-    return x.clip(lo, hi, out=x)
+    """Clip `x` into itself with the method.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        Whether the method returned `x` itself, and what it returned.
+    """
+    result = x.clip(lo, hi, out=x)
+    return result is x, result
+
+
+def _clip_in_place_kw(x, lo, hi, positional: bool = False, **kwargs):
+    """Clip `x` into itself, passing `out` by position or with further keywords.
+
+    Args:
+        x: The array.
+        lo: Lower bound.
+        hi: Upper bound.
+        positional: Whether `x` is passed as `out` by position.
+        **kwargs: Further keyword arguments of `np.clip`.
+
+    Returns:
+        Whether NumPy returned `x` itself, and what it returned.
+    """
+    result = np.clip(x, lo, hi, x, **kwargs) if positional else np.clip(x, lo, hi, out=x, **kwargs)
+    return result is x, result
+
+
+def _clip_in_place_lo_hi(lo, hi, x):
+    """Call `np.clip(x, lo, hi, out=x)`, the bounds first so that `partial` can bind them.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        What _clip_in_place returns.
+    """
+    return _clip_in_place(x, lo, hi)
+
+
+def _clip_method_in_place_lo_hi(lo, hi, x):
+    """Call `x.clip(lo, hi, out=x)`, the bounds first so that `partial` can bind them.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        What _clip_method_in_place returns.
+    """
+    return _clip_method_in_place(x, lo, hi)
+
+
+def _clip_shifted(x, lo, hi):
+    """Clip all of `x` but its first element into all of it but its last.
+
+    The output overlaps the input one element behind it, which the kernels
+    must never see. NumPy copies the input first, so the clip loop is handed
+    two separate buffers.
+
+    Args:
+        x: The array, clipped in place.
+        lo: Lower bound.
+        hi: Upper bound.
+
+    Returns:
+        `x`.
+    """
+    np.clip(x[1:], lo, hi, out=x[:-1])
+    return x
+
+
+def _gradient(dtype: str, shape: tuple[int, int], unusual: bool) -> tuple:
+    """Build one gradient-shaped array of random values, as the one argument of a case.
+
+    Args:
+        dtype: "f32" or "f64".
+        shape: Rows and columns.
+        unusual: Whether to spread signalling and negative NaNs through it.
+
+    Returns:
+        A one-element tuple holding a C-contiguous array of that shape,
+        scaled so that some elements lie beyond the bounds of
+        CLIP_GRADIENT_BOUNDS.
+    """
+    x = values(dtype, shape[0] * shape[1]) * CLIP_GRADIENT_SCALE
+    if unusual:
+        # Placed after the scaling, which would quiet a signalling NaN.
+        unsigned, signalling, negative = _UNUSUAL_NANS[x.dtype.itemsize]
+        bits = x.view(unsigned)
+        bits[::_SIGNALLING_EVERY] = signalling
+        bits[2::_NEGATIVE_EVERY] = negative
+    return (x.reshape(shape),)
 
 
 def _clip_into_fresh(x, lo, hi):
@@ -550,11 +670,14 @@ def clip_cases() -> Iterator[Case]:
     hook on `x.clip` call the kernel directly for a contiguous float32 or
     float64 array with no `out` and two bounds that keep the result in the
     array's element type (Python floats and ints, NumPy scalars of the
-    array's type), lo <= hi. Every other call goes on to the `clip` ufunc,
+    array's type), lo <= hi, and no `out`, or for an in-place clip `out` the
+    writeable array itself. Every other call goes on to the `clip` ufunc,
     whose loop hook takes contiguous data with scalar bounds, lo <= hi, when
-    the output is not the input. NumPy buffers arrays that are misaligned or
-    in the other byte order and hands the loop contiguous chunks, so those
-    may reach the kernel too. The counters do not say which of the hooks took
+    the output is clear of the input or is exactly the input. An in-place
+    call goes through a buffer of the binding's, in runs, so the sizes of the
+    value sweep fall on both sides of a run's end. NumPy buffers arrays that
+    are misaligned or in the other byte order and hands the loop contiguous
+    chunks, so those may reach the kernel too. The counters do not say which of the hooks took
     a call; `installation_checks` proves the direct path on its own. int64,
     which the function and method hooks serve on short arrays with a loop of
     the binding's own, has its cases in `clip_i64_cases`.
@@ -564,13 +687,31 @@ def clip_cases() -> Iterator[Case]:
         default = next(_clip_bounds(kernel))
         for set_name, lo, hi in _clip_bounds(kernel):
             sizes = VALUE_SIZES if set_name in (DEFAULT_SCALARS, "zero_lo") else FEW_SIZES
-            for _, _, label, maker in value_arrays(dtype, sizes):
+            for n, _, label, maker in value_arrays(dtype, sizes):
                 yield Case("clip", f"np.clip(x, {lo!r}, {hi!r}) {dtype} {label}", partial(_made, maker),
                            partial(_clip3, np.clip, lo, hi), kernel)
+                # Bounds the function hook declines, such as a float32
+                # denormal, go to the clip loop. Given `out`, NumPy hands the
+                # loop a step other than the element size for one element,
+                # and the loop leaves that to NumPy.
+                in_place = kernel if n > 1 else ANY
+                yield Case("clip", f"np.clip(x, {lo!r}, {hi!r}, out=x) {dtype} {label}", partial(_made, maker),
+                           partial(_clip_in_place_lo_hi, lo, hi), in_place)
+        for _, _, label, maker in value_arrays(dtype, FEW_SIZES):
+            yield Case("clip", f"x.clip(lo, hi, out=x) {dtype} {label}", partial(_made, maker),
+                       partial(_clip_method_in_place_lo_hi, default[1], default[2]), kernel)
         yield from _clip_bound_cases(dtype, kernel, default)
+        for shape, (lo, hi), unusual in itertools.product(CLIP_GRADIENT_SHAPES, CLIP_GRADIENT_BOUNDS, (False, True)):
+            data = "signalling and negative NaNs" if unusual else "random"
+            for text, call in (("np.clip", _clip_in_place_lo_hi), ("x.clip", _clip_method_in_place_lo_hi)):
+                yield Case("clip", f"{text}(x, {lo!r}, {hi!r}, out=x) {dtype} shape={shape} x={data}",
+                           partial(_gradient, dtype, shape, unusual), partial(call, lo, hi), kernel)
     yield from unusual_nan_cases("clip", kernels, "np.clip(x, -0.5, 0.5)", partial(_clip3, np.clip, -0.5, 0.5))
     yield from unusual_nan_cases("clip", kernels, "np.clip(x, 0.0, 1.0)", partial(_clip3, np.clip, 0.0, 1.0))
     yield from unusual_nan_cases("clip", kernels, "x.clip(-0.5, 0.5)", partial(_clip_method, -0.5, 0.5))
+    yield from unusual_nan_cases("clip", kernels, "np.clip(x, -0.5, 0.5, out=x)", partial(_clip_in_place_lo_hi, -0.5, 0.5))
+    yield from unusual_nan_cases("clip", kernels, "np.clip(x, 0.0, 1.0, out=x)", partial(_clip_in_place_lo_hi, 0.0, 1.0))
+    yield from unusual_nan_cases("clip", kernels, "x.clip(-5, 5, out=x)", partial(_clip_method_in_place_lo_hi, -5, 5))
     lo, hi, nan = -0.5, 0.5, float("nan")
     spellings = (
         Spelling("np.clip(x, lo, hi)", partial(_clip3, np.clip, lo, hi), normalises=True),
@@ -599,6 +740,15 @@ def clip_cases() -> Iterator[Case]:
         Spelling("np.clip(x, lo, np.float32(hi))", lambda x: np.clip(x, lo, np.float32(hi)), normalises=True),
         Spelling("x.clip(np.float32(lo), np.float32(hi))", lambda x: x.clip(np.float32(lo), np.float32(hi)), normalises=True),
         Spelling("np.clip(x, lo, hi, out=fresh)", lambda x: _clip_into_fresh(x, lo, hi), normalises=True),
+        Spelling("np.clip(x, lo, hi, out=x)", lambda x: _clip_in_place(x, lo, hi), normalises=True),
+        Spelling("x.clip(lo, hi, out=x)", lambda x: _clip_method_in_place(x, lo, hi), normalises=True),
+        Spelling("np.clip(x, lo, hi, x)", lambda x: _clip_in_place_kw(x, lo, hi, positional=True), normalises=True),
+        Spelling("x.clip(lo, hi, x)", lambda x: x.clip(lo, hi, x), normalises=True),
+        Spelling("np.clip(x, min=lo, max=hi, out=x)", lambda x: np.clip(x, min=lo, max=hi, out=x), normalises=True),
+        Spelling("np.clip(x, -1, 1, out=x)", lambda x: _clip_in_place(x, -1, 1), normalises=True),
+        Spelling("np.clip(x, np.float32(lo), np.float32(hi), out=x)", lambda x: _clip_in_place(x, np.float32(lo), np.float32(hi)), normalises=True),
+        Spelling("np.clip(x, lo, hi, out=x.view())", lambda x: np.clip(x, lo, hi, out=x.view()), normalises=True),
+        Spelling("np.clip(x, lo, hi, out=x, dtype=x.dtype)", lambda x: _clip_in_place_kw(x, lo, hi, dtype=x.dtype), normalises=True),
         Spelling("np.clip(x, np.float64(lo), np.float64(hi))", lambda x: np.clip(x, np.float64(lo), np.float64(hi)), MAYBE),
         Spelling("np.clip(x, lo, np.float64(hi))", lambda x: np.clip(x, lo, np.float64(hi)), MAYBE),
         Spelling("x.clip(np.float64(lo), np.float64(hi))", lambda x: x.clip(np.float64(lo), np.float64(hi)), MAYBE),
@@ -608,8 +758,13 @@ def clip_cases() -> Iterator[Case]:
         Spelling("np.clip(x, lo, hi, casting='unsafe')", lambda x: np.clip(x, lo, hi, casting="unsafe"), MAYBE),
         Spelling("np.clip(x, lo, hi, out=zeros, where=x > 0)", lambda x: _clip_where(x, lo, hi), MAYBE),
         Spelling("x.clip(lo, hi, order='F')", lambda x: x.clip(lo, hi, order="F"), MAYBE),
-        Spelling("np.clip(x, lo, hi, out=x)", lambda x: _clip_in_place(x, lo, hi), NEVER, normalises=True),
-        Spelling("x.clip(lo, hi, out=x)", lambda x: _clip_method_in_place(x, lo, hi), NEVER, normalises=True),
+        Spelling("np.clip(x, lo, hi, out=x, casting='unsafe')", lambda x: _clip_in_place_kw(x, lo, hi, casting="unsafe"), MAYBE),
+        Spelling("np.clip(x, np.float64(lo), np.float64(hi), out=x)", lambda x: _clip_in_place(x, np.float64(lo), np.float64(hi)), MAYBE),
+        Spelling("np.clip(x[1:], lo, hi, out=x[:-1]) shifted", lambda x: _clip_shifted(x, lo, hi), MAYBE),
+        Spelling("np.clip(x, hi, lo, out=x) reversed", lambda x: _clip_in_place(x, hi, lo), NEVER),
+        Spelling("x.clip(hi, lo, out=x) reversed", lambda x: _clip_method_in_place(x, hi, lo), NEVER),
+        Spelling("np.clip(x, nan, hi, out=x)", lambda x: _clip_in_place(x, nan, hi), NEVER),
+        Spelling("np.clip(x, lo, None, out=x)", lambda x: _clip_in_place(x, lo, None), NEVER),
         Spelling("np.clip(x, lo, None)", lambda x: np.clip(x, lo, None), NEVER),
         Spelling("np.clip(x, None, hi)", lambda x: np.clip(x, None, hi), NEVER),
         Spelling("np.clip(x, min=lo)", lambda x: np.clip(x, min=lo), NEVER),
@@ -636,10 +791,10 @@ def clip_cases() -> Iterator[Case]:
         for n, spelling in itertools.product((0, *LAYOUT_SIZES), spellings):
             for variant in variants_for(dtype, n):
                 expect = expectation(kernel, spelling, variant, n)
-                # An in-place call on an array NumPy has to buffer reaches the
-                # loop with separate buffers, which the kernel may take.
-                if spelling.kind == NEVER and spelling.normalises and kernel and variant.name not in IN_PLACE_UNBUFFERED:
-                    expect = ANY
+                # A call that writes into a read-only array raises, in NumPy
+                # and with hotkernels alike, before any loop runs.
+                if any(marker in spelling.text for marker in _CLIP_IN_PLACE_MARKERS) and not variant.writeable:
+                    expect = None
                 # NumPy converts integers to float64 for float bounds, and the
                 # float64 loop may then take the converted data.
                 if dtype == "i64" and spelling.kind != NEVER:
@@ -1584,11 +1739,15 @@ def cumsum_cases(inexact: bool) -> Iterator[Case]:
         Spelling("np.add.accumulate(x)", np.add.accumulate, NEVER),
     )
     if inexact:
-        yield from unary_cases("cumsum", {"f32": "cumsum_f32", "f64": "cumsum_f64"}, (), spellings,
-                               empty_takes=False, tolerance=True)
+        for case in unary_cases("cumsum", {"f32": "cumsum_f32", "f64": "cumsum_f64"}, (), spellings,
+                                empty_takes=False, tolerance=True):
+            yield _with_rows_expectation(case)
     else:
-        yield from unary_cases("cumsum", {"i64": "cumsum_i64", "bool": "cumsum_bool"}, ("f32", "f64", "i32", "u8"),
-                               spellings, empty_takes=False)
+        for case in unary_cases("cumsum", {"i64": "cumsum_i64", "bool": "cumsum_bool"}, ("f32", "f64", "i32", "u8"),
+                                spellings, empty_takes=False):
+            yield _with_rows_expectation(case)
+        # x.cumsum(axis=0) on a matrix: the row loop of np.add.
+        yield from (case for case in rows_accumulate_cases() if case.operation == "cumsum")
         # A mask holding a byte other than 0 or 1 counts once per element in NumPy.
         for n, byte, spelling in itertools.product(LAYOUT_SIZES, BAD_MASK_BYTES, spellings[:2]):
             yield Case("cumsum", f"{spelling.text} bool n={n} mask bytes are {byte}",
@@ -2848,20 +3007,336 @@ def _late_signalling_nan(n: int) -> np.ndarray:
     return x
 
 
+# --------------------------------------- accumulation along the first axis
+#
+# np.add, np.multiply, np.maximum and np.fmax accumulated along axis 0 of a
+# C-ordered float64 array of two or more dimensions, and x.cumsum(axis=0),
+# are taken by loops built into the binding that walk the rows
+# (docs/accumulate-rows-design.md). add and multiply hand the rest of a call
+# to NumPy at the first block of rows that makes a NaN or raises a
+# floating-point flag; maximum and fmax are guarded as cumfmax_f64 is.
+
+# The row loop of each ufunc, by the name its calls are written with.
+_ROWS_KERNELS = {
+    "np.add.accumulate": "cumsum_rows_f64",
+    "np.multiply.accumulate": "cumprod_rows_f64",
+    "np.maximum.accumulate": "cummax_rows_f64",
+    "np.fmax.accumulate": "cumfmax_rows_f64",
+}
+# What follows the ufunc's name in the spellings of the one-dimensional sweeps
+# that the row loops take on the two-dimensional "rows" layout: the default
+# axis, axis 0, and a fresh `out`. `axis=-1` is the second axis there.
+_ROWS_SPELLING_TAILS = ("(x)", "(x, 0)", "(array=x)", "(x, 0, None, None)", "(x, axis=0, dtype=None, out=None)",
+                        "(x, out=o)")
+# The same for the cumsum sweep, whose default flattens: only an axis of 0.
+_ROWS_CUMSUM_SPELLINGS = ("np.cumsum(x, axis=0)", "x.cumsum(0)")
+# Shapes of the row-loop cases: a single row, a single column, rows shorter
+# and longer than the 16,384 bytes the loop takes a block of, a row of exactly
+# that, empyrical's window of 253 rows, enough elements to release the
+# interpreter lock, many narrow rows, and three dimensions.
+ROWS_SHAPES = ((1, 1), (1, 5), (2, 1), (2, 3), (5, 1), (3, 1000), (5, 2048), (4, 2049), (253, 47), (40, 700),
+               (3000, 2), (7, 3, 4))
+# Shapes the sweep over value classes runs at.
+ROWS_VALUE_SHAPES = ((2, 3), (253, 47), (40, 700))
+# Shape of the cases that stop part way, and the element made a NaN, an
+# overflow or an underflow: in the middle of a column, several blocks in.
+ROWS_STOP_SHAPE = (253, 47)
+ROWS_STOP_AT = (120, 30)
+# np.errstate settings the cases that stop part way run under.
+ROWS_ERRSTATES = ("warn", "raise", "ignore")
+
+
+def _rows_expect(kernel: str, x: np.ndarray, call: Callable[[np.ndarray], object]) -> str | None:
+    """Say whether a row loop runs a call to the end, for a plain C-ordered float64 x.
+
+    add and multiply stop, and leave the rest to NumPy, exactly when NumPy's
+    own result holds a NaN or NumPy raises under np.errstate(all="raise"):
+    the loop computes the same values and reads the same flags. maximum and
+    fmax are left to NumPy where cumfmax_f64 is.
+
+    Args:
+        kernel: The row loop the call reaches.
+        x: The array, as the call receives it.
+        call: Makes the call on a copy of x with plain NumPy.
+
+    Returns:
+        The kernel, or None.
+    """
+    if kernel in ("cummax_rows_f64", "cumfmax_rows_f64"):
+        return kernel if _cumfmax_takes(x.ravel()) else None
+    with np.errstate(all="raise"):
+        try:
+            result = call(x.copy())
+        except FloatingPointError:
+            return None
+    return None if np.isnan(result).any() else kernel
+
+
+def _with_rows_expectation(case: Case) -> Case:
+    """Return a case of the one-dimensional sweeps, expecting a row loop where it takes the "rows" layout.
+
+    Args:
+        case: A case of an accumulation or of cumsum. Only a float64 one on
+            the C-ordered two-dimensional layout, written with a spelling the
+            row loops take, is changed.
+
+    Returns:
+        The case with its expectation worked out from its spelling and array.
+    """
+    if " f64 " not in case.label or not case.label.endswith("layout=rows"):
+        return case
+    text = case.label.split(" f64 ")[0]
+    kernel = None
+    if text in _ROWS_CUMSUM_SPELLINGS:
+        kernel = "cumsum_rows_f64"
+    for name, rows_kernel in _ROWS_KERNELS.items():
+        if text.startswith(name) and text[len(name):] in _ROWS_SPELLING_TAILS:
+            kernel = rows_kernel
+    if kernel is None:
+        return case
+    (x,) = case.make()
+    return replace(case, expect=_rows_expect(kernel, x, case.call))
+
+
+def _rows_values(shape: tuple[int, ...], cls: str = judge_cases.RANDOM, position: int = 0) -> np.ndarray:
+    """Return judge values of one class as a C-ordered float64 array of `shape`."""
+    return values("f64", int(np.prod(shape)), cls, position).reshape(shape)
+
+
+def _rows_out_pair(shape: tuple[int, ...]) -> tuple:
+    """Build random float64 values of `shape` and a separate float64 array of that shape for the result."""
+    return (_rows_values(shape), np.zeros(shape))
+
+
+def _rows_overlapping_out(shape: tuple[int, ...]) -> tuple:
+    """Build an array of `shape` and an `out` of its shape one row further on in the same buffer: a partial overlap."""
+    cols = int(np.prod(shape[1:]))
+    buffer = values("f64", int(np.prod(shape)) + cols)
+    return (buffer[:-cols].reshape(shape), buffer[cols:].reshape(shape))
+
+
+def _rows_readonly_out(shape: tuple[int, ...]) -> tuple:
+    """Build an array of `shape` and a read-only `out` of its shape, which NumPy refuses."""
+    out = np.zeros(shape)
+    out.flags.writeable = False
+    return (_rows_values(shape), out)
+
+
+def _with_element(shape: tuple[int, ...], value: float) -> np.ndarray:
+    """Return 1 plus a small random part in `shape`, with `value` at ROWS_STOP_AT.
+
+    The values stay near 1, so that a product or a sum down a column raises
+    no flag on its own; the elements put in decide whether the loop stops.
+    """
+    x = 1.0 + 1e-3 * _rows_values(shape)
+    x[ROWS_STOP_AT] = value
+    return x
+
+
+def _in_errstate(setting: str, call: Callable[..., object], *arguments: object) -> object:
+    """Make a call with every floating-point error set to `setting`, a value np.errstate takes."""
+    with np.errstate(all=setting):
+        return call(*arguments)
+
+
+# The calls of the row-loop cases, each with the operation it is counted
+# under, its text, the call, and the row loop that takes it. Each takes the
+# array alone.
+_ROWS_CALLS: tuple[tuple[str, str, Callable[[np.ndarray], object], str], ...] = (
+    ("accumulate", "np.add.accumulate(x)", np.add.accumulate, "cumsum_rows_f64"),
+    ("accumulate", "np.add.accumulate(x, axis=0)", lambda x: np.add.accumulate(x, axis=0), "cumsum_rows_f64"),
+    ("accumulate", "np.cumulative_sum(x, axis=0)", lambda x: np.cumulative_sum(x, axis=0), "cumsum_rows_f64"),
+    ("cumsum", "x.cumsum(axis=0)", lambda x: x.cumsum(axis=0), "cumsum_rows_f64"),
+    ("cumsum", "np.cumsum(x, axis=0)", lambda x: np.cumsum(x, axis=0), "cumsum_rows_f64"),
+    ("cumsum", "x.cumsum(-x.ndim)", lambda x: x.cumsum(-x.ndim), "cumsum_rows_f64"),
+    ("cumsum", "x.cumsum(0, None, None)", lambda x: x.cumsum(0, None, None), "cumsum_rows_f64"),
+    ("cumsum", "np.nancumsum(x, axis=0)", lambda x: np.nancumsum(x, axis=0), "cumsum_rows_f64"),
+    ("cumsum", "x.cumsum(axis=0, out=x)", lambda x: x.cumsum(axis=0, out=x), "cumsum_rows_f64"),
+    ("accumulate", "x.cumprod(axis=0)", lambda x: x.cumprod(axis=0), "cumprod_rows_f64"),
+    ("accumulate", "np.cumprod(x, axis=0)", lambda x: np.cumprod(x, axis=0), "cumprod_rows_f64"),
+    ("accumulate", "np.multiply.accumulate(x, 0, None)", lambda x: np.multiply.accumulate(x, 0, None),
+     "cumprod_rows_f64"),
+    ("accumulate", "np.cumulative_prod(x, axis=0)", lambda x: np.cumulative_prod(x, axis=0), "cumprod_rows_f64"),
+    ("accumulate", "x.cumprod(axis=0, out=x)", lambda x: x.cumprod(axis=0, out=x), "cumprod_rows_f64"),
+    ("accumulate", "np.multiply.accumulate(x, out=x)", lambda x: np.multiply.accumulate(x, out=x),
+     "cumprod_rows_f64"),
+    ("accumulate", "np.maximum.accumulate(x)", np.maximum.accumulate, "cummax_rows_f64"),
+    ("accumulate", "np.maximum.accumulate(x, axis=-x.ndim)", lambda x: np.maximum.accumulate(x, axis=-x.ndim),
+     "cummax_rows_f64"),
+    ("accumulate", "np.maximum.accumulate(x, out=x)", lambda x: np.maximum.accumulate(x, out=x), "cummax_rows_f64"),
+    ("accumulate", "np.fmax.accumulate(x, axis=0)", lambda x: np.fmax.accumulate(x, axis=0), "cumfmax_rows_f64"),
+    ("accumulate", "np.fmax.accumulate(x, 0, out=x)", lambda x: np.fmax.accumulate(x, 0, out=x),
+     "cumfmax_rows_f64"),
+)
+# The same calls with a separate `out`, taking (x, out).
+_ROWS_OUT_CALLS: tuple[tuple[str, str, Callable[..., object], str], ...] = (
+    ("cumsum", "x.cumsum(axis=0, out=o)", lambda x, o: x.cumsum(axis=0, out=o), "cumsum_rows_f64"),
+    ("accumulate", "np.add.accumulate(x, out=o)", lambda x, o: np.add.accumulate(x, out=o), "cumsum_rows_f64"),
+    ("accumulate", "x.cumprod(axis=0, out=o)", lambda x, o: x.cumprod(axis=0, out=o), "cumprod_rows_f64"),
+    ("accumulate", "np.maximum.accumulate(x, 0, None, o)", lambda x, o: np.maximum.accumulate(x, 0, None, o),
+     "cummax_rows_f64"),
+    ("accumulate", "np.fmax.accumulate(x, out=o)", lambda x, o: np.fmax.accumulate(x, out=o), "cumfmax_rows_f64"),
+)
+# A float32 signalling NaN: the contents of an `out` NumPy casts, which makes
+# it warn "invalid value encountered in cast" on every platform.
+_SIGNALLING_F32 = 0x7FA00000
+# Calls on a C-ordered float64 matrix that the row loops leave to NumPy, with
+# the operation each is counted under.
+_ROWS_LEFT_CALLS: tuple[tuple[str, str, Callable[[np.ndarray], object]], ...] = (
+    ("accumulate", "np.add.accumulate(x, axis=1)", lambda x: np.add.accumulate(x, axis=1)),
+    ("accumulate", "np.multiply.accumulate(x, axis=-1)", lambda x: np.multiply.accumulate(x, axis=-1)),
+    ("accumulate", "np.maximum.accumulate(x, axis=np.int64(0))", lambda x: np.maximum.accumulate(x, axis=np.int64(0))),
+    ("accumulate", "np.fmax.accumulate(x, dtype=np.float64)", lambda x: np.fmax.accumulate(x, dtype=np.float64)),
+    ("accumulate", "np.minimum.accumulate(x)", np.minimum.accumulate),
+    ("accumulate", "np.subtract.accumulate(x)", np.subtract.accumulate),
+    # Each `out` is zeros, not np.empty: with an `out` of another element
+    # type NumPy casts what `out` held, and leftover memory that reads as a
+    # signalling NaN makes it warn "invalid value encountered in cast", or
+    # not, depending on what the allocator hands back.
+    ("accumulate", "x.cumprod(axis=0, out=(o,))", lambda x: x.cumprod(axis=0, out=(np.zeros_like(x),))),
+    ("accumulate", "x.cumprod(axis=0, out=float32)", lambda x: x.cumprod(axis=0, out=np.zeros(x.shape, np.float32))),
+    ("accumulate", "x.cumprod(axis=0, out=float32 of signalling NaNs)",
+     lambda x: x.cumprod(axis=0, out=np.full(x.shape, _SIGNALLING_F32, np.uint32).view(np.float32))),
+    ("accumulate", "x.cumprod(axis=0, out=fortran)",
+     lambda x: x.cumprod(axis=0, out=np.zeros(x.shape, order="F"))),
+    ("cumsum", "x.cumsum()", lambda x: x.cumsum()),
+    ("cumsum", "x.cumsum(axis=1)", lambda x: x.cumsum(axis=1)),
+    ("cumsum", "x.cumsum(axis=0, dtype=np.float64)", lambda x: x.cumsum(axis=0, dtype=np.float64)),
+)
+# Layouts of the matrix that the row loops leave to NumPy: another order, a
+# view with a step, another element type and another byte order. Each builds
+# from a C-ordered float64 matrix.
+_ROWS_LEFT_LAYOUTS: tuple[tuple[str, Callable[[np.ndarray], np.ndarray]], ...] = (
+    ("fortran", np.asfortranarray),
+    ("every second column", lambda m: np.repeat(m, 2, axis=-1)[..., ::2]),
+    ("float32", lambda m: m.astype(np.float32)),
+    ("int64", lambda m: (m * 10).astype(np.int64)),
+    ("byteswapped", lambda m: m.astype(m.dtype.newbyteorder())),
+    ("subclass", lambda m: m.copy().view(_Subclass)),
+)
+
+
+def _rows_layout_cases() -> Iterator[Case]:
+    """Yield the row loops' cases over shapes, spellings, outputs and layouts."""
+    for shape, (operation, text, call, kernel) in itertools.product(ROWS_SHAPES, _ROWS_CALLS):
+        maker = partial(_rows_values, shape)
+        yield Case(operation, f"{text} f64 shape={shape}", partial(_made, maker), call,
+                   _rows_expect(kernel, maker(), call))
+    for shape, (operation, text, call, kernel) in itertools.product(ROWS_SHAPES, _ROWS_OUT_CALLS):
+        expect = _rows_expect(kernel, _rows_values(shape), lambda x, call=call: call(x, np.zeros_like(x)))
+        yield Case(operation, f"{text} f64 shape={shape}", partial(_rows_out_pair, shape), call, expect)
+    for shape in ((2, 3), (253, 47)):
+        for operation, text, call, _ in _ROWS_OUT_CALLS:
+            yield Case(operation, f"{text} f64 shape={shape} out overlaps x by all but a row",
+                       partial(_rows_overlapping_out, shape), call, None)
+            yield Case(operation, f"{text} f64 shape={shape} out read-only", partial(_rows_readonly_out, shape),
+                       call, None)
+        for operation, text, call in _ROWS_LEFT_CALLS:
+            yield Case(operation, f"{text} f64 shape={shape}", partial(_made, partial(_rows_values, shape)), call, None)
+        for (operation, text, call, _), (layout, build) in itertools.product(_ROWS_CALLS, _ROWS_LEFT_LAYOUTS):
+            # np.nancumsum copies its array first, into a layout NumPy chooses.
+            expect = ANY if text.startswith("np.nancumsum") else None
+            yield Case(operation, f"{text} shape={shape} layout={layout}",
+                       partial(_made, lambda shape=shape, build=build: build(_rows_values(shape))), call, expect)
+        for operation, text, call, _ in _ROWS_CALLS:
+            maker = partial(_rows_values, shape)
+            readonly = partial(_made, lambda maker=maker: _readonly(maker()))
+            # A read-only array is taken unless the call writes into it.
+            expect = None if "out=x" in text else _ROWS_CALLS_KERNEL[text]
+            yield Case(operation, f"{text} f64 shape={shape} layout=readonly", readonly, call, expect)
+    # Zero rows and zero columns are NumPy's.
+    for shape, (operation, text, call, _) in itertools.product(((0, 3), (3, 0), (0, 2, 2)), _ROWS_CALLS):
+        yield Case(operation, f"{text} f64 shape={shape}", partial(_made, partial(np.zeros, shape)), call, None)
+
+
+# The row loop of each call of _ROWS_CALLS, by its text.
+_ROWS_CALLS_KERNEL = {text: kernel for _, text, _, kernel in _ROWS_CALLS}
+
+
+def _rows_value_cases() -> Iterator[Case]:
+    """Yield the row loops' cases over every value class of the judge, and the guards of maximum and fmax."""
+    for shape, (operation, text, call, kernel) in itertools.product(ROWS_VALUE_SHAPES, _ROWS_CALLS):
+        n = int(np.prod(shape))
+        plain, positional = judge_cases.classes("f64")
+        classes = [(cls, 0) for cls in plain] + [(cls, p) for cls in positional for p in sorted({0, n // 2, n - 1})]
+        for cls, position in classes:
+            maker = partial(_rows_values, shape, cls, position)
+            yield Case(operation, f"{text} f64 shape={shape} x={cls}@{position}", partial(_made, maker), call,
+                       _rows_expect(kernel, maker(), call))
+    for operation, text, call, kernel in _ROWS_CALLS:
+        if kernel not in ("cummax_rows_f64", "cumfmax_rows_f64"):
+            continue
+        for label, value in (("negative zero", -0.0), ("positive zero", 0.0), ("NaN of another pattern",
+                                                                                 _from_bits((_PAYLOAD_NAN,))[0])):
+            def make(value=value) -> tuple:
+                """Build a matrix with NaNs of one pattern, and `value` at ROWS_STOP_AT."""
+                x = _rows_values(ROWS_STOP_SHAPE, "nan_some")
+                x[ROWS_STOP_AT] = value
+                return (x,)
+            yield Case(operation, f"{text} f64 shape={ROWS_STOP_SHAPE} x=nan_some, {label} at {ROWS_STOP_AT}", make,
+                       call, _rows_expect(kernel, make()[0], call))
+        yield Case(operation, f"{text} f64 shape={ROWS_STOP_SHAPE} x=nan_some invalid flag after",
+                   partial(_made, partial(_rows_values, ROWS_STOP_SHAPE, "nan_some")),
+                   partial(_invalid_flag_after, call), kernel)
+
+
+def _rows_stop_cases() -> Iterator[Case]:
+    """Yield the cases where np.add or np.multiply's row loop hands the rest of the call to NumPy part way.
+
+    A NaN, an overflow, an underflow, an infinity times zero or infinities of
+    both signs in the middle of a column, under each np.errstate setting, in
+    place and not: the result, the warnings or the error, and the array
+    afterwards must be NumPy's. (np.nancumsum replaces the NaN first, and
+    its loop runs to the end.)
+    """
+    # The element at ROWS_STOP_AT, the one below it, and the ufuncs whose
+    # loop each pair stops.
+    triggers = (
+        ("NaN", np.nan, 1.0, ("add", "multiply")),
+        ("overflow", 1e308, 1e308, ("add", "multiply")),
+        ("underflow", 1e-300, 1e-300, ("multiply",)),
+        ("infinity then zero", np.inf, 0.0, ("multiply",)),
+        ("infinities of both signs", -np.inf, np.inf, ("add",)),
+    )
+    below = (ROWS_STOP_AT[0] + 1, ROWS_STOP_AT[1])
+    for label, value, next_value, ufuncs in triggers:
+        def make(value=value, next_value=next_value) -> tuple:
+            """Build a matrix near 1 with the trigger at ROWS_STOP_AT and `next_value` below it."""
+            x = _with_element(ROWS_STOP_SHAPE, value)
+            x[below] = next_value
+            return (x,)
+        for (operation, text, call, kernel), setting in itertools.product(_ROWS_CALLS, ROWS_ERRSTATES):
+            ufunc = {"cumsum_rows_f64": "add", "cumprod_rows_f64": "multiply"}.get(kernel)
+            if ufunc not in ufuncs:
+                continue
+            yield Case(operation, f"np.errstate(all={setting!r}) {text} f64 shape={ROWS_STOP_SHAPE} x={label}", make,
+                       partial(_in_errstate, setting, call), _rows_expect(kernel, make()[0], call))
+
+
+def rows_accumulate_cases() -> Iterator[Case]:
+    """Yield every case of the row loops, of both operations they are counted under."""
+    yield from _rows_layout_cases()
+    yield from _rows_value_cases()
+    yield from _rows_stop_cases()
+
+
 def accumulate_cases() -> Iterator[Case]:
-    """Yield the cases of `np.maximum.accumulate` and `np.fmax.accumulate`.
+    """Yield the cases of `np.maximum.accumulate` and `np.fmax.accumulate`, and of the row loops.
 
     Both ufuncs take cummax_i64 on int64. np.fmax takes cumfmax_f64 on
     float64 unless the array holds a signalling NaN, a negative zero or NaNs
     of more than one pattern (`_cumfmax_takes`); np.maximum on float64
-    propagates NaN and is NumPy's. Other ufuncs' accumulations pass through
-    the hook uncounted.
+    propagates NaN and is NumPy's. On a C-ordered float64 matrix along its
+    first axis the row loops take np.maximum, np.fmax, np.add and
+    np.multiply. Other ufuncs' accumulations pass through the hook uncounted.
     """
-    yield from unary_cases("accumulate", {"i64": "cummax_i64"}, ("f64", "f32", "i32", "u64"),
-                           (*_accumulate_spellings(np.maximum), *_OTHER_ACCUMULATIONS), empty_takes=False)
+    for case in unary_cases("accumulate", {"i64": "cummax_i64"}, ("f64", "f32", "i32", "u64"),
+                            (*_accumulate_spellings(np.maximum), *_OTHER_ACCUMULATIONS), empty_takes=False):
+        yield _with_rows_expectation(case)
     for case in unary_cases("accumulate", {"i64": "cummax_i64", "f64": "cumfmax_f64"}, ("f32", "i32", "u64"),
                             _accumulate_spellings(np.fmax), empty_takes=False):
-        yield _with_cumfmax_expectation(case)
+        yield _with_rows_expectation(_with_cumfmax_expectation(case))
+    yield from (case for case in rows_accumulate_cases() if case.operation == "accumulate")
     # np.maximum on float64 over every value class, NaNs included: NumPy's.
     for n, _, label, maker in value_arrays("f64", FEW_SIZES):
         yield Case("accumulate", f"np.maximum.accumulate(x) f64 {label}", partial(_made, maker),
@@ -3463,6 +3938,1139 @@ def any_cases() -> Iterator[Case]:
     yield from _any_bad_byte_cases()
 
 
+# ------------------------------------------------- argmax and argmin along rows
+
+# Narrowest row the binding gives to the operation's kernel, by element type;
+# narrower rows go to its own loop (ARGEXT_ROWS_KERNEL_COLS_F64 and _F32 in
+# hook_function.c).
+ARGEXT_ROWS_KERNEL_COLS = {"f64": 6, "f32": 9}
+# Row widths of the argmax(axis=1) sweep: each width the binding's loop takes,
+# either side of the threshold for each type, either side of the kernels'
+# own vector widths, and two long rows.
+ARGEXT_ROWS_COLS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 33, 100)
+# Row counts of the sweep: either side of the loop's four float64 and eight
+# float32 lanes. A further count per width puts the matrix above the size from
+# which the binding releases the interpreter lock (_any_large_rows).
+ARGEXT_ROWS_ROWS = (1, 3, 4, 5, 9)
+# Shapes of the layouts and spellings sweep: each path, with rows and columns
+# under the type slot's 128 elements, so that a call that must stay with
+# NumPy is not taken by the slot behind it.
+ARGEXT_ROWS_LAYOUT_SHAPES = ((9, 3), (100, 7), (100, 22))
+# Every how many rows the matrix of ties holds a NaN, and the step by which
+# the NaN moves along the columns from one such row to the next.
+ARGEXT_ROWS_NAN_EVERY = 3
+ARGEXT_ROWS_NAN_STEP = 5
+# Smallest and one past the largest whole number in the matrix of ties.
+ARGEXT_ROWS_TIE_RANGE = (-2, 3)
+
+
+def _argext_rows_kernel(name: str, dtype: str, rows: int, cols: int) -> str:
+    """Return the kernel, or the binding's loop, that takes `name` along axis 1 of a matrix.
+
+    Args:
+        name: "argmax" or "argmin".
+        dtype: "f64" or "f32".
+        rows: Row count; a matrix of none goes to the binding's loop.
+        cols: Elements per row, at least 1.
+
+    Returns:
+        The name the binding counts the call under.
+    """
+    if rows > 0 and cols >= ARGEXT_ROWS_KERNEL_COLS[dtype]:
+        return f"{name}_{dtype}"
+    return f"{name}_rows_{dtype}"
+
+
+def _argext_matrix(dtype: str, rows: int, cols: int, cls: str = judge_cases.RANDOM) -> np.ndarray:
+    """Return elements of a value class as a C-ordered matrix of `rows` by `cols`."""
+    return values(dtype, rows * cols, cls, arg="m").reshape(rows, cols).copy()
+
+
+def _argext_ties(dtype: str, rows: int, cols: int) -> np.ndarray:
+    """Return a matrix of a few whole numbers, signed zeros and NaNs, in which every row decides by its rule.
+
+    Most rows hold ties for their maximum and their minimum, and zeros of
+    both signs; every ARGEXT_ROWS_NAN_EVERY-th row holds two NaNs, the first
+    at a column that moves from row to row. Random data rarely ties, and a
+    loop that kept the last of a tie, or the last NaN, could still match it.
+    """
+    rng = np.random.default_rng(SEED)
+    m = rng.integers(*ARGEXT_ROWS_TIE_RANGE, size=(rows, cols)).astype(np_dtype(dtype))
+    m[m == 0] = np.where(rng.random(int((m == 0).sum())) < 0.5, -0.0, 0.0)
+    marked = np.arange(0, rows, ARGEXT_ROWS_NAN_EVERY)
+    first = (marked * ARGEXT_ROWS_NAN_STEP) % cols
+    m[marked, first] = np.nan
+    m[marked, (first + 1 + marked) % cols] = np.nan
+    return m
+
+
+def _argext_cube(dtype: str, rows: int, cols: int) -> np.ndarray:
+    """Return a random matrix of `rows` by `cols` as a C-ordered array of shape (rows, 1, cols)."""
+    return _argext_matrix(dtype, rows, cols).reshape(rows, 1, cols)
+
+
+def _argext_laid_out(build: Callable[[np.ndarray], object], dtype: str, rows: int, cols: int) -> object:
+    """Return a random matrix of `rows` by `cols` as `build` lays it out."""
+    return build(_argext_matrix(dtype, rows, cols))
+
+
+def _argext_rows_out(name: str) -> Callable:
+    """Return a call of `m.<name>(axis=1, out=o)` into a new array of the right length."""
+    return lambda m: getattr(m, name)(axis=1, out=np.empty(np.shape(m)[0], np.intp))
+
+
+def _argext_rows_spellings(name: str) -> tuple[tuple[tuple[str, Callable], ...], tuple[tuple[str, Callable], ...]]:
+    """Return the spellings of `name` along axis 1 that take the rows path, and those that must not.
+
+    Args:
+        name: "argmax" or "argmin".
+
+    Returns:
+        (taking, never): each a tuple of (text, call). The first two of the
+        taking spellings are the ones the sweep over every value runs.
+    """
+    function = getattr(np, name)
+    taking = (
+        (f"np.{name}(m, axis=1)", lambda m: function(m, axis=1)),
+        (f"m.{name}(axis=1)", lambda m: getattr(m, name)(axis=1)),
+        (f"m.{name}(1)", lambda m: getattr(m, name)(1)),
+        (f"m.{name}(-1)", lambda m: getattr(m, name)(-1)),
+        (f"m.{name}(axis=-1)", lambda m: getattr(m, name)(axis=-1)),
+        (f"m.{name}(axis=1, out=None)", lambda m: getattr(m, name)(axis=1, out=None)),
+        (f"m.{name}(1, None)", lambda m: getattr(m, name)(1, None)),
+        (f"np.{name}(m, 1)", lambda m: function(m, 1)),
+        (f"np.{name}(m, -1)", lambda m: function(m, -1)),
+        (f"np.{name}(m, axis=-1)", lambda m: function(m, axis=-1)),
+        (f"np.{name}(m, axis=1, out=None)", lambda m: function(m, axis=1, out=None)),
+        (f"np.{name}(m, 1, None)", lambda m: function(m, 1, None)),
+        (f"np.{name}(a=m, axis=1)", lambda m: function(a=m, axis=1)),
+        (f"np.nan{name}(m, axis=1)", lambda m: getattr(np, f"nan{name}")(m, axis=1)),
+    )
+    never = (
+        (f"m.{name}(axis=0)", lambda m: getattr(m, name)(axis=0)),
+        (f"np.{name}(m, axis=0)", lambda m: function(m, axis=0)),
+        (f"m.{name}(axis=1, keepdims=True)", lambda m: getattr(m, name)(axis=1, keepdims=True)),
+        (f"np.{name}(m, axis=1, keepdims=True)", lambda m: function(m, axis=1, keepdims=True)),
+        (f"m.{name}(axis=1, keepdims=False)", lambda m: getattr(m, name)(axis=1, keepdims=False)),
+        (f"m.{name}(axis=1, out=o)", _argext_rows_out(name)),
+        (f"m.{name}(axis=np.int64(1))", lambda m: getattr(m, name)(axis=np.int64(1))),
+        (f"np.{name}(m, axis=np.int64(1))", lambda m: function(m, axis=np.int64(1))),
+        (f"m.{name}(axis=True)", lambda m: getattr(m, name)(axis=True)),
+        (f"m.{name}(axis=2)", lambda m: getattr(m, name)(axis=2)),
+        (f"m.{name}(axis=-3)", lambda m: getattr(m, name)(axis=-3)),
+        (f"m.{name}(axis=1, bogus=1)", lambda m: getattr(m, name)(axis=1, bogus=1)),
+    )
+    return taking, never
+
+
+# Ways a matrix can be laid out or wrapped, built from a C-ordered one, and
+# whether the rows path takes it: True, False, or ANY for a wrapper whose own
+# method decides.
+_ARGEXT_ROWS_LAYOUTS: tuple[tuple[str, Callable[[np.ndarray], object], bool | str], ...] = (
+    ("contiguous", np.copy, True),
+    ("readonly", _readonly, True),
+    ("fortran", np.asfortranarray, False),
+    ("strided rows", lambda m: np.repeat(m, 2, axis=0)[::2], False),
+    ("strided columns", lambda m: np.repeat(m, 2, axis=1)[:, ::2], False),
+    ("transposed", lambda m: np.ascontiguousarray(m.T).T, False),
+    ("byteswapped", _byteswapped, False),
+    ("subclass", lambda m: m.copy().view(_Subclass), False),
+    ("memmap", _memmap, False),
+    ("matrix", np.asmatrix, False),
+    ("masked_array", lambda m: np.ma.array(m.copy()), ANY),
+    # np.argmax makes an array of a list and calls its method, which takes
+    # it; a list has no method of its own and raises.
+    ("list", lambda m: m.tolist(), ANY),
+)
+
+
+def _argext_rows_case(name: str, label: str, maker: Callable[[], object], call: Callable,
+                      expect: str | None) -> Case:
+    """Return one case of argmax or argmin along rows, its one argument built by `maker`."""
+    return Case(name, label, partial(_made, maker), call, expect)
+
+
+def _argext_rows_value_cases(name: str) -> Iterator[Case]:
+    """Yield every value class of both float types at every width and row count, for the two main spellings.
+
+    Args:
+        name: "argmax" or "argmin".
+
+    Yields:
+        The cases. Positional classes put their element first, in the middle
+        and last of the matrix's elements, and so in its first, a middle and
+        its last row.
+    """
+    taking, _ = _argext_rows_spellings(name)
+    for dtype in ("f64", "f32"):
+        for cols in ARGEXT_ROWS_COLS:
+            for rows in (*ARGEXT_ROWS_ROWS, _any_large_rows(cols)):
+                expect = _argext_rows_kernel(name, dtype, rows, cols)
+                for _, _, label, maker in value_arrays(dtype, (rows * cols,), arg="m"):
+                    shape = f"{rows}x{cols} {label.split(' ', 1)[1]}"
+                    for text, call in taking[:2]:
+                        yield _argext_rows_case(name, f"{text} {dtype} {shape}", partial(_any_matrix, maker, cols),
+                                                call, expect)
+                for text, call in taking[:2]:
+                    yield _argext_rows_case(name, f"{text} {dtype} {rows}x{cols} ties, signed zeros, NaNs",
+                                            partial(_argext_ties, dtype, rows, cols), call, expect)
+            for text, call in taking[:2]:
+                yield _argext_rows_case(name, f"{text} {dtype} 0x{cols}", partial(_argext_matrix, dtype, 0, cols),
+                                        call, _argext_rows_kernel(name, dtype, 0, cols))
+
+
+def _argext_rows_layout_cases(name: str) -> Iterator[Case]:
+    """Yield every spelling, every layout and other element types, at a few shapes.
+
+    Args:
+        name: "argmax" or "argmin".
+
+    Yields:
+        The cases.
+    """
+    taking, never = _argext_rows_spellings(name)
+    for dtype in ("f64", "f32"):
+        for rows, cols in ARGEXT_ROWS_LAYOUT_SHAPES:
+            shape = f"{rows}x{cols}"
+            expect = _argext_rows_kernel(name, dtype, rows, cols)
+            matrix = partial(_argext_matrix, dtype, rows, cols)
+            for text, call in taking:
+                yield _argext_rows_case(name, f"{text} {dtype} {shape}", matrix, call, expect)
+            for text, call in never:
+                yield _argext_rows_case(name, f"{text} {dtype} {shape}", matrix, call, None)
+            for layout, build, takes in _ARGEXT_ROWS_LAYOUTS:
+                laid_out = partial(_argext_laid_out, build, dtype, rows, cols)
+                layout_expect = expect if takes is True else (ANY if takes == ANY else None)
+                for text, call in taking[:2]:
+                    yield _argext_rows_case(name, f"{text} {dtype} {shape} layout={layout}", laid_out, call,
+                                            layout_expect)
+            for text, call in taking[:2]:
+                cube = partial(_argext_cube, dtype, rows, cols)
+                yield _argext_rows_case(name, f"{text} {dtype} {shape} as 3-D", cube, call, None)
+    for other in ("i64", "i32", "u8"):
+        for text, call in _argext_rows_spellings(name)[0][:2]:
+            yield _argext_rows_case(name, f"{text} {other} 9x3", partial(_argext_matrix, other, 9, 3), call, None)
+    for dtype in ("f64", "f32"):
+        for text, call in taking[:2]:
+            for rows, cols in ((3, 0), (0, 0)):
+                yield _argext_rows_case(name, f"{text} {dtype} {rows}x{cols}",
+                                        partial(_argext_matrix, dtype, rows, cols), call, None)
+
+
+def argext_rows_cases(name: str) -> Iterator[Case]:
+    """Yield the cases of `argmax` or `argmin` along the last axis of a matrix.
+
+    The function and method hooks take a plain, C-ordered, two-dimensional
+    float32 or float64 array with at least one column, `axis` 1 or -1 as a
+    Python int, and `out` absent or None; see the binding's
+    hk_try_argext_rows. Rows of ARGEXT_ROWS_KERNEL_COLS elements and more go
+    to the operation's kernel once per row, narrower ones to the binding's
+    own loop.
+
+    Args:
+        name: "argmax" or "argmin".
+
+    Yields:
+        The cases.
+    """
+    yield from _argext_rows_value_cases(name)
+    yield from _argext_rows_layout_cases(name)
+
+
+# ------------------------------------------------------------------ unique
+
+# The widest range of values np.unique's kernel is always given: the
+# binding's UNIQUE_FREE_SPAN. Above it the range may be as wide as the array
+# is long.
+UNIQUE_FREE_SPAN = 256
+# Element counts of the sweep over ranges: either side of the free range, of
+# the size from which the lock is released, and of the kernel's chunk of 64.
+UNIQUE_SIZES = (1, 2, 16, 63, 64, 65, 255, 256, 257, 1000, 8191, 8192, 8193, 100003)
+# Range widths of the sweep, as functions of the element count: name -> width.
+_UNIQUE_WIDTHS: dict[str, Callable[[int], int]] = {
+    "1": lambda n: 1,
+    "2": lambda n: 2,
+    "10": lambda n: 10,
+    "64": lambda n: 64,
+    "65": lambda n: 65,
+    "256": lambda n: UNIQUE_FREE_SPAN,
+    "257": lambda n: UNIQUE_FREE_SPAN + 1,
+    "n": lambda n: n,
+    "n+1": lambda n: n + 1,
+    "1000000": lambda n: 1_000_000,
+}
+# Where each range starts: name -> its first value, given its width.
+_UNIQUE_STARTS: dict[str, Callable[[int], int]] = {
+    "0": lambda width: 0,
+    "-5": lambda width: -5,
+    "1000": lambda width: 1000,
+    "int64 min": lambda width: _INT64_MIN,
+    "int64 max": lambda width: _INT64_MAX - width + 1,
+}
+# Element types next to int64 that np.unique accepts and that have no kernel.
+_UNIQUE_NEIGHBOURS = ("i32", "u64", "u8", "i16", "bool", "f64")
+# Layouts that reach the kernel: plain arrays, and arrays the binding copies
+# in C order first, as NumPy's flatten() does. The others (another byte
+# order, a subclass, a memory map, a list, a 0-d array) are NumPy's; a
+# masked array is NumPy's to route.
+_UNIQUE_COPIED = frozenset({"strided", "reversed", "fortran_rows"})
+
+
+def _unique_takes(x: np.ndarray) -> bool:
+    """Say whether the binding takes `np.unique(x)` for an int64 array of a layout it serves.
+
+    It is the binding's rule written again in NumPy: at least one element,
+    and the largest minus the smallest less than the element count or
+    UNIQUE_FREE_SPAN, whichever is more.
+
+    Args:
+        x: The array's values, of any shape.
+
+    Returns:
+        True when the kernel must take the call.
+    """
+    if x.size == 0:
+        return False
+    return int(x.max()) - int(x.min()) < max(x.size, UNIQUE_FREE_SPAN)
+
+
+def _unique_expect(dtype: str, variant: Variant, x: np.ndarray) -> str | None:
+    """Return the kernel for `np.unique` on `x` laid out as `variant`, or None or ANY.
+
+    Args:
+        dtype: Element type as a spec name.
+        variant: How the array is laid out.
+        x: The array's values, contiguous.
+
+    Returns:
+        "unique_i64", None when NumPy must answer, or ANY for a masked array.
+    """
+    if not variant.predictable:
+        return ANY
+    if dtype != "i64" or not (variant.plain or variant.name in _UNIQUE_COPIED):
+        return None
+    built = variant.build(x)
+    return "unique_i64" if _unique_takes(np.asarray(built)) else None
+
+
+def _labels(n: int, width: int, start: int) -> np.ndarray:
+    """Build n int64 values in [start, start + width), with both ends present when n allows.
+
+    Args:
+        n: Element count.
+        width: Width of the range, at least 1.
+        start: Its first value.
+
+    Returns:
+        A contiguous one-dimensional int64 array.
+    """
+    offsets = np.random.default_rng([SEED, n, width]).integers(0, width, n, dtype=np.uint64)
+    if n >= 2:
+        offsets[0], offsets[-1] = width - 1, 0
+    return (offsets + np.uint64(start % (1 << 64))).view(np.int64)
+
+
+def _unique_range_cases() -> Iterator[Case]:
+    """Yield np.unique(x) on int64 values of each range width and start, at every size of UNIQUE_SIZES.
+
+    Yields:
+        The cases, each taken when its range is narrow enough.
+    """
+    for n, (width_name, width_of), (start_name, start_of) in itertools.product(
+            UNIQUE_SIZES, _UNIQUE_WIDTHS.items(), _UNIQUE_STARTS.items()):
+        width = width_of(n)
+        maker = partial(_labels, n, width, start_of(width))
+        yield Case("unique", f"np.unique(x) i64 n={n} width={width_name} from={start_name}", partial(_made, maker),
+                   np.unique, "unique_i64" if _unique_takes(maker()) else None)
+
+
+def _unique_value_cases() -> Iterator[Case]:
+    """Yield np.unique(x) on every value class of the judge, and of the kernel's spec, at every size.
+
+    Yields:
+        The cases. Most of the judge's integer classes are spread over the
+        whole of int64 and are NumPy's after the scan.
+    """
+    for _, _, label, maker in value_arrays("i64"):
+        yield Case("unique", f"np.unique(x) i64 {label}", partial(_made, maker), np.unique,
+                   "unique_i64" if _unique_takes(maker()) else None)
+    own = spec("unique_i64").args[0].classes
+    for (cls, build), n in itertools.product(own.items(), VALUE_SIZES):
+        maker = partial(_spec_class, build, "i64", n)
+        yield Case("unique", f"np.unique(x) i64 n={n} x={cls}", partial(_made, maker), np.unique,
+                   "unique_i64" if _unique_takes(maker()) else None)
+
+
+def _unique_spellings() -> tuple[Spelling, ...]:
+    """Return the spellings of np.unique: the ones the binding takes, and the ones that are NumPy's.
+
+    Returns:
+        The spellings. TAKES ones are the plain call written in the ways
+        NumPy 2.3 to 2.5 accept it; NEVER ones ask for something else, or
+        give a flag NumPy treats as false that is not False itself.
+    """
+    return (
+        Spelling("np.unique(x)", np.unique),
+        Spelling("np.unique(ar=x)", lambda x: np.unique(ar=x)),
+        Spelling("np.unique(x, False, False, False)", lambda x: np.unique(x, False, False, False)),
+        Spelling("np.unique(x, False, False, False, None)", lambda x: np.unique(x, False, False, False, None)),
+        Spelling("np.unique(x, return_index=False, return_inverse=False, return_counts=False)",
+                 lambda x: np.unique(x, return_index=False, return_inverse=False, return_counts=False)),
+        Spelling("np.unique(x, axis=None)", lambda x: np.unique(x, axis=None)),
+        Spelling("np.unique(x, equal_nan=False)", lambda x: np.unique(x, equal_nan=False)),
+        Spelling("np.unique(x, equal_nan=True)", lambda x: np.unique(x, equal_nan=True)),
+        Spelling("np.unique(x, sorted=True)", lambda x: np.unique(x, sorted=True)),
+        Spelling("np.unique(x, return_counts=True)", lambda x: np.unique(x, return_counts=True), NEVER),
+        Spelling("np.unique(x, return_inverse=True)", lambda x: np.unique(x, return_inverse=True), NEVER),
+        Spelling("np.unique(x, return_index=True)", lambda x: np.unique(x, return_index=True), NEVER),
+        Spelling("np.unique(x, True, True, True)", lambda x: np.unique(x, True, True, True), NEVER),
+        Spelling("np.unique(x, return_counts=0)", lambda x: np.unique(x, return_counts=0), NEVER),
+        Spelling("np.unique(x, return_counts=None)", lambda x: np.unique(x, return_counts=None), NEVER),
+        Spelling("np.unique(x, axis=0)", lambda x: np.unique(x, axis=0), NEVER),
+        Spelling("np.unique(x, axis=-1)", lambda x: np.unique(x, axis=-1), NEVER),
+        Spelling("np.unique(x, sorted=False)", lambda x: np.unique(x, sorted=False), NEVER),
+        Spelling("np.unique(x, equal_nan=0)", lambda x: np.unique(x, equal_nan=0), NEVER),
+        Spelling("np.unique(x, False, False, False, None, True)",
+                 lambda x: np.unique(x, False, False, False, None, True), NEVER),
+        Spelling("np.unique(x, bogus=1)", lambda x: np.unique(x, bogus=1), NEVER),
+        Spelling("np.unique()", lambda x: np.unique(), NEVER),
+        Spelling("np.unique_values(x)", np.unique_values, NEVER),
+        Spelling("np.unique_counts(x)", np.unique_counts, NEVER),
+        Spelling("np.unique_inverse(x)", np.unique_inverse, NEVER),
+    )
+
+
+def _unique_variant(maker: Callable[[], np.ndarray], variant: Variant) -> tuple:
+    """Build the one argument of a unique layout case: values from `maker` in a variant."""
+    return (variant.build(maker()),)
+
+
+def _unique_layout_cases() -> Iterator[Case]:
+    """Yield every spelling of np.unique in every layout, on labels of ten values, for int64 and its neighbours.
+
+    Yields:
+        The cases, at LAYOUT_SIZES and on an empty array, which is NumPy's.
+    """
+    spellings = _unique_spellings()
+    for dtype in ("i64", *_UNIQUE_NEIGHBOURS):
+        for n, spelling in itertools.product(LAYOUT_SIZES, spellings):
+            maker = partial(_ten_labels, dtype, n)
+            for variant in variants_for(dtype, n):
+                expect = _unique_expect(dtype, variant, maker()) if spelling.kind == TAKES else None
+                yield Case("unique", f"{spelling.text} {dtype} n={n} x=0..9 layout={variant.name}",
+                           partial(_unique_variant, maker, variant), spelling.call, expect)
+        for spelling in spellings:
+            yield Case("unique", f"{spelling.text} {dtype} n=0", partial(_built, dtype, 0, CONTIGUOUS),
+                       spelling.call, None)
+    for n in LAYOUT_SIZES:
+        yield Case("unique", f"np.unique(x) longlong n={n} x=0..9",
+                   lambda n=n: (_ten_labels("i64", n).astype(np.longlong),), np.unique, None)
+
+
+def _ten_labels(dtype: str, n: int) -> np.ndarray:
+    """Build n labels from 0 to 9 of an element type: 0 and 1 for bool."""
+    values_ = np.random.default_rng([SEED, n]).integers(0, 10, n)
+    return (values_ % 2).astype(bool) if dtype == "bool" else values_.astype(np_dtype(dtype))
+
+
+def unique_cases() -> Iterator[Case]:
+    """Yield the cases of `np.unique`.
+
+    The function hook takes the plain call on an int64 ndarray of any layout
+    with at least one element and a narrow range; see the binding's
+    try_unique. Everything else is NumPy's.
+    """
+    yield from _unique_value_cases()
+    yield from _unique_range_cases()
+    yield from _unique_layout_cases()
+# ---------------------------------------------------------------- inplace
+
+# The binding's loops for float64 adds and subtracts whose output is their
+# first input, on ARM64 (hook_loop.c). Elsewhere they are not built and every
+# call is NumPy's.
+INPLACE_KERNELS = {"add": "add_inplace_f64", "subtract": "subtract_inplace_f64"}
+# The ufunc and the in-place operator of each.
+INPLACE_UFUNCS = {"add": (np.add, operator.iadd), "subtract": (np.subtract, operator.isub)}
+# Element types beside float64 that the loops must leave to NumPy.
+INPLACE_NEIGHBOURS = ("f32", "i64")
+# The fewest elements the loops take: INPLACE_MIN_N in hook_loop.c.
+INPLACE_MIN_N = 131072
+# Sizes of the sweep over values: the general sweep, and the sizes around the
+# limit, which is a multiple of the loops' step of 16 elements, so the sizes
+# above it also end in a part step.
+INPLACE_SIZES = tuple(sorted({*VALUE_SIZES, *(INPLACE_MIN_N + d for d in (-1, 0, 1, 15, 17))}))
+# Sizes of the sweep over layouts and spellings: empty, the general ones, and
+# the limit and one below it.
+INPLACE_LAYOUT_SIZES = (0, *LAYOUT_SIZES, INPLACE_MIN_N - 1, INPLACE_MIN_N)
+# The scalar of the case with a scalar operand, which steps by zero.
+INPLACE_SCALAR = 0.375
+# Layouts on which a plain call must be taken: NumPy hands the loop the
+# array's own memory. On the others it may copy first, or not.
+INPLACE_TAKEN_LAYOUTS = ("contiguous", "rows")
+# Layouts the in-place cases skip: a list or a zero-dimensional array cannot
+# be written in place as an operand, and a masked array decides for itself.
+INPLACE_SKIPPED_LAYOUTS = ("list", "zero_d", "masked_array")
+# A value whose double overflows, for the cases under np.errstate.
+INPLACE_HUGE = 1e308
+# Shape of the matrix and of the batch of the case that reproduces the
+# gradient step of mlp_train: a product on several threads, then w -= b.
+INPLACE_MATRIX = (784, 256)
+INPLACE_BATCH = 128
+
+
+def _inplace_expect(operation: str, n: int) -> str | None:
+    """Say whether a loop takes a plain in-place call of `operation` on `n` float64 elements.
+
+    Args:
+        operation: "add" or "subtract".
+        n: Element count.
+
+    Returns:
+        The loop's name, or None where the loops are not built or the array
+        has fewer than INPLACE_MIN_N elements.
+    """
+    return INPLACE_KERNELS[operation] if ON_ARM64 and n >= INPLACE_MIN_N else None
+
+
+def _pair(dtype: str, n: int, w_class: str, b_class: str, w_variant: Variant = CONTIGUOUS,
+          b_variant: Variant = CONTIGUOUS) -> tuple:
+    """Build the two operands of an in-place case.
+
+    Args:
+        dtype: Element type as a spec name.
+        n: Element count of each.
+        w_class: Value class of the array written to.
+        b_class: Value class of the other.
+        w_variant: Layout of the array written to.
+        b_variant: Layout of the other.
+
+    Returns:
+        (w, b).
+    """
+    w = w_variant.build(values(dtype, n, w_class, n // 2, "w"))
+    b = b_variant.build(values(dtype, n, b_class, n // 3, "b"))
+    return w, b
+
+
+def _nan_pair(n: int) -> tuple:
+    """Build two float64 operands that both hold NaNs, of different payloads and signs."""
+    return unusual_nans("f64", n), np.roll(unusual_nans("f64", n), 1)
+
+
+def _in_place(operation: str, w, b):
+    """Call `w += b` or `w -= b`, and return what the operator returns."""
+    return INPLACE_UFUNCS[operation][1](w, b)
+
+
+def _ufunc_out(operation: str, w, b):
+    """Call `np.add(w, b, out=w)` or the same for subtract."""
+    return INPLACE_UFUNCS[operation][0](w, b, out=w)
+
+
+def _ufunc_out_second(operation: str, w, b):
+    """Call `np.add(b, w, out=w)`: the output is the second input."""
+    return INPLACE_UFUNCS[operation][0](b, w, out=w)
+
+
+def _ufunc_new(operation: str, w, b):
+    """Call `np.add(w, b)`, into a new array."""
+    return INPLACE_UFUNCS[operation][0](w, b)
+
+
+def _with_itself(operation: str, w, b):
+    """Call `w += w` or `w -= w`."""
+    return INPLACE_UFUNCS[operation][1](w, w)
+
+
+def _scalar(operation: str, w, b):
+    """Call `w += 0.375`: a scalar operand steps by zero."""
+    return INPLACE_UFUNCS[operation][1](w, INPLACE_SCALAR)
+
+
+def _shifted(operation: str, w, b):
+    """Call `w[1:] += w[:-1]`: operands that overlap by all but one element."""
+    INPLACE_UFUNCS[operation][1](w[1:], w[:-1])
+    return w
+
+
+def _shifted_back(operation: str, w, b):
+    """Call `np.add(w[:-1], w[1:], out=w[:-1])`: the second input starts one element after the output."""
+    INPLACE_UFUNCS[operation][0](w[:-1], w[1:], out=w[:-1])
+    return w
+
+
+def _elided(operation: str, w, b):
+    """Call `(w * 1.0) + b`: NumPy may add into the temporary in place, which the loop then takes."""
+    temporary = w * 1.0
+    return temporary + b if operation == "add" else temporary - b
+
+
+def _reduce(operation: str, w, b):
+    """Call `np.add.reduce(w)`: the accumulator steps by zero."""
+    return INPLACE_UFUNCS[operation][0].reduce(w)
+
+
+def _accumulate(operation: str, w, b):
+    """Call `np.add.accumulate(w)`: each output is the next element's first input, one element apart."""
+    return INPLACE_UFUNCS[operation][0].accumulate(w)
+
+
+def _column_sums(operation: str, w, b):
+    """Call `np.add.reduce(rows, axis=0)` on a matrix: NumPy may add row after row into the result."""
+    return INPLACE_UFUNCS[operation][0].reduce(w.reshape(-1, COLUMNS), axis=0)
+
+
+def _broadcast_row(operation: str, w, b):
+    """Call `rows += b[:COLUMNS]`: one row added to every row of a matrix."""
+    rows = w.reshape(-1, COLUMNS)
+    INPLACE_UFUNCS[operation][1](rows, b[:COLUMNS])
+    return w
+
+
+def _errstate(setting: str, operation: str, w, b):
+    """Call `w += b` with every floating-point error set to `setting`.
+
+    Args:
+        setting: A value np.errstate takes, such as "raise" or "warn".
+        operation: "add" or "subtract".
+        w: The array written to.
+        b: The other.
+
+    Returns:
+        What the operator returns.
+    """
+    with np.errstate(all=setting):
+        return INPLACE_UFUNCS[operation][1](w, b)
+
+
+def _overflowing(operation: str, n: int) -> tuple:
+    """Build float64 operands whose sum or difference overflows at every third element."""
+    w, b = values("f64", n, arg="w"), values("f64", n, arg="b")
+    w[::3] = INPLACE_HUGE
+    b[::3] = INPLACE_HUGE if operation == "add" else -INPLACE_HUGE
+    return w, b
+
+
+def _after_product(operation: str, w, b):
+    """Multiply a batch by `w` with the BLAS, as a training loop does, then update `w` in place.
+
+    Args:
+        operation: "add" or "subtract".
+        w: The weights, INPLACE_MATRIX.
+        b: The update, INPLACE_MATRIX.
+
+    Returns:
+        w after the update, and the product, so both are compared.
+    """
+    batch = values("f64", INPLACE_BATCH * w.shape[0], arg="x").reshape(INPLACE_BATCH, w.shape[0])
+    product = batch @ w
+    INPLACE_UFUNCS[operation][1](w, b)
+    return w, product
+
+
+def _matrix_pair() -> tuple:
+    """Build the weights and the update of the gradient-step case."""
+    size = INPLACE_MATRIX[0] * INPLACE_MATRIX[1]
+    return values("f64", size, arg="w").reshape(INPLACE_MATRIX), values("f64", size, arg="b").reshape(INPLACE_MATRIX)
+
+
+def inplace_cases() -> Iterator[Case]:
+    """Yield the cases of float64 adds and subtracts whose output is their first input.
+
+    On ARM64 the binding's loops take a call when the output is the first
+    input, all three operands step by one element and the second input is
+    the output or shares no byte with it: `w += b`, `w -= b`,
+    `np.add(w, b, out=w)`, `w += w`, and an add NumPy makes in place into a
+    temporary. A reduction, an accumulation, a scalar, a strided or
+    byte-swapped operand, and every other element type are NumPy's. On other
+    architectures every call is NumPy's.
+    """
+    for operation in INPLACE_KERNELS:
+        call = partial(_in_place, operation)
+        text = f"w {'+' if operation == 'add' else '-'}= b"
+        plain, positional = judge_cases.classes("f64")
+        for n in INPLACE_SIZES:
+            for cls in (*plain, *positional):
+                yield Case("inplace", f"{text} f64 n={n} w={cls}", partial(_pair, "f64", n, cls, judge_cases.RANDOM),
+                           call, _inplace_expect(operation, n))
+                yield Case("inplace", f"{text} f64 n={n} b={cls}", partial(_pair, "f64", n, judge_cases.RANDOM, cls),
+                           call, _inplace_expect(operation, n))
+            yield Case("inplace", f"{text} f64 n={n} both=signalling and negative NaNs", partial(_nan_pair, n),
+                       call, _inplace_expect(operation, n))
+            for setting in ("raise", "warn", "ignore"):
+                yield Case("inplace", f"np.errstate(all={setting!r}) {text} f64 n={n} overflowing every third",
+                           partial(_overflowing, operation, n), partial(_errstate, setting, operation),
+                           _inplace_expect(operation, n))
+        spellings = (
+            (text, call, TAKES),
+            (f"np.{operation}(w, b, out=w)", partial(_ufunc_out, operation), TAKES),
+            (f"w {text[2:4]} w", partial(_with_itself, operation), TAKES),
+            (f"np.{operation}(b, w, out=w)", partial(_ufunc_out_second, operation), NEVER),
+            (f"np.{operation}(w, b)", partial(_ufunc_new, operation), NEVER),
+            (f"w {text[2:4]} 0.375", partial(_scalar, operation), NEVER),
+            (f"np.{operation}.reduce(w)", partial(_reduce, operation), NEVER),
+            (f"np.{operation}.accumulate(w)", partial(_accumulate, operation), NEVER),
+            (f"w[1:] {text[2:4]} w[:-1]", partial(_shifted, operation), MAYBE),
+            (f"np.{operation}(w[:-1], w[1:], out=w[:-1])", partial(_shifted_back, operation), MAYBE),
+            (f"(w * 1.0) {text[2]} b", partial(_elided, operation), MAYBE),
+            (f"np.{operation}.reduce(rows, axis=0)", partial(_column_sums, operation), MAYBE),
+            (f"rows {text[2:4]} b[:{COLUMNS}]", partial(_broadcast_row, operation), MAYBE),
+        )
+        for dtype in ("f64", *INPLACE_NEIGHBOURS):
+            for n in INPLACE_LAYOUT_SIZES:
+                for spelling_text, spelling_call, kind in spellings:
+                    for variant in variants_for(dtype, n):
+                        if variant.name in INPLACE_SKIPPED_LAYOUTS:
+                            continue
+                        takes = _inplace_expect(operation, n) if dtype == "f64" else None
+                        expect = None
+                        # A reduction down the rows of a matrix may add each
+                        # row into the result in place, which the loop takes.
+                        if spelling_call.func is _reduce and variant.dims == 2 and takes:
+                            expect = ANY
+                        elif kind != NEVER and takes:
+                            taken = kind == TAKES and variant.name in INPLACE_TAKEN_LAYOUTS
+                            expect = takes if taken else ANY
+                        yield Case("inplace", f"{spelling_text} {dtype} n={n} layout={variant.name}",
+                                   partial(_pair, dtype, n, judge_cases.RANDOM, judge_cases.RANDOM, variant, variant),
+                                   spelling_call, expect)
+        yield Case("inplace", f"x @ w, then {text}, on {INPLACE_MATRIX[0]} x {INPLACE_MATRIX[1]}", _matrix_pair,
+                   partial(_after_product, operation), _inplace_expect(operation, INPLACE_MATRIX[0] * INPLACE_MATRIX[1]))
+        # Large enough for NumPy's elision of temporaries, which may then add
+        # into the temporary in place.
+        yield Case("inplace", f"(w * 1.0) {text[2]} b on {INPLACE_MATRIX[0]} x {INPLACE_MATRIX[1]}", _matrix_pair,
+                   partial(_elided, operation), ANY if ON_ARM64 else None)
+
+
+# --- bottleneck's nanmean, nanstd, nanmin and nanmax -----------------------
+
+# The four functions served through bottleneck, each an operation of its own.
+BN_FUNCTIONS = ("nanmean", "nanstd", "nanmin", "nanmax")
+# Shapes of the C-ordered matrices the value classes fill, rows by columns:
+# one element, one row, one column, either side of a block of 32 columns, and
+# the application's window length with a block's worth of columns.
+BN_SHAPES = ((1, 1), (1, 7), (7, 1), (3, 31), (5, 33), (40, 37), (252, 64))
+# Columns of the rolling windows built over a one-dimensional array of
+# values: rows overlap, as in empyrical's rolling statistics.
+BN_WINDOW_COLS = (1, 3, 33, 64)
+# Element count the windows are built over.
+BN_WINDOW_N = 300
+# Values of ddof the nanstd cases try besides the default: bottleneck takes
+# any int, and a large one gives NaN everywhere.
+BN_DDOFS = (0, 1, 2, -1, 1000)
+# Shape of the matrices of the layout and spelling cases, large enough that
+# the hook releases the interpreter lock (HK_NOGIL_MIN_N).
+BN_LAYOUT_SHAPE = (300, 41)
+# Elements left between the rows of the matrix whose rows have gaps.
+BN_GAP = 5
+
+
+def _bn(function: str):
+    """Return one of bottleneck's functions, looked up at call time."""
+    import bottleneck
+
+    return getattr(bottleneck, function)
+
+
+def _bn_call(function: str, a, *args, **kwargs):
+    """Call bottleneck's `function` on `a` with the given arguments."""
+    return _bn(function)(a, *args, **kwargs)
+
+
+def _bn_keywords(function: str) -> dict:
+    """Return the keywords every case of a function passes: ddof=1 for nanstd, as empyrical does."""
+    return {"ddof": 1} if function == "nanstd" else {}
+
+
+def _bn_case(function: str, label: str, maker: Callable[[], object], call: Callable, takes: bool) -> Case:
+    """Return one case of a bottleneck function.
+
+    Args:
+        function: One of BN_FUNCTIONS.
+        label: What the call is.
+        maker: Builds the array.
+        call: Makes the call on the array.
+        takes: Whether the column kernel must take the call; otherwise it must not.
+
+    Returns:
+        The case, under the operation `bn.<function>`.
+    """
+    return Case(f"bn.{function}", f"bn.{function} {label}", partial(_made, maker), call,
+                f"{function}_cols_f64" if takes else None)
+
+
+def _bn_matrix(maker: Callable[[], np.ndarray], rows: int, cols: int) -> np.ndarray:
+    """Return the values of `maker` as a C-ordered matrix of `rows` by `cols`."""
+    return maker().reshape(rows, cols)
+
+
+def _bn_windows(maker: Callable[[], np.ndarray], cols: int) -> np.ndarray:
+    """Return rolling windows of `cols` elements over the values of `maker`, one window per row.
+
+    The layout of the view empyrical reduces, `rolling_window(x, cols).T`:
+    row i is x[i : i + cols], so consecutive rows overlap and the elements of
+    a row are adjacent. Read-only, as an overlapping view should be.
+    """
+    x = maker()
+    rows = len(x) - cols + 1
+    return np.lib.stride_tricks.as_strided(x, (rows, cols), (8, 8), writeable=False)
+
+
+def _bn_random(rows: int, cols: int) -> np.ndarray:
+    """Return a C-ordered float64 matrix of random values with some NaN."""
+    return values("f64", rows * cols, "nan_some", 0, "bn").reshape(rows, cols)
+
+
+def _bn_value_cases(function: str) -> Iterator[Case]:
+    """Yield every float64 value class as C-ordered matrices and as rolling windows, reduced along axis 0."""
+    keywords = _bn_keywords(function)
+    call = partial(_bn_call, function, axis=0, **keywords)
+    for rows, cols in BN_SHAPES:
+        for _, _, label, maker in value_arrays("f64", (rows * cols,), arg="bn"):
+            yield _bn_case(function, f"{rows}x{cols} {label}", partial(_bn_matrix, maker, rows, cols), call, True)
+    for cols in BN_WINDOW_COLS:
+        for _, _, label, maker in value_arrays("f64", (BN_WINDOW_N,), arg="bn"):
+            yield _bn_case(function, f"windows of {cols} {label}", partial(_bn_windows, maker, cols), call, True)
+
+
+def _bn_positional(ddof: int, a: np.ndarray) -> np.ndarray:
+    """Return `bn.nanstd(a, 0, ddof)`, every argument by position."""
+    return _bn("nanstd")(a, 0, ddof)
+
+
+def _bn_ddof_cases() -> Iterator[Case]:
+    """Yield nanstd with every value of ddof, by keyword and by position."""
+    rows, cols = BN_SHAPES[-2]
+    for ddof in BN_DDOFS:
+        for cls in ("random", "nan_some", "nan_all", "zeros", "inf_mix"):
+            maker = partial(lambda c: values("f64", rows * cols, c, 0, "bn").reshape(rows, cols), cls)
+            yield _bn_case("nanstd", f"{rows}x{cols} x={cls} ddof={ddof}", maker,
+                           partial(_bn_call, "nanstd", axis=0, ddof=ddof), True)
+            yield _bn_case("nanstd", f"{rows}x{cols} x={cls} (a, 0, {ddof})", maker,
+                           partial(_bn_positional, ddof), True)
+
+
+def _bn_fortran(rows: int, cols: int) -> np.ndarray:
+    """Return a Fortran-ordered matrix, whose axis 1 is the one a column kernel reduces."""
+    return np.asfortranarray(_bn_random(rows, cols))
+
+
+def _bn_gapped(rows: int, cols: int) -> np.ndarray:
+    """Return a matrix whose rows are BN_GAP elements apart: the first columns of a wider one."""
+    return _bn_random(rows, cols + BN_GAP)[:, :cols]
+
+
+def _bn_layout_cases(function: str) -> Iterator[Case]:
+    """Yield the spellings and layouts the kernel takes, and the ones it leaves to bottleneck."""
+    rows, cols = BN_LAYOUT_SHAPE
+    keywords = _bn_keywords(function)
+    matrix = partial(_bn_random, rows, cols)
+    taking = (
+        ("(a, 0)", lambda a, f=function, k=keywords: _bn(f)(a, 0, **k)),
+        ("(a, axis=0)", partial(_bn_call, function, axis=0, **keywords)),
+        ("(a, axis=-2)", partial(_bn_call, function, axis=-2, **keywords)),
+        ("(a=a, axis=0)", lambda a, f=function, k=keywords: _bn(f)(a=a, axis=0, **k)),
+    )
+    for text, call in taking:
+        yield _bn_case(function, f"{text} {rows}x{cols}", matrix, call, True)
+    yield _bn_case(function, f"(a, axis=1) {rows}x{cols} Fortran order", partial(_bn_fortran, rows, cols),
+                   partial(_bn_call, function, axis=1, **keywords), True)
+    yield _bn_case(function, f"(a, axis=-1) {rows}x{cols} Fortran order", partial(_bn_fortran, rows, cols),
+                   partial(_bn_call, function, axis=-1, **keywords), True)
+    yield _bn_case(function, f"(a, axis=0) {rows}x{cols} rows with gaps", partial(_bn_gapped, rows, cols),
+                   partial(_bn_call, function, axis=0, **keywords), True)
+    yield _bn_case(function, f"(a, axis=0) {rows}x{cols} misaligned",
+                   lambda r=rows, c=cols: _misaligned(_bn_random(r, c).ravel()).reshape(r, c),
+                   partial(_bn_call, function, axis=0, **keywords), True)
+    yield _bn_case(function, f"(a, axis=0) {rows}x{cols} read-only",
+                   lambda r=rows, c=cols: _readonly(_bn_random(r, c).ravel()).reshape(r, c),
+                   partial(_bn_call, function, axis=0, **keywords), True)
+    never = (
+        ("(a) no axis", matrix, partial(_bn_call, function, **keywords)),
+        ("(a, axis=None)", matrix, partial(_bn_call, function, axis=None, **keywords)),
+        ("(a, axis=1) C order", matrix, partial(_bn_call, function, axis=1, **keywords)),
+        ("(a, axis=np.int64(0))", matrix, partial(_bn_call, function, axis=np.int64(0), **keywords)),
+        ("(a, axis=True)", matrix, partial(_bn_call, function, axis=True, **keywords)),
+        ("(a, axis=2) out of range", matrix, partial(_bn_call, function, axis=2, **keywords)),
+        ("(a, axis=-3) out of range", matrix, partial(_bn_call, function, axis=-3, **keywords)),
+        ("(a, axis=0, out=None) unknown keyword", matrix, partial(_bn_call, function, axis=0, out=None)),
+        ("(a, 0, 1, 2) too many", matrix, lambda a, f=function: _bn(f)(a, 0, 1, 2)),
+        ("1-D", lambda: values("f64", rows, "nan_some", 0, "bn"), partial(_bn_call, function, axis=0, **keywords)),
+        ("3-D", lambda: _bn_random(rows, cols)[:, :40].reshape(rows, 4, 10),
+         partial(_bn_call, function, axis=0, **keywords)),
+        ("float32", lambda: _bn_random(rows, cols).astype(np.float32), partial(_bn_call, function, axis=0, **keywords)),
+        ("int64", lambda: np.arange(rows * cols, dtype=np.int64).reshape(rows, cols),
+         partial(_bn_call, function, axis=0, **keywords)),
+        ("byte-swapped", lambda: _byteswapped(_bn_random(rows, cols)), partial(_bn_call, function, axis=0, **keywords)),
+        ("subclass", lambda: _bn_random(rows, cols).view(_Subclass), partial(_bn_call, function, axis=0, **keywords)),
+        ("list", lambda: _bn_random(4, 3).tolist(), partial(_bn_call, function, axis=0, **keywords)),
+        ("rows reversed", lambda: _bn_random(rows, cols)[::-1], partial(_bn_call, function, axis=0, **keywords)),
+        ("columns strided", lambda: _bn_random(rows, 2 * cols)[:, ::2], partial(_bn_call, function, axis=0, **keywords)),
+        ("row stride 0", lambda: np.broadcast_to(_bn_random(1, cols), (rows, cols)),
+         partial(_bn_call, function, axis=0, **keywords)),
+        ("0 rows", lambda: _bn_random(0, cols), partial(_bn_call, function, axis=0, **keywords)),
+        ("0 columns", lambda: _bn_random(rows, 0), partial(_bn_call, function, axis=0, **keywords)),
+    )
+    for text, maker, call in never:
+        yield _bn_case(function, f"{text} {rows}x{cols}", maker, call, False)
+    if function == "nanstd":
+        for text, ddof in (("np.int64(1)", np.int64(1)), ("1.0", 1.0), ("True", True), ("2**40", 2 ** 40)):
+            yield _bn_case(function, f"(a, axis=0, ddof={text}) {rows}x{cols}", matrix,
+                           partial(_bn_call, function, axis=0, ddof=ddof), False)
+    else:
+        yield _bn_case(function, f"(a, axis=0, ddof=1) {rows}x{cols}", matrix,
+                       partial(_bn_call, function, axis=0, ddof=1), False)
+
+
+def bottleneck_cases(function: str) -> Iterator[Case]:
+    """Yield the cases of one of bottleneck's functions.
+
+    The column kernel takes a plain two-dimensional float64 ndarray in native
+    byte order reduced along the axis given as a Python int, when the other
+    axis has a stride of one element and the reduced one a positive stride
+    that is a whole number of elements; see hook_bottleneck.c. bottleneck
+    must be installed; it is a dependency of the development environment.
+
+    Args:
+        function: One of BN_FUNCTIONS.
+    """
+    import bottleneck  # noqa: F401  Imported before install(), as most programs do.
+
+    yield from _bn_value_cases(function)
+    if function == "nanstd":
+        yield from _bn_ddof_cases()
+    yield from _bn_layout_cases(function)
+
+# ----------------------------------------------------------------- argsort
+
+# The binding's limits for a stable argsort (hook_method.c): the element count
+# from which the kernels take it, how many elements out of order still leave
+# an array to NumPy, and the share of an array one run may leave out and
+# still leave it to NumPy.
+ARGSORT_MIN_N = 256
+ARGSORT_FALL_LIMIT = 8
+ARGSORT_RUN_REMAINDER = 32
+# Element type (spec name) -> the kernel that sorts it.
+ARGSORT_KERNELS = {"f64": "argsort_f64", "i64": "argsort_i64", "u64": "argsort_u64"}
+# Element types no argsort kernel sorts.
+ARGSORT_NEIGHBOURS = ("f32", "i32", "u8", "bool")
+# Sizes of the cases built to sit either side of the order tests: just above
+# the smallest array taken, an ordinary one, and one sorted with the
+# interpreter lock released.
+ARGSORT_ORDER_SIZES = (ARGSORT_MIN_N, 1000, 100003)
+# Distinct values of the arrays built with ties, few enough that every
+# element has several equals; and the float values of the array that mixes
+# zeros of both signs and NaN with numbers, shuffled.
+ARGSORT_TIE_VALUES = 5
+ARGSORT_FLOAT_TIES = np.array([0.0, -0.0, 1.0, -1.0, np.nan])
+# The distance between neighbouring values of the sorted arrays the order
+# cases are built from, which leaves room for no two to be equal.
+ARGSORT_VALUE_STEP = 3
+# In the descending array with ties, each value is held by about this many elements.
+ARGSORT_TIE_RUN = 4
+# One element in this many, at the end, is a NaN in the sorted array that ends in NaNs.
+ARGSORT_NAN_TAIL = 8
+# The step of the view in the case that sorts every third element backwards.
+ARGSORT_VIEW_STEP = 3
+# How the label of a case on the masked-array layout ends.
+_MASKED_LAYOUT = "layout=masked_array"
+# The layouts that are one-dimensional views with a step, as the labels of
+# their cases end.
+_STEPPED_LAYOUTS = ("layout=strided", "layout=reversed")
+
+
+def _stable(x):
+    """Return `x.argsort(kind="stable")`."""
+    return x.argsort(kind="stable")
+
+
+def _argsort_sorted(dtype: str, n: int) -> np.ndarray:
+    """Build `n` distinct elements of `dtype` in ascending order."""
+    steps = np.arange(n) * ARGSORT_VALUE_STEP
+    return steps.astype(np.uint64) if dtype == "u64" else (steps - n).astype(np_dtype(dtype))
+
+
+def _argsort_with_falls(dtype: str, n: int, falls: int) -> tuple:
+    """Build ascending runs of equal length with exactly `falls` places where an element is below the one before."""
+    runs = falls + 1
+    x = _argsort_sorted(dtype, n)
+    out = np.concatenate([x[i::runs] for i in range(runs)])
+    return (out,)
+
+
+def _argsort_with_tail(dtype: str, n: int, tail: int, at_start: bool, descending: bool = False) -> tuple:
+    """Build a sorted array with `tail` shuffled elements at one end.
+
+    Args:
+        dtype: Element type as a spec name.
+        n: Element count.
+        tail: How many elements are out of order.
+        at_start: Put them before the sorted part instead of after it.
+        descending: Sort the rest in strictly descending order.
+
+    Returns:
+        The one argument of the call.
+    """
+    x = _argsort_sorted(dtype, n)
+    if descending:
+        x = x[::-1].copy()
+    shuffled = np.random.default_rng(SEED).permutation(x[:tail] if at_start else x[n - tail:])
+    return (np.concatenate([shuffled, x[tail:]] if at_start else [x[: n - tail], shuffled]),)
+
+
+def _argsort_with_rises(dtype: str, n: int, rises: int) -> tuple:
+    """Build strictly descending runs with exactly `rises` places where an element is not below the one before."""
+    (ascending,) = _argsort_with_falls(dtype, n, rises)
+    return (ascending[::-1].copy(),)
+
+
+def _argsort_descending_ties(dtype: str, n: int) -> tuple:
+    """Build `n` elements in descending order in which every value repeats."""
+    return (np.sort(np.arange(n) % (n // ARGSORT_TIE_RUN + 1))[::-1].astype(np_dtype(dtype)),)
+
+
+def _argsort_ties(dtype: str, n: int, zeros: bool) -> tuple:
+    """Build shuffled elements of a few values; for floats optionally zeros of both signs among them."""
+    rng = np.random.default_rng(SEED)
+    if zeros:
+        return (ARGSORT_FLOAT_TIES[rng.integers(0, len(ARGSORT_FLOAT_TIES), n)],)
+    return (rng.integers(0, ARGSORT_TIE_VALUES, n).astype(np_dtype(dtype)),)
+
+
+def _argsort_nan_in_order(n: int, where: str) -> tuple:
+    """Build ascending float64 with NaNs: at the end, where they sort, or in the middle, out of order."""
+    x = np.arange(n, dtype=np.float64)
+    if where == "end":
+        x[n - n // ARGSORT_NAN_TAIL:] = np.nan
+    else:
+        x[n // 2] = np.nan
+    return (x,)
+
+
+def _argsort_order_cases(dtype: str, kernel: str) -> Iterator[Case]:
+    """Yield the cases either side of the binding's tests for input in order."""
+    for n in ARGSORT_ORDER_SIZES:
+        def case(label: str, make: Callable[[], tuple], expect: str | None) -> Case:
+            """Build one stable-argsort case on an array made for the order tests."""
+            return Case("argsort", f"x.argsort(kind='stable') {dtype} n={n} {label}", make, _stable, expect)
+        yield case("sorted", lambda n=n: (_argsort_sorted(dtype, n),), kernel)
+        yield case("strictly descending", lambda n=n: (_argsort_sorted(dtype, n)[::-1].copy(),), kernel)
+        yield case("descending with ties", partial(_argsort_descending_ties, dtype, n), kernel)
+        yield case("a few values", partial(_argsort_ties, dtype, n, False), kernel)
+        for falls in (1, ARGSORT_FALL_LIMIT, ARGSORT_FALL_LIMIT + 1, 4 * ARGSORT_FALL_LIMIT):
+            yield case(f"{falls} falls", partial(_argsort_with_falls, dtype, n, falls),
+                       None if falls <= ARGSORT_FALL_LIMIT else kernel)
+            yield case(f"descending but for {falls} rises", partial(_argsort_with_rises, dtype, n, falls),
+                       None if falls <= ARGSORT_FALL_LIMIT else kernel)
+        # A shuffled stretch short enough to leave one long run, and one twice too long.
+        short, long = n // (2 * ARGSORT_RUN_REMAINDER), n // (ARGSORT_RUN_REMAINDER // 2)
+        for at_start, descending in itertools.product((False, True), (False, True)):
+            place = ("start" if at_start else "end") + (", descending" if descending else "")
+            if short > 2 * ARGSORT_FALL_LIMIT:
+                yield case(f"sorted but {short} at the {place}",
+                           partial(_argsort_with_tail, dtype, n, short, at_start, descending), None)
+            # A stretch this short may hold few enough elements out of order
+            # to count as nearly sorted, which is the other test's business.
+            yield case(f"sorted but {long} at the {place}",
+                       partial(_argsort_with_tail, dtype, n, long, at_start, descending),
+                       kernel if long > 4 * ARGSORT_FALL_LIMIT else ANY)
+
+
+def argsort_cases() -> Iterator[Case]:
+    """Yield the cases of a stable `argsort`.
+
+    The kernels take `kind='stable'`, `kind='mergesort'` and `stable=True`
+    on a plain one-dimensional float64, int64 or uint64 array of at least
+    ARGSORT_MIN_N elements that is not nearly in order already; see the
+    binding's try_argsort.
+    """
+    taken = dict(min_n=ARGSORT_MIN_N, any_shape=False)
+    spellings = (
+        Spelling("x.argsort(kind='stable')", _stable, **taken),
+        Spelling("np.argsort(x, kind='mergesort')", lambda x: np.argsort(x, kind="mergesort"), normalises=True, **taken),
+        Spelling("x.argsort(stable=True)", lambda x: x.argsort(stable=True), sweep_values=False, **taken),
+        Spelling("np.argsort(x, stable=True)", lambda x: np.argsort(x, stable=True), normalises=True,
+                 sweep_values=False, **taken),
+        Spelling("x.argsort(-1, 'stable')", lambda x: x.argsort(-1, "stable"), sweep_values=False, **taken),
+        Spelling("x.argsort(axis=0, kind='mergesort', order=None, stable=None)",
+                 lambda x: x.argsort(axis=0, kind="mergesort", order=None, stable=None), sweep_values=False, **taken),
+        Spelling("x.argsort(kind=None, stable=True)", lambda x: x.argsort(kind=None, stable=True),
+                 sweep_values=False, **taken),
+        Spelling("x.argsort()", lambda x: x.argsort(), NEVER),
+        Spelling("np.argsort(x)", np.argsort, NEVER),
+        Spelling("x.argsort(kind='quicksort')", lambda x: x.argsort(kind="quicksort"), NEVER),
+        Spelling("x.argsort(kind='heapsort')", lambda x: x.argsort(kind="heapsort"), NEVER),
+        # NumPy reads the first letter only; the hook takes its two full names.
+        Spelling("x.argsort(kind='Stable')", lambda x: x.argsort(kind="Stable"), NEVER),
+        Spelling("x.argsort(kind='s')", lambda x: x.argsort(kind="s"), NEVER),
+        Spelling("x.argsort(kind='merge')", lambda x: x.argsort(kind="merge"), NEVER),
+        Spelling("x.argsort(kind='nonsense')", lambda x: x.argsort(kind="nonsense"), NEVER),
+        Spelling("x.argsort(stable=False)", lambda x: x.argsort(stable=False), NEVER),
+        Spelling("x.argsort(stable=None)", lambda x: x.argsort(stable=None), NEVER),
+        Spelling("x.argsort(stable=1)", lambda x: x.argsort(stable=1), NEVER),
+        Spelling("x.argsort(kind='stable', stable=True)", lambda x: x.argsort(kind="stable", stable=True), NEVER),
+        Spelling("x.argsort(kind='stable', stable=False)", lambda x: x.argsort(kind="stable", stable=False), NEVER),
+        Spelling("x.argsort(None, 'stable')", lambda x: x.argsort(None, "stable"), NEVER),
+        Spelling("x.argsort(1, 'stable')", lambda x: x.argsort(1, "stable"), NEVER),
+        Spelling("x.argsort(np.int64(0), 'stable')", lambda x: x.argsort(np.int64(0), "stable"), NEVER),
+        Spelling("x.argsort(kind='stable', order='f0')", lambda x: x.argsort(kind="stable", order="f0"), NEVER),
+        Spelling("x.argsort(kind='stable', descending=False)",
+                 lambda x: x.argsort(kind="stable", descending=False), NEVER),
+        Spelling("x.argsort(stable=True, descending=True)", lambda x: x.argsort(stable=True, descending=True), NEVER),
+        Spelling("x.argsort(-1, 'stable', None, True)", lambda x: x.argsort(-1, "stable", None, True), NEVER),
+        Spelling("x.argsort(kind='stable', kinds='stable')", lambda x: x.argsort(kind="stable", kinds="stable"), NEVER),
+        Spelling("np.sort(x, kind='stable')", lambda x: np.sort(x, kind="stable"), NEVER),
+        Spelling("np.lexsort((x,))", lambda x: np.lexsort((x,)), NEVER),
+        # np.unique sorts a flattened copy stably when asked for the first index of each value.
+        Spelling("np.unique(x, return_index=True)", lambda x: np.unique(x, return_index=True), MAYBE,
+                 normalises=True),
+    )
+    by_text = {spelling.text: spelling for spelling in spellings}
+    for case in unary_cases("argsort", ARGSORT_KERNELS, ARGSORT_NEIGHBOURS, spellings, empty_takes=False):
+        layout = case.label.rsplit(" ", 1)[-1]
+        if layout == _MASKED_LAYOUT:
+            # A masked array's own argsort fills the masked elements and calls
+            # the method of the plain array underneath with the `kind` it was
+            # given, whatever else the caller passed, so a call no kernel may
+            # take on a plain array can reach one there.
+            yield replace(case, expect=ANY)
+        elif layout in _STEPPED_LAYOUTS:
+            # The kernel sorts a copy, so a one-dimensional view with a step
+            # is taken like a contiguous array. scikit-learn sorts a reversed one.
+            text, dtype, size, _layout = case.label.rsplit(" ", 3)
+            takes = by_text[text].kind == TAKES and dtype in ARGSORT_KERNELS
+            elements = int(size.removeprefix("n="))
+            yield replace(case, expect=ARGSORT_KERNELS[dtype] if elements >= ARGSORT_MIN_N else None) if takes else case
+        else:
+            yield case
+    yield from unusual_nan_cases("argsort", {"f64": "argsort_f64"}, "x.argsort(kind='stable')", _stable,
+                                 min_n=ARGSORT_MIN_N)
+    for dtype, kernel in ARGSORT_KERNELS.items():
+        yield from _argsort_order_cases(dtype, kernel)
+    for n in ARGSORT_ORDER_SIZES:
+        yield Case("argsort", f"x.argsort(kind='stable') f64 n={n} zeros of both signs and NaN, shuffled",
+                   partial(_argsort_ties, "f64", n, True), _stable, "argsort_f64")
+        yield Case("argsort", f"x.argsort(kind='stable') f64 n={n} sorted, NaNs last",
+                   partial(_argsort_nan_in_order, n, "end"), _stable, "argsort_f64")
+        yield Case("argsort", f"x.argsort(kind='stable') f64 n={n} sorted, a NaN in the middle",
+                   partial(_argsort_nan_in_order, n, "middle"), _stable, None)
+        # What scikit-learn's ranking metrics call: a stable sort of the scores, reversed.
+        yield Case("argsort", f"np.argsort(np.flip(x), axis=-1, kind='stable') f64 n={n}",
+                   lambda n=n: (values("f64", n),), lambda x: np.argsort(np.flip(x), axis=-1, kind="stable"),
+                   "argsort_f64")
+        yield Case("argsort", f"x[::-{ARGSORT_VIEW_STEP}].argsort(kind='stable') i64 n={n}",
+                   lambda n=n: (values("i64", ARGSORT_VIEW_STEP * n),),
+                   lambda x: x[::-ARGSORT_VIEW_STEP].argsort(kind="stable"), "argsort_i64")
+        # C's `long long` is a NumPy type of its own, and 64 bits wide like `long`.
+        yield Case("argsort", f"x.argsort(kind='stable') longlong n={n}",
+                   lambda n=n: (values("i64", n).astype(np.longlong),), _stable, "argsort_i64")
+        yield Case("argsort", f"x.argsort(kind='stable') ulonglong n={n}",
+                   lambda n=n: (values("u64", n).astype(np.ulonglong),), _stable, "argsort_u64")
+        # Times order like integers but for NaT, which sorts last: not the integer kernel's.
+        yield Case("argsort", f"x.argsort(kind='stable') datetime64 n={n}",
+                   lambda n=n: (values("i64", n).view("datetime64[ns]"),), _stable, None)
+
+
 # Every operation that has a hook, with its exact cases.
 OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "argmax": partial(argext_cases, "argmax"),
@@ -3486,6 +5094,10 @@ OPERATIONS: dict[str, Callable[[], Iterator[Case]]] = {
     "any": any_cases,
     "round": round_cases,
     "median": median_cases,
+    "unique": unique_cases,
+    "inplace": inplace_cases,
+    **{f"bn.{function}": partial(bottleneck_cases, function) for function in BN_FUNCTIONS},
+    "argsort": argsort_cases,
 }
 
 # Operations that have kernels which are not bit-identical to NumPy, with the
