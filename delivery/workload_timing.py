@@ -65,6 +65,9 @@ class Outcome:
     rounds: int = 0
     # Hooked calls the workload reached, with a count on either side.
     counts: tuple[Count, ...] = field(default=())
+    # Distribution names of the libraries the workload needs beyond NumPy. A
+    # change of their versions breaks the workload's history.
+    requires: tuple[str, ...] = field(default=())
 
     @property
     def speedup(self) -> float:
@@ -130,7 +133,8 @@ def measure(workload: Workload, size: str) -> Outcome:
     _, got = _run_once(workload, data)
     hotkernels.uninstall()
     if got != expected:
-        return Outcome(workload.name, workload.title, workload.ours, size, identical=False)
+        return Outcome(workload.name, workload.title, workload.ours, size, identical=False,
+                       requires=workload.requires)
 
     rounds = rounds_for(first_ns)
     plain, installed = [], []
@@ -146,7 +150,7 @@ def measure(workload: Workload, size: str) -> Outcome:
     report = hotkernels.report()
     hotkernels.uninstall()
     return Outcome(workload.name, workload.title, workload.ours, size, True,
-                   min(plain), min(installed), rounds, _counts(report))
+                   min(plain), min(installed), rounds, _counts(report), workload.requires)
 
 
 def run(cases: Iterable[tuple[Workload, str]]) -> list[Outcome]:

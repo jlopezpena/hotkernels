@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +20,7 @@ from . import app_timing as A
 from . import apps as applications
 from . import check as C
 from . import demo as D
+from . import history as H
 from .gradient_step import study as G
 from . import numpy_suite
 from . import timing as T
@@ -46,7 +48,7 @@ SET_SUFFIX = {"first": "", "second": "-second"}
 # The report that says what each set's figures mean, under docs/.
 SET_FINDINGS = {"first": "applications-findings.md", "second": "applications-second-findings.md"}
 # Load average above which a timing run is marked as taken on a busy machine.
-BUSY_LOAD = 1.0
+BUSY_LOAD = H.BUSY_LOAD
 # A kernel-taking call counts as slower than NumPy below this speedup. The
 # margin is the noise of a best-of-several timing.
 SLOWER_THAN = 0.97
@@ -166,18 +168,17 @@ def demo() -> None:
     raise typer.Exit(EXIT_OK if outcome.identical and outcome.speedup > 1 else EXIT_FAILED)
 
 
-def _workload_cases(only: Optional[str], size: Optional[str]) -> tuple[list, list, list]:
+def _workload_cases(only: Optional[str], sizes: tuple[str, ...]) -> tuple[list, list, list]:
     """Choose which workloads run, at which sizes.
 
     Args:
         only: Name of the one workload to run, or None for all.
-        size: Name of the one size to run, or None for every size but the largest.
+        sizes: Names of the sizes to run.
 
     Returns:
         (workloads chosen, (workload, size) pairs to run, (name, missing
         libraries) for each chosen workload that cannot run here).
     """
-    sizes = (size,) if size else WL.SIZE_NAMES[:-1]
     chosen = [w for w in WL.load() if only in (None, w.name)]
     runnable = [w for w in chosen if not w.missing()]
     skipped = [(w.name, w.missing()) for w in chosen if w.missing()]
@@ -185,11 +186,58 @@ def _workload_cases(only: Optional[str], size: Optional[str]) -> tuple[list, lis
     return runnable, cases, skipped
 
 
+def _sizes(text: Optional[str]) -> tuple[str, ...]:
+    """Read the --size option.
+
+    Args:
+        text: Size names separated by commas, such as "M,L", or None.
+
+    Returns:
+        The names, in the order of SIZE_NAMES; every size but the largest if None.
+
+    Raises:
+        typer.BadParameter: If a name is not a size.
+    """
+    if text is None:
+        return WL.SIZE_NAMES[:-1]
+    names = {name.strip() for name in text.split(",")}
+    if not names <= set(WL.SIZE_NAMES):
+        raise typer.BadParameter(f"sizes are {', '.join(WL.SIZE_NAMES)}, separated by commas", param_hint="--size")
+    return tuple(name for name in WL.SIZE_NAMES if name in names)
+
+
+def _write_history(directory: Path, meta: dict, rows: list[dict], sizes: tuple[str, ...], source: str,
+                   started: datetime) -> Path:
+    """Write one run's history file.
+
+    Args:
+        directory: The directory given to --history.
+        meta: The run's description, taken when it started.
+        rows: The run's rows, as `workload_timing.as_rows` makes them.
+        sizes: The size names the run covered.
+        source: What started the run, one of history.SOURCES.
+        started: When the run started, in UTC.
+
+    Returns:
+        The file written.
+    """
+    full = H.run_meta(meta, list(sizes), source, started, hotkernels.__version__)
+    full["load_average_end"] = T.load_average()
+    path = H.run_path(directory, _slug(meta["cpu"]) or "unknown-machine", started, full["commit"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"meta": full, "rows": rows}, indent=2) + "\n")
+    return path
+
+
 @app.command()
 def workloads(
     only: Optional[str] = typer.Option(None, help="Run one workload, for example `azimint_naive`."),
-    size: Optional[str] = typer.Option(None, help="Run one size: S, M or L. Default: S and M."),
+    size: Optional[str] = typer.Option(None, help="Sizes to run, separated by commas: S, M, L. Default: S,M."),
     record: bool = typer.Option(False, help="Write the results to delivery/results/."),
+    history: Optional[Path] = typer.Option(
+        None, help="Also write the run to DIR/history/<machine>/, for the data branch. Refused from a dirty tree."),
+    source: str = typer.Option(H.MANUAL, help="What started the run, as the history records it: "
+                               + ", ".join(H.SOURCES) + "."),
 ) -> None:
     """Run code not written for hotkernels with and without it: results, times and counts.
 
@@ -199,13 +247,21 @@ def workloads(
 
     Args:
         only: Workload to restrict the run to.
-        size: Size to restrict the run to.
+        size: Sizes to run, separated by commas.
         record: Whether to write a JSON file and a Markdown report.
+        history: Directory to write a history file under, or None.
+        source: What started the run: nightly, manual or backfill.
     """
-    if size is not None and size not in WL.SIZE_NAMES:
-        raise typer.BadParameter(f"size must be one of {', '.join(WL.SIZE_NAMES)}", param_hint="--size")
+    sizes = _sizes(size)
+    if source not in H.SOURCES:
+        raise typer.BadParameter(f"source must be one of {', '.join(H.SOURCES)}", param_hint="--source")
+    # A history file names the commit it timed; with changes in tracked files it would not say what ran.
+    if history is not None and H.is_dirty():
+        raise typer.BadParameter("tracked files differ from the commit; commit or stash them first",
+                                 param_hint="--history")
+    started = H.now_utc()
     meta = W.describe_run()
-    chosen, cases, skipped = _workload_cases(only, size)
+    chosen, cases, skipped = _workload_cases(only, sizes)
     outcomes = W.run(cases)
     failed = [f"{o.workload} ({o.size})" for o in outcomes if not o.identical]
     context = {"meta": meta, "outcomes": outcomes, "skipped": skipped, "failed": failed,
@@ -217,7 +273,63 @@ def workloads(
         (RESULTS / f"{stem}.json").write_text(json.dumps({"meta": meta, "rows": W.as_rows(outcomes)}, indent=2) + "\n")
         (RESULTS / f"{stem}.md").write_text(render("workloads.md.j2", **context))
         log.info("recorded in %s", RESULTS / f"{stem}.md")
+    if history is not None:
+        log.info("history in %s", _write_history(history, meta, W.as_rows(outcomes), sizes, source, started))
     raise typer.Exit(EXIT_OK if not failed else EXIT_FAILED)
+
+
+def _history_lines(series: H.Series) -> list[dict]:
+    """Turn a series into one line per run for the history report.
+
+    Args:
+        series: The series.
+
+    Returns:
+        Per run: when it ran, the commit, the versions, the times where the
+        series is one workload's, the speedup, and the marks that apply.
+    """
+    lines = []
+    for group in series.groups:
+        for index, (run, speedup) in enumerate(group.points):
+            row = run.row(series.workload, series.size) if series.workload else None
+            marks = [mark for mark, applies in (("break", group.break_before and index == 0), ("busy", run.busy),
+                                                (run.meta["source"], run.meta["source"] != H.NIGHTLY)) if applies]
+            lines.append({"recorded_at": run.recorded_at.strftime("%Y-%m-%d %H:%M"), "commit": run.commit[:H.SHORT_COMMIT],
+                          "numpy": run.meta["numpy"], "numpy_ns": row["numpy_ns"] if row else None,
+                          "hotkernels_ns": row["hotkernels_ns"] if row else None, "speedup": speedup, "marks": marks})
+    return lines
+
+
+@app.command(name="history")
+def history_report(
+    machine: Optional[str] = typer.Option(None, help="Machine, as its history directory is named. Default: this one."),
+    workload: Optional[str] = typer.Option(None, help="One workload. Default: the headline and every workload."),
+    size: str = typer.Option(H.HEADLINE_SIZE, help="The size: S, M or L."),
+    ref: str = typer.Option(H.DEFAULT_REF, help="The branch the runs are read from."),
+) -> None:
+    """Print the recorded workload runs of one machine, in commit order.
+
+    Reads the data branch through git; run `git fetch origin perf-history` first.
+
+    Args:
+        machine: The machine's slug, or None for the one this runs on.
+        workload: The one workload to show, or None for the headline and all of them.
+        size: The size to show.
+        ref: The branch the runs are read from.
+    """
+    try:
+        runs = H.load_runs(ref)
+    except H.HistoryError as error:
+        log.error("%s", error)
+        raise typer.Exit(EXIT_FAILED)
+    machine = machine or _slug(T.machine())
+    names = [workload] if workload else list(dict.fromkeys(
+        row["workload"] for run in runs if run.machine == machine for row in run.rows))
+    series = [] if workload else [H.headline_series(runs, machine, size)]
+    series += [H.workload_series(runs, machine, name, size) for name in names]
+    blocks = [{"workload": s.workload, "lines": _history_lines(s)} for s in series]
+    log.info("%s", render("history.txt.j2", machine=machine, size=size, ref=ref, blocks=blocks,
+                          machines=H.machines(runs), busy_load=BUSY_LOAD).rstrip("\n"))
 
 
 def _apps_context(meta: dict, items: list[dict], skipped: dict[str, list[str]], passed: bool) -> dict:

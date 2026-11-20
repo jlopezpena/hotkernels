@@ -10,6 +10,7 @@ TEMPLATES = Path(__file__).resolve().parent / "templates"
 # Nanoseconds in a microsecond and in a millisecond.
 NS_PER_US = 1e3
 NS_PER_MS = 1e6
+NS_PER_S = 1e9
 
 
 def format_time(ns: float) -> str:
@@ -25,7 +26,9 @@ def format_time(ns: float) -> str:
         return f"{ns:.3g} ns"
     if ns < NS_PER_MS:
         return f"{ns / NS_PER_US:.3g} µs"
-    return f"{ns / NS_PER_MS:.3g} ms"
+    if ns < NS_PER_S:
+        return f"{ns / NS_PER_MS:.3g} ms"
+    return f"{ns / NS_PER_S:.3g} s"
 
 
 def _environment() -> Environment:

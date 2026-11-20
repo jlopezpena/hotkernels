@@ -233,6 +233,8 @@ uv run delivery check         # every hooked call, with and without hotkernels; 
 uv run delivery demo          # run examples/workload.py both ways and compare
 uv run delivery time          # time statements from Python; add --record to keep the result
 uv run --group workloads delivery workloads   # library and benchmark-suite code, both ways
+uv run --group workloads delivery workloads --size M,L --history DIR   # also keep the run under DIR/history/
+uv run delivery history       # the kept runs of this machine, from the perf-history branch
 uv run delivery numpy-tests   # NumPy's own test suite, both ways; about ten minutes
 uv run --group apps delivery apps --profile   # five whole applications at two sizes, both ways, and where their time goes
 uv run --group apps delivery apps --set second --profile   # five more, recorded apart
@@ -245,7 +247,7 @@ uv run docsite serve   # build the site and serve it at http://127.0.0.1:8000, r
 uv run docsite build   # build it into build/site
 ```
 
-Pages are Markdown under `docsite/pages/` and are listed in `docsite/site.toml`.
+Pages are Markdown under `docsite/pages/` and are listed in `docsite/site.toml`. The page "Over time" draws the workload runs on the `perf-history` branch; run `git fetch origin perf-history` first, or the page shows no runs.
 
 ## Using the self-hosted runners
 

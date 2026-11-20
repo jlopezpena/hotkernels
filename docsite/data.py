@@ -9,9 +9,14 @@ instead of producing a page with holes in it.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Callable
+
+from delivery import history as H
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 KERNELS = ROOT / "kernels"
@@ -19,6 +24,10 @@ README = ROOT / "README.md"
 FINDINGS = ROOT / "docs" / "kernel-findings.md"
 PYTHON_TIMINGS = ROOT / "delivery" / "results" / "apple-m1-pro.json"
 PYTHON_TIMINGS_X86_64 = ROOT / "delivery" / "results" / "intel-r-core-tm-i5-14600kf.json"
+# Where the workloads' history is read from, in order: the data branch as
+# fetched from GitHub, then a local branch of the same name, for a build on a
+# machine that records runs and has not pushed them.
+HISTORY_REFS = (H.DEFAULT_REF, H.DATA_BRANCH)
 
 # The architectures kernels are written for, by the name of their directory
 # under kernels/<name>/. Each holds that architecture's kernel.s and attempts.md.
@@ -349,3 +358,80 @@ def python_at(timings: dict, n: int) -> list[dict]:
     """
     return [{"statement": row["statement"], "data": row["data"], "speedup": row["numpy_ns"] / row["hotkernels_ns"]}
             for row in timings["rows"] if row["kernel"] and row["n"] == n]
+
+
+def _history_run(index: int, run: H.Run) -> dict:
+    """Describe one recorded run for the history figure.
+
+    Args:
+        index: The run's position in commit order, by which the series refer to it.
+        run: The run.
+
+    Returns:
+        What the night's table shows, with the run's versions and load.
+    """
+    meta = run.meta
+    return {
+        "id": index, "machine": run.machine, "commit": run.commit[:H.SHORT_COMMIT],
+        "commit_date": meta["commit_date"], "recorded_at": meta["recorded_at"], "source": meta["source"],
+        "numpy": meta["numpy"], "python": meta["python"], "hotkernels": meta["hotkernels"],
+        "load_average": meta.get("load_average"), "load_average_end": meta.get("load_average_end"), "busy": run.busy,
+        "rows": [{"workload": r["workload"], "size": r["size"], "identical": r["identical"],
+                  "numpy_ns": r["numpy_ns"], "hotkernels_ns": r["hotkernels_ns"], "speedup": r["speedup"],
+                  "calls": sum(c["calls"] for c in r["counts"]),
+                  "left": sum(c["left_to_numpy"] for c in r["counts"])} for r in run.rows],
+    }
+
+
+def _history_series(series: H.Series, ids: dict[str, int]) -> dict:
+    """Describe one series for the history figure.
+
+    Args:
+        series: The series.
+        ids: Each run's id, by the path of its file.
+
+    Returns:
+        The machine, workload (None for the headline) and size, and per group
+        of runs of one commit: its date, the median speedup, whether it follows
+        a break, and (run id, speedup) for each run.
+    """
+    return {
+        "machine": series.machine, "workload": series.workload, "size": series.size,
+        "groups": [{"commit": g.commit[:H.SHORT_COMMIT], "date": g.commit_date.isoformat(), "value": g.value,
+                    "break": g.break_before, "runs": [[ids[run.path], speedup] for run, speedup in g.points]}
+                   for g in series.groups],
+    }
+
+
+def history(inline: Callable[[str], str]) -> dict:
+    """Read the workloads' recorded runs and the merges between them, for the history page.
+
+    Args:
+        inline: Renders one line of Markdown to HTML, for the release notes.
+
+    Returns:
+        The ref read (None if no history is available, and everything else
+        empty), the machines, the runs, the workloads, the series (a headline
+        per machine and one per workload and size), and the changes.
+    """
+    ref = next((r for r in HISTORY_REFS if H.ref_exists(r)), None)
+    if ref is None:
+        log.warning("no workloads history: fetch it with `git fetch origin %s`", H.DATA_BRANCH)
+        runs = []
+    else:
+        runs = H.load_runs(ref)
+    ids = {run.path: index for index, run in enumerate(runs)}
+    machines = H.machines(runs)
+    titles = {r["workload"]: (r["title"], r["ours"]) for run in runs for r in run.rows}
+    sizes = [size for size in H.SIZE_ORDER if any(r["size"] == size for run in runs for r in run.rows)]
+    series = [H.headline_series(runs, machine) for machine in machines]
+    series += [H.workload_series(runs, machine, name, size) for machine in machines for name in titles for size in sizes]
+    return {
+        "ref": ref, "busy_load": H.BUSY_LOAD, "headline_size": H.HEADLINE_SIZE,
+        "machines": [{"slug": m, "cpu": next(r.meta["cpu"] for r in runs if r.machine == m)} for m in machines],
+        "workloads": [{"name": name, "title": title, "ours": ours} for name, (title, ours) in titles.items()],
+        "runs": [_history_run(index, run) for index, run in enumerate(runs)],
+        "series": [_history_series(s, ids) for s in series if s.groups],
+        "changes": [{"commit": c.commit[:H.SHORT_COMMIT], "date": c.date.isoformat(), "pull_request": c.pull_request,
+                     "kind": c.kind, "note": inline(c.note)} for c in H.changes(runs)],
+    }

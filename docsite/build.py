@@ -188,6 +188,8 @@ def collect_data(md) -> dict:
         "attempts_x86_64": D.attempts(partial(render_inline, md), D.X86_64),
         "findings_x86_64": D.findings_x86_64(),
         "python_x86_64": {"meta": python_x86_64["meta"], "at_size": D.python_at(python_x86_64, D.X86_64_SIZE)},
+        # The workloads' recorded runs over time, from the data branch.
+        "history": D.history(partial(render_inline, md)),
     }
 
 

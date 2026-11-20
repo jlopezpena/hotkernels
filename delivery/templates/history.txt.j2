@@ -1,0 +1,27 @@
+{# The report of `delivery history`: one block per series, one line per recorded run, in commit order. #}
+{% if not blocks or not blocks | selectattr("lines") | list %}
+No runs of {{ machine }} at size {{ size }} on {{ ref }}.{{ " Machines with runs: " ~ machines | join(", ") if machines else "" }}
+{% else %}
+Runs of {{ machine }} at size {{ size }}, from {{ ref }}, in commit order.
+Marks: break = Python, NumPy or a library changed, so the line before is not comparable;
+busy = load average above {{ busy_load }}; manual or backfill = not a nightly run.
+{% for block in blocks %}
+
+{% if block.workload %}
+{{ block.workload }}
+  {{ "run (UTC)" | ljust(18) }}{{ "commit" | ljust(9) }}{{ "NumPy" | ljust(8) }}{{ "plain" | rjust(10) }}{{ "installed" | rjust(11) }}{{ "faster" | rjust(9) }}  marks
+{% else %}
+Headline: geometric mean of the workloads' speedups
+  {{ "run (UTC)" | ljust(18) }}{{ "commit" | ljust(9) }}{{ "NumPy" | ljust(8) }}{{ "faster" | rjust(9) }}  marks
+{% endif %}
+{% for line in block.lines %}
+{% if block.workload %}
+  {{ line.recorded_at | ljust(18) }}{{ line.commit | ljust(9) }}{{ line.numpy | ljust(8) }}{{ line.numpy_ns | time | rjust(10) }}{{ line.hotkernels_ns | time | rjust(11) }}{{ line.speedup | times | rjust(9) }}  {{ line.marks | join(", ") }}
+{% else %}
+  {{ line.recorded_at | ljust(18) }}{{ line.commit | ljust(9) }}{{ line.numpy | ljust(8) }}{{ line.speedup | times | rjust(9) }}  {{ line.marks | join(", ") }}
+{% endif %}
+{% else %}
+  no run timed it
+{% endfor %}
+{% endfor %}
+{% endif %}
