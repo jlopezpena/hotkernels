@@ -26,13 +26,13 @@ As in the first set, a library is called through its documented functions with t
 
 | Application | Small | Large |
 |---|---|---|
-| `particle_filter` | 2,000 particles, 100 steps | 200,000 particles, 100 steps |
+| `particle_filter` | 2,000 particles, 100 steps | 100,000 particles, 100 steps |
 | `veros_ocean` | a grid of about 65,000 points | a grid of about 1,000,000 points |
 | `skimage_pipeline` | 4 images of 256 × 256 | 4 images of 1,024 × 1,024 |
 | `pandas_sales` | 100,000 sales | 2,000,000 sales |
-| `astropy_timeseries` | 20 light curves of 1,000 points, images of 256 × 256 | 20 light curves of 20,000 points, images of 2,048 × 2,048 |
+| `astropy_timeseries` | 10 light curves of 1,000 points, images of 256 × 256 | 10 light curves of 5,000 points, images of 1,024 × 1,024 |
 
-The sizes are fixed in the building and recorded; the figures above are what they are set from.
+The sizes are fixed in the building and recorded; the table gives them as built (see [What changed in the building](#what-changed-in-the-building)).
 
 **What is compared.** A pandas object or an Astropy table is reduced to NumPy arrays before it is returned, so that `delivery.check.describe` compares their bytes and not a `repr`.
 
@@ -84,3 +84,11 @@ Gaps the report finds are not served in this work. Each is an issue, to be desig
 ## Decisions still open
 
 1. **Whether the two sets merge into one list** of ten once both are recorded, with one record per machine.
+
+## What changed in the building
+
+- **Two large sizes were made smaller.** The proposal had 200,000 particles and light curves of 20,000 points with 2,048 × 2,048 images. On plain NumPy they took 2.0 s and 10.6 s, over the 2 s a run may take: the fast Lomb–Scargle periodogram's frequency grid grows with the number of points, and 20 of them took 8.4 s alone. The large sizes are 100,000 particles, and 10 light curves of 5,000 points with images of 1,024 × 1,024; both take 0.9 to 1.6 s. The small sizes are as proposed, except that the Astropy program has 10 light curves, not 20, at both sizes.
+- **Bayesian blocks run on two light curves, on the first 500 or 2,000 points of each.** Their cost grows as the square of the points, and on every curve they would be most of the program.
+- **Astropy uses bottleneck,** which the `apps` group already installs for empyrical: its sigma clipping calls bottleneck's `nanmedian`, `nanstd` and `nanmean`, and the program measures it so, as a user with both installed would run it.
+- **`--only` sets the run's set** from the application it names, so `--only pandas_sales --record` writes the second set's record, whatever `--set` says.
+- **Tests** of the sets, of each set's record name and of the particle filter's resampling are in `tests/test_apps.py`.

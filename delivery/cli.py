@@ -40,6 +40,11 @@ SHOWN_FAILURES = 5
 RESULTS = Path(__file__).resolve().parent / "results"
 # What the file names of a recorded run of `delivery apps` end with.
 APPS_SUFFIX = "-apps"
+# What the record of each set of `delivery apps` adds to APPS_SUFFIX. The first
+# set's record keeps the name it had before there were two.
+SET_SUFFIX = {"first": "", "second": "-second"}
+# The report that says what each set's figures mean, under docs/.
+SET_FINDINGS = {"first": "applications-findings.md", "second": "applications-second-findings.md"}
 # Load average above which a timing run is marked as taken on a busy machine.
 BUSY_LOAD = 1.0
 # A kernel-taking call counts as slower than NumPy below this speedup. The
@@ -236,18 +241,35 @@ def _apps_context(meta: dict, items: list[dict], skipped: dict[str, list[str]], 
         group = groups.setdefault(timing.name, {"name": timing.name, "title": timing.title, "source": timing.source,
                                                 "items": []})
         group["items"].append(item)
+    chosen_set = _set_of(meta)
     return {"meta": meta, "items": items, "applications": list(groups.values()), "skipped": skipped,
-            "busy_load": BUSY_LOAD, "rounds": A.ROUNDS, "shortest_round_ms": A.SHORTEST_ROUND_MS, "passed": passed}
+            "busy_load": BUSY_LOAD, "rounds": A.ROUNDS, "shortest_round_ms": A.SHORTEST_ROUND_MS, "passed": passed,
+            "set_name": chosen_set, "default_set": applications.DEFAULT_SET, "findings": SET_FINDINGS[chosen_set]}
+
+
+def _set_of(meta: dict) -> str:
+    """Return the set of applications a run was of.
+
+    Args:
+        meta: What the run was measured on. Records written before there were
+            two sets do not name one; they are of the first.
+
+    Returns:
+        One of `apps.SETS`.
+    """
+    return meta.get("set", applications.DEFAULT_SET)
 
 
 def _apps_stem(meta: dict) -> str:
     """Return the file name, without suffix, of a machine's record of `delivery apps`."""
-    return (_slug(meta["cpu"]) or "unknown-machine") + APPS_SUFFIX
+    return (_slug(meta["cpu"]) or "unknown-machine") + APPS_SUFFIX + SET_SUFFIX[_set_of(meta)]
 
 
 @app.command()
 def apps(
-    only: Optional[str] = typer.Option(None, help="Run one application, for example `mlp_train`."),
+    set_name: str = typer.Option(applications.DEFAULT_SET, "--set",
+                                 help="The set of applications: `first` or `second`."),
+    only: Optional[str] = typer.Option(None, help="Run one application of either set, for example `mlp_train`."),
     size: Optional[str] = typer.Option(None, help="Run one size, `small` or `large`. Both by default."),
     profile: bool = typer.Option(False, help="Also sample where the time goes: `sample` on macOS, `perf` on Linux."),
     record: bool = typer.Option(False, help="Write the results to delivery/results/."),
@@ -259,7 +281,10 @@ def apps(
     delivery apps`. Only meaningful on native hardware and an idle machine.
 
     Args:
-        only: Application to restrict the run to.
+        set_name: The set of applications to run, one of `apps.SETS`. Each
+            set is recorded apart.
+        only: Application to restrict the run to. Its set is the run's,
+            whatever `set_name` says.
         size: Size to restrict the run to, one of `apps.SIZE_NAMES`.
         profile: Whether to sample each application's native stacks both ways.
         record: Whether to write a JSON file and a Markdown report.
@@ -270,6 +295,14 @@ def apps(
     if size not in (None, *applications.SIZE_NAMES):
         log.error("no size %r: the sizes are %s", size, ", ".join(applications.SIZE_NAMES))
         raise typer.Exit(EXIT_FAILED)
+    if set_name not in applications.SETS:
+        log.error("no set %r: the sets are %s", set_name, ", ".join(applications.SETS))
+        raise typer.Exit(EXIT_FAILED)
+    if only is not None and only not in applications.NAMES:
+        log.error("no application %r: the applications are %s", only, ", ".join(applications.NAMES))
+        raise typer.Exit(EXIT_FAILED)
+    if only is not None:
+        set_name = next(name for name, members in applications.SETS.items() if only in members)
     unfinished = A.unfinished_runs() if record else None
     if record and unfinished is None:
         log.warning("could not ask `gh run list` whether CI runs are unfinished; recording anyway")
@@ -282,11 +315,12 @@ def apps(
         sampler, reason = P.find_sampler()
         if sampler is None:
             log.info("no profile: %s. Times and counts only.", reason)
-    meta = T.describe_machine() | {"libraries": A.library_versions(), "unfinished_ci_runs": unfinished,
+    meta = T.describe_machine() | {"set": set_name, "libraries": A.library_versions(),
+                                   "unfinished_ci_runs": unfinished,
                                    "sampler": sampler.description if sampler else None}
     if record and meta["load_average"] > BUSY_LOAD:
         log.warning("load average %s: the times will be marked rough", meta["load_average"])
-    names = [name for name in applications.NAMES if only in (None, name)]
+    names = [name for name in applications.SETS[set_name] if only in (None, name)]
     sizes = [name for name in applications.SIZE_NAMES if size in (None, name)]
     skipped = {name: applications.missing(name) for name in names if applications.missing(name)}
     items = []

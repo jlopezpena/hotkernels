@@ -90,6 +90,32 @@ def test_every_application_has_every_size():
         assert module.SIZES["small"] != module.SIZES["large"], name
 
 
+def test_every_application_is_in_one_set():
+    """The sets partition the applications, and the default set is the first study's."""
+    members = [name for names in apps.SETS.values() for name in names]
+    assert sorted(members) == sorted(set(members))
+    assert tuple(members) == apps.NAMES
+    assert apps.SETS[apps.DEFAULT_SET][0] == "mlp_train"
+
+
+def test_each_set_records_under_its_own_name():
+    """The first set keeps the record name it had; the second records beside it."""
+    assert cli._apps_stem({"cpu": "Apple M1 Pro"}) == "apple-m1-pro-apps"
+    assert cli._apps_stem({"cpu": "Apple M1 Pro", "set": "first"}) == "apple-m1-pro-apps"
+    assert cli._apps_stem({"cpu": "Apple M1 Pro", "set": "second"}) == "apple-m1-pro-apps-second"
+
+
+def test_particle_filter_resamples_in_proportion_to_the_weights():
+    """Systematic resampling copies each particle about weight × n times and never indexes past the end."""
+    import numpy as np
+
+    module = apps.load("particle_filter")
+    weights = np.array([0.5, 0.0, 0.25, 0.25])
+    chosen = module.systematic_resample(np.repeat(weights, 250) / 250, np.random.default_rng(0))
+    assert chosen.min() >= 0 and chosen.max() < 1_000
+    assert np.bincount(chosen // 250, minlength=4).tolist() == [500, 0, 250, 250]
+
+
 def test_mlp_train_is_larger_at_the_large_size():
     """The perceptron has more inputs and hidden units at the large size."""
     module = apps.load("mlp_train")

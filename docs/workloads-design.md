@@ -4,7 +4,7 @@ This began as a proposal and is being built in the steps of [Order of work](#ord
 
 It adds a third level of timing, above the judge and above `delivery time`: whole programs and library functions that a user runs, written by other people, timed with and without `hotkernels.install()`.
 
-A study of five whole applications, with a native profile of each, is in [applications-findings.md](applications-findings.md). It is separate from the runner proposed here.
+A study of five whole applications, with a native profile of each, is in [applications-findings.md](applications-findings.md), and of five more in [applications-second-findings.md](applications-second-findings.md). They are separate from the runner proposed here.
 
 ## Summary
 

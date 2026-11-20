@@ -31,8 +31,10 @@ docsite = "docsite.cli:app"
 # The libraries `uv run --group apps delivery apps` runs as applications.
 # See docs/applications-design.md.
 apps = [
+    "astropy>=8.0.3",
     "empyrical-reloaded>=0.7.3",
     "pandas>=3.1.1",
+    "scikit-image>=0.26.0",
     "scikit-learn>=1.9.1",
     "scipy>=1.17.1",
     "trimesh>=5.2.1",
