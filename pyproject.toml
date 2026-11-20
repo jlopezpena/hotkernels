@@ -6,6 +6,9 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
+    # bottleneck is the oracle of the kernels that serve its calls, and
+    # `delivery check` runs its calls with and without hotkernels.
+    "bottleneck>=1.4",
     "hotkernels",
     "jinja2>=3.1.6",
     "markdown-it-py>=3.0",
@@ -25,6 +28,15 @@ release = "release.cli:app"
 docsite = "docsite.cli:app"
 
 [dependency-groups]
+# The libraries `uv run --group apps delivery apps` runs as applications.
+# See docs/applications-design.md.
+apps = [
+    "empyrical-reloaded>=0.7.3",
+    "pandas>=3.1.1",
+    "scikit-learn>=1.9.1",
+    "scipy>=1.17.1",
+    "trimesh>=5.2.1",
+]
 # What `uv run delivery numpy-tests` needs to run NumPy's own test suite.
 dev = [
     "hypothesis>=6.100",

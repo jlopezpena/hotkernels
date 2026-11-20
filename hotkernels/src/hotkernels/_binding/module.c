@@ -8,6 +8,7 @@
 _Atomic uint64_t hk_taken[HK_KERNEL_COUNT];
 _Atomic uint64_t hk_passed[HK_OPERATION_COUNT];
 bool hk_inexact = false;
+_Thread_local hk_argext_call hk_argext_mark;
 PyTypeObject *hk_ndarray_type;
 
 // Kernel names, in the order of hk_kernel.
@@ -20,9 +21,15 @@ static const char *const HK_KERNEL_NAMES[HK_KERNEL_COUNT] = {
     "histogram_f64", "bincount_u8", "isin_i64",
     "searchsorted_f64", "searchsorted_right_f64", "interp_f64",
     "where_f64", "cummax_i64", "cumfmax_f64", "fmax_reduce_f64", "any_rows_bool",
-    "bincount_i16", "bincount_i64",
+    "bincount_i16", "bincount_i64", "unique_i64",
+    "argsort_f64", "argsort_i64", "argsort_u64",
+    // Served through bottleneck's functions.
+    "nanmean_cols_f64", "nanstd_cols_f64", "nanmin_cols_f64", "nanmax_cols_f64",
     // Built into the binding.
     "clip_i64", "round_f64", "median_f64",
+    "cumsum_rows_f64", "cumprod_rows_f64", "cummax_rows_f64", "cumfmax_rows_f64",
+    "argmax_rows_f32", "argmax_rows_f64", "argmin_rows_f32", "argmin_rows_f64",
+    "add_inplace_f64", "subtract_inplace_f64",
 };
 
 // Operation names, in the order of hk_operation.
@@ -31,11 +38,13 @@ static const char *const HK_OPERATION_NAMES[HK_OPERATION_COUNT] = {
     "nonzero", "cumsum", "astype", "sum", "count_nonzero",
     "histogram", "bincount", "isin", "searchsorted", "interp",
     "where", "accumulate", "reduceat", "any", "round", "median",
+    "unique", "argsort",
+    "bn.nanmean", "bn.nanstd", "bn.nanmin", "bn.nanmax",
 };
 
 // Every table of hooks, in the order hooks are listed to Python: deepest first.
 static hk_hook *const HK_HOOK_TABLES[] = {
-    hk_slot_hooks, hk_loop_hooks, hk_function_hooks, hk_method_hooks, hk_index_hooks,
+    hk_slot_hooks, hk_loop_hooks, hk_function_hooks, hk_method_hooks, hk_index_hooks, hk_bottleneck_hooks,
 };
 #define HK_HOOK_TABLE_COUNT (sizeof HK_HOOK_TABLES / sizeof HK_HOOK_TABLES[0])
 
@@ -136,6 +145,28 @@ static PyObject *binding_reset_counters(PyObject *module, PyObject *unused) {
     Py_RETURN_NONE;
 }
 
+// forget(kernel, calls): take `calls` off a kernel's counter, which then stays
+// at zero or above. For the self-test of a hook applied after install() has
+// reset the counters, so that its probe's calls are not reported as the
+// program's.
+static PyObject *binding_forget(PyObject *module, PyObject *const *args, Py_ssize_t nargs) {
+    if (nargs != 2) {
+        PyErr_SetString(PyExc_TypeError, "forget() takes a kernel name and a count");
+        return NULL;
+    }
+    const unsigned long long calls = PyLong_AsUnsignedLongLong(args[1]);
+    if (PyErr_Occurred()) return NULL;
+    for (int i = 0; i < HK_KERNEL_COUNT; i++) {
+        if (PyUnicode_CompareWithASCIIString(args[0], HK_KERNEL_NAMES[i]) == 0) {
+            const uint64_t now = atomic_load_explicit(&hk_taken[i], memory_order_relaxed);
+            atomic_store_explicit(&hk_taken[i], now > calls ? now - calls : 0, memory_order_relaxed);
+            Py_RETURN_NONE;
+        }
+    }
+    PyErr_SetObject(PyExc_KeyError, args[0]);
+    return NULL;
+}
+
 // set_inexact(flag): allow or forbid kernels that are not bit-identical to NumPy.
 static PyObject *binding_set_inexact(PyObject *module, PyObject *flag) {
     const int truth = PyObject_IsTrue(flag);
@@ -151,6 +182,7 @@ static PyMethodDef binding_methods[] = {
     {"applied", binding_applied, METH_O, "Return whether a hook is in place."},
     {"counters", binding_counters, METH_NOARGS, "Return (calls taken per kernel, calls passed on per operation)."},
     {"reset_counters", binding_reset_counters, METH_NOARGS, "Set every counter to zero."},
+    {"forget", (PyCFunction)(void (*)(void))binding_forget, METH_FASTCALL, "Take calls off a kernel's counter."},
     {"set_inexact", binding_set_inexact, METH_O, "Allow or forbid kernels that are not bit-identical to NumPy."},
     {NULL, NULL, 0, NULL},
 };

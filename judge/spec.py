@@ -71,6 +71,20 @@ RESERVED_NAMES = ("n", "arr", "seed", "scalars")
 DRAWN_PREFIX = "from_"
 
 
+@dataclass(frozen=True)
+class Times:
+    """A buffer size that is a whole multiple of the Size argument.
+
+    `Out("out", "i64", capacity=Times(3), used=USED_RETURN, scratch=True)` is
+    an output with room for three elements per element of input: a kernel
+    that needs working memory in proportion to `n`, such as a sort, reports
+    the elements that are its result and uses the rest as it likes.
+    """
+
+    # Elements the buffer has for each element the Size argument counts. At least 1.
+    factor: int
+
+
 def drawn_class(arg) -> str | None:
     """Return the name of the value class an argument draws from another, if any.
 
@@ -132,10 +146,11 @@ class Out:
     # Element type: a key of DTYPES.
     dtype: str
     # How many elements the buffer can hold: SIZE_N for the kernel's Size
-    # argument, a fixed number (a table of counts, for example), or the name
+    # argument, a fixed number (a table of counts, for example), the name
     # of an integer Scalar argument whose value is the capacity (a histogram's
-    # bin count, for example).
-    capacity: str | int = SIZE_N
+    # bin count, for example), or Times(k) for k times the Size argument (the
+    # result of a sort and the working memory it needs, for example).
+    capacity: str | int | Times = SIZE_N
     # How much of the buffer the kernel fills: USED_CAPACITY means all of it,
     # USED_RETURN means the kernel returns the number of elements it wrote.
     used: str = USED_CAPACITY
@@ -228,8 +243,9 @@ def element_count(arg: In | Out | InOut, n: int, capacity: bool = False,
             for a buffer whose capacity is given by a Scalar.
 
     Returns:
-        `n` when the spec says SIZE_N, the scalar's value when it names a
-        Scalar, otherwise the fixed element count it gives.
+        `n` when the spec says SIZE_N, a multiple of `n` when it says
+        Times(k), the scalar's value when it names a Scalar, otherwise the
+        fixed element count it gives.
 
     Raises:
         ValueError: The size is a scalar and `scalars` was not given.
@@ -237,6 +253,8 @@ def element_count(arg: In | Out | InOut, n: int, capacity: bool = False,
     declared = arg.capacity if capacity or isinstance(arg, Out) else arg.len
     if declared == SIZE_N:
         return n
+    if isinstance(declared, Times):
+        return declared.factor * n
     if isinstance(declared, str):
         if scalars is None:
             raise ValueError(f"{arg.name}: its size is the scalar {declared!r}, "
@@ -299,6 +317,7 @@ class Kernel:
                 raise ValueError(f"{self.name}: an argument cannot be named {a.name!r}; "
                                  "case descriptions use that word")
         self._check_scalar_sets()
+        self._check_multiples()
         self._check_scalar_sizes()
         self._check_draws()
         if len(self.outs) > 1:
@@ -313,6 +332,24 @@ class Kernel:
                              "optionally with 'scale': fn")
         if isinstance(self.mode, dict) and set(self.mode) - _MODE_KEYS:
             raise ValueError(f"{self.name}: unknown keys in mode: {sorted(set(self.mode) - _MODE_KEYS)}")
+
+    def _check_multiples(self) -> None:
+        """Reject a Times size anywhere but on an Out, and one that is not a positive whole number.
+
+        Only an output's capacity can be a multiple of `n`: an input has
+        exactly the elements the oracle is given, and an in-place buffer has
+        `n`.
+        """
+        for a in self.buffers:
+            if isinstance(getattr(a, "len", None), Times):
+                raise ValueError(f"{self.name}: the length of {a.name} cannot be a Times; "
+                                 "only the capacity of an Out can")
+            if not isinstance(a, Out) or not isinstance(a.capacity, Times):
+                continue
+            factor = a.capacity.factor
+            if isinstance(factor, bool) or not isinstance(factor, int) or factor < 1:
+                raise ValueError(f"{self.name}: capacity of {a.name} is Times({factor!r}); "
+                                 "the factor must be a whole number of at least 1")
 
     def _check_scalar_sizes(self) -> None:
         """Reject a buffer whose size names something other than an integer Scalar.

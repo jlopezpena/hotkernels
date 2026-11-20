@@ -3,6 +3,9 @@
 // NumPy keeps, per element type, a table of C functions (PyArray_ArrFuncs).
 // Every route to argmax ends in its `argmax` entry: `np.argmax(x)`,
 // `x.argmax()`, `axis=` (one call per row or column) and `np.nanargmax`.
+// The function and method hooks take some of these before NumPy does: calls
+// without an axis on a contiguous array, and `axis=1` on a C-ordered matrix
+// (hk_try_argext_rows).
 // NumPy calls it with a contiguous, native-order run of `n` elements, having
 // copied the data first if the array was laid out any other way, so the hook
 // needs no checks of its own.
@@ -29,6 +32,10 @@ typedef struct {
 
 static hk_slot slots[4];
 
+// A row is counted here only when no method hook is waiting for the call it
+// belongs to (hk_argext_mark): `axis=` makes NumPy call the slot once per row,
+// and the method hook then counts the whole Python call once.
+//
 // NumPy releases the interpreter lock around argmax. The kernels read the
 // array twice and are not safe if it changes in between (issue 9), so the
 // hook takes the lock back for the kernel. That stops Python threads; code
@@ -36,13 +43,18 @@ static hk_slot slots[4];
 #define HK_SLOT_FUNCTION(function, index, kernel, kernel_id, c_type, operation)        \
     static int function(void *data, npy_intp n, npy_intp *result, void *array) {       \
         if (n < HK_SLOT_MIN_N) {                                                       \
-            hk_pass(operation);                                                        \
+            if (!hk_argext_mark.active) hk_pass(operation);                            \
             return slots[index].original(data, n, result, array);                      \
         }                                                                              \
         PyGILState_STATE lock = PyGILState_Ensure();                                   \
         *result = (npy_intp)kernel((const c_type *)data, (size_t)n);                   \
         PyGILState_Release(lock);                                                      \
-        hk_take(kernel_id);                                                            \
+        if (hk_argext_mark.active) {                                                   \
+            hk_argext_mark.taken = true;                                               \
+            hk_argext_mark.slot_kernel = kernel_id;                                         \
+        } else {                                                                       \
+            hk_take(kernel_id);                                                        \
+        }                                                                              \
         return 0;                                                                      \
     }
 

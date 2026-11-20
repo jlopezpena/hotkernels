@@ -1,0 +1,192 @@
+python   146 
+	          231020 amerge_at_<npy::floating_point_type<double, (NPY_TYPES)12>, double, false> (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          230fb7 amerge_at_<npy::floating_point_type<double, (NPY_TYPES)12>, double, false> (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          23ae88 atimsort_<npy::floating_point_type<double, (NPY_TYPES)12>, double, false> (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1d166c _new_argsortlike (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1d9870 PyArray_ArgSort (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1e7624 array_argsort (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+
+python   146 
+	          231024 amerge_at_<npy::floating_point_type<double, (NPY_TYPES)12>, double, false> (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          230fb7 amerge_at_<npy::floating_point_type<double, (NPY_TYPES)12>, double, false> (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          23ae88 atimsort_<npy::floating_point_type<double, (NPY_TYPES)12>, double, false> (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1d166c _new_argsortlike (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1d9870 PyArray_ArgSort (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1e7624 array_argsort (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+
+python   146 
+	          23adb0 atimsort_<npy::floating_point_type<double, (NPY_TYPES)12>, double, false> (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          23ae87 atimsort_<npy::floating_point_type<double, (NPY_TYPES)12>, double, false> (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1d166c _new_argsortlike (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1d9870 PyArray_ArgSort (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1e7624 array_argsort (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          19aac8 cfunction_vectorcall_FASTCALL_KEYWORDS (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	          175490 PyObject_GetAttr (/usr/local/lib/libpython3.12.so.1.0)
+	          183a68 _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+	          21e34c PyEval_EvalCode (/usr/local/lib/libpython3.12.so.1.0)
+	          24966c builtin_exec (/usr/local/lib/libpython3.12.so.1.0)
+	          19aac8 cfunction_vectorcall_FASTCALL_KEYWORDS (/usr/local/lib/libpython3.12.so.1.0)
+	          19a694 PyObject_Vectorcall (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	          170000 tuple_iter (/usr/local/lib/libpython3.12.so.1.0)
+	          16ff1c PyObject_GetIter (/usr/local/lib/libpython3.12.so.1.0)
+	          182d48 _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+	          21e34c PyEval_EvalCode (/usr/local/lib/libpython3.12.so.1.0)
+	          24966c builtin_exec (/usr/local/lib/libpython3.12.so.1.0)
+	          19aac8 cfunction_vectorcall_FASTCALL_KEYWORDS (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	          18bcf4 _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+	          19a694 PyObject_Vectorcall (/usr/local/lib/libpython3.12.so.1.0)
+	          183550 dispatcher_vectorcall (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          19a694 PyObject_Vectorcall (/usr/local/lib/libpython3.12.so.1.0)
+	          1825ac _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+	          1be9b4 gen_send_ex2 (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	           9d200 [unknown] (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	           7b423 _contig_to_contig (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          181aa0 raw_array_assign_array (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          182424 PyArray_AssignArray (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          17a9b8 PyArray_CopyObject (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1e4310 array_assign_subscript (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+
+python   146 
+	           9e590 [unknown] (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	          17ddeb _PyEvalFramePushAndInit (/usr/local/lib/libpython3.12.so.1.0)
+	          17dbec _PyEval_Vector (/usr/local/lib/libpython3.12.so.1.0)
+	          1759c4 _PyObject_FastCallDictTstate (/usr/local/lib/libpython3.12.so.1.0)
+	          1aa69c slot_tp_init (/usr/local/lib/libpython3.12.so.1.0)
+	          1726b8 type_call (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	           9d210 [unknown] (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	           7b423 _contig_to_contig (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          181aa0 raw_array_assign_array (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          182424 PyArray_AssignArray (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          2162b0 PyArray_Flatten (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1e5c7c array_flatten (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+
+python   146 
+	           34044 log (/usr/lib/aarch64-linux-gnu/libm.so.6)
+	          35bd3b DOUBLE_log (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          2cae84 generic_wrapped_legacy_loop (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          2d92dc ufunc_generic_fastcall (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          19a694 PyObject_Vectorcall (/usr/local/lib/libpython3.12.so.1.0)
+	          1825ac _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	           34078 log (/usr/lib/aarch64-linux-gnu/libm.so.6)
+	          35bd3b DOUBLE_log (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          2cae84 generic_wrapped_legacy_loop (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          2d92dc ufunc_generic_fastcall (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          19a694 PyObject_Vectorcall (/usr/local/lib/libpython3.12.so.1.0)
+	          1825ac _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	           33fe0 log (/usr/lib/aarch64-linux-gnu/libm.so.6)
+	          35bd3b DOUBLE_log (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          2cae84 generic_wrapped_legacy_loop (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          2d92dc ufunc_generic_fastcall (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          19a694 PyObject_Vectorcall (/usr/local/lib/libpython3.12.so.1.0)
+	          1825ac _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	ffff80008034c0e8 __mem_cgroup_charge ([kernel.kallsyms])
+	ffff8000802c9abc __handle_mm_fault ([kernel.kallsyms])
+	ffff8000802ca260 handle_mm_fault ([kernel.kallsyms])
+	ffff800081363108 do_page_fault ([kernel.kallsyms])
+	ffff800081363560 do_translation_fault ([kernel.kallsyms])
+	ffff80008002a2f0 do_mem_abort ([kernel.kallsyms])
+
+python   146 
+	ffff8000802d9434 __pte_offset_map_lock ([kernel.kallsyms])
+	ffff8000802c9b70 __handle_mm_fault ([kernel.kallsyms])
+	ffff8000802ca260 handle_mm_fault ([kernel.kallsyms])
+	ffff800081363108 do_page_fault ([kernel.kallsyms])
+	ffff800081363560 do_translation_fault ([kernel.kallsyms])
+	ffff80008002a2f0 do_mem_abort ([kernel.kallsyms])
+
+python   146 
+	ffff80008029fc60 __mod_node_page_state ([kernel.kallsyms])
+	ffff8000802dc278 folio_remove_rmap_ptes ([kernel.kallsyms])
+	ffff8000802c1148 unmap_page_range ([kernel.kallsyms])
+	ffff8000802c19b8 unmap_single_vma.isra.0 ([kernel.kallsyms])
+	ffff8000802c1a74 unmap_vmas ([kernel.kallsyms])
+	ffff8000802e8cfc vms_clear_ptes ([kernel.kallsyms])
+
+python   146 
+	            ca9c [unknown] (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	            ca8b [unknown] (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	            d344 [unknown] (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	            ec18 _Unwind_Backtrace (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	           f96dc __backtrace (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	          222a2c check_callers (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+
+python   146 
+	            c93c [unknown] (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	            d343 [unknown] (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	            d344 [unknown] (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	            ec18 _Unwind_Backtrace (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	           f96dc __backtrace (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	          222a2c check_callers (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+
+python   146 
+	            de48 [unknown] (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	            e2b8 [unknown] (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	            ec0c _Unwind_Backtrace (/usr/lib/aarch64-linux-gnu/libgcc_s.so.1)
+	           f96dc __backtrace (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	          222a2c check_callers (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          22323c try_binary_elide (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+
+python   146 
+	           12a44 [unknown] (/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1)
+	          170bd3 tupledealloc (/usr/local/lib/libpython3.12.so.1.0)
+	          2a9620 mutablemapping_add_pairs (/usr/local/lib/libpython3.12.so.1.0)
+	          2a91ac mutablemapping_update (/usr/local/lib/libpython3.12.so.1.0)
+	          2a9104 odict_init (/usr/local/lib/libpython3.12.so.1.0)
+	          1726b8 type_call (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	           12a48 [unknown] (/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1)
+	          170bd3 tupledealloc (/usr/local/lib/libpython3.12.so.1.0)
+	          17243c _PyObject_MakeTpCall (/usr/local/lib/libpython3.12.so.1.0)
+	          1825ac _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+	          21e34c PyEval_EvalCode (/usr/local/lib/libpython3.12.so.1.0)
+	          24966c builtin_exec (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	          32bc70 coo_todense_thunk (/opt/venv/lib/python3.12/site-packages/scipy/sparse/_sparsetools.cpython-312-aarch64-linux-gnu.so)
+	          35f49f call_thunk (/opt/venv/lib/python3.12/site-packages/scipy/sparse/_sparsetools.cpython-312-aarch64-linux-gnu.so)
+	          35f4a0 call_thunk (/opt/venv/lib/python3.12/site-packages/scipy/sparse/_sparsetools.cpython-312-aarch64-linux-gnu.so)
+	          19edec cfunction_call (/usr/local/lib/libpython3.12.so.1.0)
+	          172404 _PyObject_MakeTpCall (/usr/local/lib/libpython3.12.so.1.0)
+	          1825ac _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	          209d10 csr_todense_thunk (/opt/venv/lib/python3.12/site-packages/scipy/sparse/_sparsetools.cpython-312-aarch64-linux-gnu.so)
+	          35f49f call_thunk (/opt/venv/lib/python3.12/site-packages/scipy/sparse/_sparsetools.cpython-312-aarch64-linux-gnu.so)
+	          35f4a0 call_thunk (/opt/venv/lib/python3.12/site-packages/scipy/sparse/_sparsetools.cpython-312-aarch64-linux-gnu.so)
+	          19edec cfunction_call (/usr/local/lib/libpython3.12.so.1.0)
+	          172404 _PyObject_MakeTpCall (/usr/local/lib/libpython3.12.so.1.0)
+	          1825ac _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	          209d3c csr_todense_thunk (/opt/venv/lib/python3.12/site-packages/scipy/sparse/_sparsetools.cpython-312-aarch64-linux-gnu.so)
+	          35f49f call_thunk (/opt/venv/lib/python3.12/site-packages/scipy/sparse/_sparsetools.cpython-312-aarch64-linux-gnu.so)
+	          35f4a0 call_thunk (/opt/venv/lib/python3.12/site-packages/scipy/sparse/_sparsetools.cpython-312-aarch64-linux-gnu.so)
+	          19edec cfunction_call (/usr/local/lib/libpython3.12.so.1.0)
+	          172404 _PyObject_MakeTpCall (/usr/local/lib/libpython3.12.so.1.0)
+	          1825ac _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+
+python   146 
+	           a0cb0 operator delete (/usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.30)
+	          30f94f unique_numeric<long, &(unsigned long hash_integer<long>(long const*, unsigned char)), &(int equal_integer<long>(long const*, long const*, unsigned char)), &(void copy_integer<long>(char*, long*))> (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          3127f4 array__unique_hash (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+	          1862ec _PyEval_EvalFrameDefault (/usr/local/lib/libpython3.12.so.1.0)
+	          19a694 PyObject_Vectorcall (/usr/local/lib/libpython3.12.so.1.0)
+	          183550 dispatcher_vectorcall (/opt/venv/lib/python3.12/site-packages/numpy/_core/_multiarray_umath.cpython-312-aarch64-linux-gnu.so)
+

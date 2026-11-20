@@ -37,4 +37,6 @@ Random needles never equal an element of a random array, and a search answers di
 
 By default a kernel may write only the output elements it reports. Declaring an output as `Out(..., used=USED_RETURN, scratch=True)` lets the kernel and `naive.c` write anywhere inside the buffer's capacity; only the reported elements are compared with NumPy. Use it when the fast way to produce variable-length output stores more than it keeps, as mask selection does. `judge/fixtures/compress_scratch_f32/` is a working example.
 
+A kernel that needs working memory in proportion to its input gets it the same way, with a capacity that is a multiple of `n`: `Out("out", "i64", capacity=Times(3), used=USED_RETURN, scratch=True)` is room for three elements per element of input, of which the kernel reports the first `n`. `kernels/argsort_f64/spec.py` is a working example.
+
 It has a cost: the rest of the buffer holds leftover values afterwards, so whatever calls the kernel must allocate the full capacity, return only the reported elements, and never run a scratch kernel on a buffer that belongs to the caller. The trade-offs are set out in [docs/judge-design.md](../docs/judge-design.md#scratch-output-writing-inside-the-capacity).

@@ -1,7 +1,7 @@
 """What `hotkernels.report()` returns, and how it is printed.
 
 A report is plain data: one row per kernel, one per loop built into the
-binding for short arrays, and a few facts about the installation. Printing it
+binding, and a few facts about the installation. Printing it
 renders a Jinja template into a table.
 """
 from __future__ import annotations
@@ -31,6 +31,9 @@ WITHIN_TOLERANCE = "within tolerance"
 # Why a kernel that has a hook is not installed.
 NOT_INSTALLED = "hotkernels is not installed"
 NEEDS_INEXACT = "not installed: needs install(inexact=True)"
+# Why a kernel served through bottleneck is not installed, when that is by design.
+LEFT_OUT = "not installed: install(bottleneck=False)"
+WAITING = "waiting: bottleneck is not imported yet"
 
 
 @dataclass(frozen=True)
@@ -55,11 +58,15 @@ class KernelReport:
     calls: int
     # Calls of the kernel's operation that reached a hook and went to NumPy,
     # because no kernel's conditions were met. Counted per operation, so it is
-    # set on the first row of an operation and None on the others.
+    # set on the first row of an operation and None on the others, and on an
+    # operation the binding does not count.
     left_to_numpy: int | None
     # True for a loop built into the binding, which is not one of the kernels
     # the report's first line counts.
     builtin: bool = False
+    # True when the binding does not count the calls of the kernel's
+    # operation that it leaves to NumPy.
+    uncounted: bool = False
 
 
 @dataclass(frozen=True)
@@ -109,7 +116,8 @@ def load_kernel_table() -> dict[str, dict]:
     return json.loads(table.read_text())
 
 
-def _note(info: KernelInfo, exact: bool, installed: bool, inexact: bool, hooks_applied: bool) -> str:
+def _note(info: KernelInfo, exact: bool, installed: bool, inexact: bool, hooks_applied: bool,
+          pending: dict[str, str]) -> str:
     """Say why a kernel is not installed.
 
     Args:
@@ -118,6 +126,8 @@ def _note(info: KernelInfo, exact: bool, installed: bool, inexact: bool, hooks_a
         installed: Whether install() is in effect.
         inexact: Whether inexact kernels were asked for.
         hooks_applied: Whether at least one of the kernel's hooks is in place.
+        pending: Hook name -> why it is not applied, for hooks left off by
+            design rather than by a failure.
 
     Returns:
         The reason, or an empty string for a kernel that is installed.
@@ -128,6 +138,8 @@ def _note(info: KernelInfo, exact: bool, installed: bool, inexact: bool, hooks_a
         return NOT_INSTALLED
     if not exact and not inexact:
         return NEEDS_INEXACT
+    if not hooks_applied and info.hooks and all(hook in pending for hook in info.hooks):
+        return pending[info.hooks[0]]
     if not hooks_applied:
         return "not installed: its hook failed, see below"
     return ""
@@ -135,7 +147,7 @@ def _note(info: KernelInfo, exact: bool, installed: bool, inexact: bool, hooks_a
 
 def build(version: str, installed: bool, unsupported: str | None, inexact: bool, numpy_version: str,
           applied_hooks: frozenset[str], taken: dict[str, int], passed: dict[str, int],
-          problems: tuple[str, ...]) -> Report:
+          problems: tuple[str, ...], pending: dict[str, str] | None = None) -> Report:
     """Assemble a report from the installation's state and the binding's counters.
 
     Args:
@@ -146,8 +158,11 @@ def build(version: str, installed: bool, unsupported: str | None, inexact: bool,
         numpy_version: The NumPy version in use.
         applied_hooks: Names of the hooks that are in place.
         taken: Kernel name -> calls the kernel took.
-        passed: Operation name -> calls its hooks passed on to NumPy.
+        passed: Operation name -> calls its hooks passed on to NumPy. An
+            operation the binding does not count is absent.
         problems: One line per hook that failed.
+        pending: Hook name -> why it is not applied, for the hooks in
+            bottleneck when they are left out or wait for its import.
 
     Returns:
         The report.
@@ -160,7 +175,7 @@ def build(version: str, installed: bool, unsupported: str | None, inexact: bool,
         entry = {"implementation": BUILTIN_IMPLEMENTATION} if info.builtin else table.get(info.name, {})
         exact = entry.get("exact", True)
         hooks_applied = any(hook in applied_hooks for hook in info.hooks)
-        note = _note(info, exact, installed, inexact, hooks_applied)
+        note = _note(info, exact, installed, inexact, hooks_applied, pending or {})
         first_of_operation = info.operation is not None and info.operation not in seen_operations
         seen_operations.add(info.operation)
         rows.append(KernelReport(
@@ -172,8 +187,9 @@ def build(version: str, installed: bool, unsupported: str | None, inexact: bool,
             installed=not note,
             note=note,
             calls=taken.get(info.name, 0),
-            left_to_numpy=passed.get(info.operation, 0) if first_of_operation else None,
+            left_to_numpy=passed.get(info.operation) if first_of_operation else None,
             builtin=info.builtin,
+            uncounted=info.operation is not None and bool(passed) and info.operation not in passed,
         ))
     return Report(version, installed, unsupported, inexact, numpy_version, tuple(rows), problems)
 

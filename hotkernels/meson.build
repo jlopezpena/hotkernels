@@ -55,7 +55,8 @@ if kernel_arch != ''
   # which is where a checkout's kernel set is.
   read_file = [py, '-c', 'import sys; sys.stdout.write(open(sys.argv[1]).read())']
 
-  # Either list can be empty: on x86-64 every kernel has assembly.
+  # Either list can be empty: a platform where every kernel has assembly has
+  # no C sources.
   kernel_sources = kernel_set / 'sources'
   asm_sources = []
   foreach name : run_command(read_file + [kernel_set / 'assembly-sources.txt'], check: true).stdout().strip().split('\n')
@@ -97,7 +98,8 @@ if kernel_arch != ''
   binding = source / '_binding'
   py.extension_module('_binding',
     [binding / 'module.c', binding / 'hook_slot.c', binding / 'hook_loop.c',
-     binding / 'hook_function.c', binding / 'hook_method.c', binding / 'hook_index.c'] + asm_sources,
+     binding / 'hook_function.c', binding / 'hook_method.c', binding / 'hook_index.c',
+     binding / 'hook_bottleneck.c'] + asm_sources,
     include_directories: include_directories(numpy_include, is_system: true),
     c_args: ['-O3', '-I' + kernel_set],
     override_options: ['c_std=c11', 'warning_level=2'],

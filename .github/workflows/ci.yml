@@ -25,6 +25,10 @@ jobs:
       # NumPy of that platform. `--unlocked` because CI checks what the pull
       # request holds, a changed reference included; the lock is for kernel runs.
       - run: uv run judge check interp_f64 --unlocked
+      # The same for nanstd_cols_f64, whose reference fuses its square and add
+      # on ARM64 and not on x86-64, as bottleneck's builds do. Its oracle is
+      # the bottleneck installed on the platform.
+      - run: uv run judge check nanstd_cols_f64 --unlocked
       # Every hooked NumPy call, with and without hotkernels installed, on the
       # NumPy in uv.lock.
       - run: uv run delivery check
@@ -67,6 +71,11 @@ jobs:
       - run: uv run judge selftest --no-speed
       # As in the macOS job: the reference of interp_f64 differs by architecture.
       - run: uv run judge check interp_f64 --unlocked
+      # As in the macOS job: nanstd_cols_f64 against this platform's bottleneck.
+      - run: uv run judge check nanstd_cols_f64 --unlocked
       # Every hooked NumPy call, with and without hotkernels installed, on the
       # NumPy in uv.lock, with the x86-64 kernels.
       - run: uv run delivery check
+      # The tests of the delivery tool's own code: the sizes and records of
+      # `delivery apps` and the parsing of the Linux profile. They time nothing.
+      - run: uv run --group dev pytest tests

@@ -1,0 +1,41 @@
+{# The report of `delivery gradient-step`: the four measurements of the study in docs/gradient-step-findings.md. #}
+Gradient-step study on {{ meta.cpu }}, NumPy {{ meta.numpy }}, load average {{ "%.1f" | format(meta.load_average) }} at the start.
+{{ threads_variable }}: {{ threads }}.
+
+1. The update of mlp_train's {{ measured }} inside the training loop, {{ rounds }} trainings per way.
+
+{{ "Way" | ljust(42) }}{{ "Per step" | rjust(10) }}{{ "Faults" | rjust(8) }}{{ "Training, best" | rjust(16) }}{{ "Median" | rjust(10) }}  Identical
+{% for way in ways %}
+{{ way.name | ljust(42) }}{{ way.step | time | rjust(10) }}{{ "%.2f" | format(way.faults) | rjust(8) }}{{ way.best_run | time | rjust(16) }}{{ way.median_run | time | rjust(10) }}  {{ "yes" if way.identical else "NO" }}
+{% endfor %}
+
+The statement as written, in parts (median per step, page faults per step):
+  np.empty_like(g)        {{ split.allocate | time | rjust(10) }}  {{ "%.2f" | format(split.faults[0]) }}
+  multiply into it        {{ split.multiply | time | rjust(10) }}  {{ "%.2f" | format(split.faults[1]) }}
+  w -= it                 {{ split.subtract | time | rjust(10) }}  {{ "%.2f" | format(split.faults[2]) }}
+  free it                 {{ split.free | time | rjust(10) }}  {{ "%.2f" | format(split.faults[3]) }}
+
+2. w -= b alone, after one thing was done to w (median of {{ repeats }}).
+
+{{ "Shape" | ljust(12) }}{{ "Before each call" | ljust(34) }}{{ "NumPy" | rjust(10) }}{{ "Loop" | rjust(10) }}{{ "Prefetch" | rjust(10) }}
+{% for row in readers %}
+{{ (row.shape[0] ~ " x " ~ row.shape[1]) | ljust(12) }}{{ row.reader | ljust(34) }}{{ row.numpy | time | rjust(10) }}{{ row.plain | time | rjust(10) }}{{ row.prefetch | time | rjust(10) }}
+{% endfor %}
+
+"Loop" is the study's NEON loop, "Prefetch" the same with each line of w
+prefetched for a store {{ prefetch_ahead }} bytes ahead.
+
+3. Each application on NumPy's allocator and on a caching one ({{ rounds }} runs each, best).
+
+{{ "Application" | ljust(16) }}{{ "malloc" | rjust(10) }}{{ "Faults" | rjust(8) }}{{ "Cache" | rjust(10) }}{{ "Faults" | rjust(8) }}  Identical
+{% for row in allocators %}
+{{ row.name | ljust(16) }}{{ row.plain | time | rjust(10) }}{{ "%d" | format(row.plain_faults) | rjust(8) }}{{ row.cached | time | rjust(10) }}{{ "%d" | format(row.cached_faults) | rjust(8) }}  {{ "yes" if row.identical else "NO" }}
+{% endfor %}
+The cache served {{ cache_counts[0] | thousands }} requests and passed {{ cache_counts[1] | thousands }} on.
+
+4. min_char_rnn's accumulations alone, at its sizes.
+
+{{ "Statement" | ljust(36) }}{{ "Written" | rjust(10) }}{{ "Fused" | rjust(10) }}{{ "Per run" | rjust(10) }}{{ "Saved per run" | rjust(15) }}
+{% for row in accumulations %}
+{{ row.statement | ljust(36) }}{{ row.written | time | rjust(10) }}{{ row.fused | time | rjust(10) }}{{ row.per_run | thousands | rjust(10) }}{{ ((row.written - row.fused) * row.per_run) | time | rjust(15) }}
+{% endfor %}

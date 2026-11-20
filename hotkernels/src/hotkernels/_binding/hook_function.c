@@ -24,6 +24,7 @@
 enum {
     F_ARGMAX, F_ARGMIN, F_COUNT_NONZERO, F_SUM, F_HISTOGRAM, F_BINCOUNT, F_ISIN, F_INTERP,
     F_COMPRESS, F_EXTRACT, F_PUTMASK, F_COPYTO, F_WHERE, F_CLIP, F_ANY, F_ROUND, F_AROUND, F_MEDIAN,
+    F_UNIQUE,
     F_COUNT
 };
 
@@ -126,24 +127,195 @@ PyObject *hk_try_argext(PyObject *array, bool want_max) {
     return result;
 }
 
-// True when `array` is a plain float32 or float64 ndarray. NumPy sends such a
-// call on to the type slot, whose hook counts it, so it is not counted here.
-static bool reaches_type_slot(PyObject *array) {
-    if (!hk_is_plain_array(array)) return false;
+// ------------------------------------------ argmax and argmin along rows
+
+// Narrowest row, in elements, given to the operation's kernel once per row.
+// Narrower rows go to the binding's own loop, one row per vector lane. The
+// kernels take about 1.6 ns a row from four float64 or eight float32
+// elements, and read fewer than that one at a time, at 5 to 12 ns a row,
+// where NumPy takes 7 to 13. The loop takes 0.4 ns a row on rows of two and
+// grows by about 0.25 ns (float64) or 0.18 ns (float32) per column: it meets
+// the kernel at six float64 and nine float32 columns. Apple M1 Pro, from
+// Python, docs/argmax-rows-design.md. The same values are used on x86-64,
+// where they have not been timed.
+#define ARGEXT_ROWS_KERNEL_COLS_F64 6
+#define ARGEXT_ROWS_KERNEL_COLS_F32 9
+
+// Lanes of the binding's loop: 32 bytes of rows, one row per lane.
+#define ARGEXT_ROWS_LANES_F64 4
+#define ARGEXT_ROWS_LANES_F32 8
+
+// 32-byte vectors of the compiler's own vector types. clang and gcc compile
+// them to two NEON registers on ARM64 and to one AVX2 register inside a
+// function compiled for the kernels' level on x86-64. A comparison gives a
+// vector of signed integers of the element's width, all ones where it holds;
+// it is cast to the integer type below because the compilers name that
+// type differently (long or long long).
+typedef double hk_v4d __attribute__((vector_size(32)));
+typedef int64_t hk_v4l __attribute__((vector_size(32)));
+typedef float hk_v8f __attribute__((vector_size(32)));
+typedef int32_t hk_v8i __attribute__((vector_size(32)));
+
+// Element `j` of each of the rows that start `cols` elements apart at `x`.
+#define ARGEXT_ROWS_GATHER4(x, cols, j) {(x)[j], (x)[(cols) + (j)], (x)[2 * (cols) + (j)], (x)[3 * (cols) + (j)]}
+#define ARGEXT_ROWS_GATHER8(x, cols, j)                                                            \
+    {(x)[j], (x)[(cols) + (j)], (x)[2 * (cols) + (j)], (x)[3 * (cols) + (j)], (x)[4 * (cols) + (j)], \
+     (x)[5 * (cols) + (j)], (x)[6 * (cols) + (j)], (x)[7 * (cols) + (j)]}
+
+// One loop of the binding: out[r] = NumPy's argmax (or argmin) of row r of
+// the `rows` rows of `cols` elements at `m`, cols >= 1.
+//
+// Each lane keeps the best element so far and its column, and takes column j
+// when the best is a number and `!(x[j] NOT_BETTER best)`: for argmax, with
+// NOT_BETTER `<=`, when x[j] is larger or is a NaN. A NaN is then never
+// replaced, since every comparison with it is false, so the first NaN wins;
+// an equal element never replaces an earlier one, so the first of a tie wins,
+// and -0.0 and 0.0 are equal. These are NumPy's rules and naive.c's. Rows
+// after the last whole group of lanes take the same rule one at a time.
+//
+// The loop reads each element once and touches no Python object, so it runs
+// with the interpreter lock released for a large matrix.
+#define ARGEXT_ROWS_LOOP(name, c_type, v_type, i_type, lane_int, LANES, GATHER, NOT_BETTER)            \
+    static HK_TARGET_KERNEL_LEVEL void name(const c_type *m, size_t rows, size_t cols, npy_intp *out) { \
+        size_t r = 0;                                                                                 \
+        for (; r + LANES <= rows; r += LANES) {                                                       \
+            const c_type *x = m + r * cols;                                                           \
+            v_type best = GATHER(x, cols, 0);                                                         \
+            i_type index = {0};                                                                       \
+            for (size_t j = 1; j < cols; j++) {                                                       \
+                const v_type v = GATHER(x, cols, j);                                                  \
+                const i_type take = (i_type)(best == best) & ~(i_type)(v NOT_BETTER best);            \
+                best = (v_type)(((i_type)v & take) | ((i_type)best & ~take));                         \
+                index = (index & ~take) | (((i_type){0} + (lane_int)j) & take);                       \
+            }                                                                                         \
+            for (size_t k = 0; k < LANES; k++) out[r + k] = (npy_intp)index[k];                       \
+        }                                                                                             \
+        for (; r < rows; r++) {                                                                       \
+            const c_type *x = m + r * cols;                                                           \
+            c_type best = x[0];                                                                       \
+            npy_intp index = 0;                                                                       \
+            for (size_t j = 1; j < cols; j++) {                                                       \
+                const bool take = best == best && !(x[j] NOT_BETTER best);                            \
+                best = take ? x[j] : best;                                                            \
+                index = take ? (npy_intp)j : index;                                                   \
+            }                                                                                         \
+            out[r] = index;                                                                           \
+        }                                                                                             \
+    }
+
+ARGEXT_ROWS_LOOP(argmax_rows_f64, double, hk_v4d, hk_v4l, int64_t, ARGEXT_ROWS_LANES_F64, ARGEXT_ROWS_GATHER4, <=)
+ARGEXT_ROWS_LOOP(argmin_rows_f64, double, hk_v4d, hk_v4l, int64_t, ARGEXT_ROWS_LANES_F64, ARGEXT_ROWS_GATHER4, >=)
+ARGEXT_ROWS_LOOP(argmax_rows_f32, float, hk_v8f, hk_v8i, int32_t, ARGEXT_ROWS_LANES_F32, ARGEXT_ROWS_GATHER8, <=)
+ARGEXT_ROWS_LOOP(argmin_rows_f32, float, hk_v8f, hk_v8i, int32_t, ARGEXT_ROWS_LANES_F32, ARGEXT_ROWS_GATHER8, >=)
+
+// The kernel once per row: out[r] = kernel(row r). With the interpreter lock
+// held, as for the kernels everywhere in the function and method hooks: they
+// read a row twice (issue 9).
+static HK_NOINLINE void argext_rows_kernel(hk_kernel kernel, const void *m, size_t rows, size_t cols,
+                                           npy_intp *out) {
+    switch (kernel) {
+        case HK_ARGMAX_F32:
+            for (size_t r = 0; r < rows; r++) out[r] = (npy_intp)argmax_f32((const float *)m + r * cols, cols);
+            break;
+        case HK_ARGMIN_F32:
+            for (size_t r = 0; r < rows; r++) out[r] = (npy_intp)argmin_f32((const float *)m + r * cols, cols);
+            break;
+        case HK_ARGMAX_F64:
+            for (size_t r = 0; r < rows; r++) out[r] = (npy_intp)argmax_f64((const double *)m + r * cols, cols);
+            break;
+        default:
+            for (size_t r = 0; r < rows; r++) out[r] = (npy_intp)argmin_f64((const double *)m + r * cols, cols);
+            break;
+    }
+}
+
+// The binding's own loop on every row, with the lock released for a large matrix.
+static HK_NOINLINE void argext_rows_loop(hk_kernel loop, const void *m, size_t rows, size_t cols, npy_intp *out) {
+    HK_BEGIN_NOGIL(rows * cols)
+    switch (loop) {
+        case HK_ARGMAX_ROWS_F32: argmax_rows_f32(m, rows, cols, out); break;
+        case HK_ARGMIN_ROWS_F32: argmin_rows_f32(m, rows, cols, out); break;
+        case HK_ARGMAX_ROWS_F64: argmax_rows_f64(m, rows, cols, out); break;
+        default: argmin_rows_f64(m, rows, cols, out); break;
+    }
+    HK_END_NOGIL
+}
+
+PyObject *hk_try_argext_rows(PyObject *array, bool want_max) {
+    if (!hk_is_plain_array(array)) return NULL;
+    PyArrayObject *a = (PyArrayObject *)array;
+    const int type_num = PyArray_TYPE(a);
+    if (PyArray_NDIM(a) != 2 || !(type_num == NPY_FLOAT || type_num == NPY_DOUBLE) || !PyArray_ISNOTSWAPPED(a) ||
+        !PyArray_IS_C_CONTIGUOUS(a)) {
+        return NULL;
+    }
+    npy_intp rows = PyArray_DIM(a, 0);
+    const npy_intp cols = PyArray_DIM(a, 1);
+    // NumPy raises on rows of no element.
+    if (cols < 1) return NULL;
+    const bool f32 = type_num == NPY_FLOAT;
+    hk_kernel kernel = f32 ? (want_max ? HK_ARGMAX_F32 : HK_ARGMIN_F32) : (want_max ? HK_ARGMAX_F64 : HK_ARGMIN_F64);
+    const hk_kernel loop = f32 ? (want_max ? HK_ARGMAX_ROWS_F32 : HK_ARGMIN_ROWS_F32)
+                               : (want_max ? HK_ARGMAX_ROWS_F64 : HK_ARGMIN_ROWS_F64);
+    const npy_intp kernel_cols = f32 ? ARGEXT_ROWS_KERNEL_COLS_F32 : ARGEXT_ROWS_KERNEL_COLS_F64;
+    PyObject *result = PyArray_SimpleNew(1, &rows, NPY_INTP);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    npy_intp *out = PyArray_DATA((PyArrayObject *)result);
+    // A matrix of no rows is the loop's, which writes nothing: the kernels
+    // are never called for nothing.
+    if (cols >= kernel_cols && rows > 0) {
+        argext_rows_kernel(kernel, PyArray_DATA(a), (size_t)rows, (size_t)cols, out);
+    } else {
+        argext_rows_loop(loop, PyArray_DATA(a), (size_t)rows, (size_t)cols, out);
+        kernel = loop;
+    }
+    hk_take(kernel);
+    return result;
+}
+
+// True when `array` is an ndarray, or an instance of a subclass, of float32
+// or float64. Every Python-level argmax of such an array that the function
+// hook passes on reaches the method hook, which counts it there.
+static bool reaches_method_count(PyObject *array) {
+    if (!PyArray_Check(array)) return false;
     const int type_num = PyArray_TYPE((PyArrayObject *)array);
     return type_num == NPY_FLOAT || type_num == NPY_DOUBLE;
 }
 
+// The rows form of np.argmax and np.argmin: the array, the axis as the
+// Python int 1 or -1, and `out` absent or None, by position or by keyword.
+// The parameters are a, axis, out and, by keyword only, keepdims, which is
+// NumPy's.
+static HK_NOINLINE PyObject *try_argext_rows(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames,
+                                             bool want_max) {
+    enum { A, AXIS, OUT, PARAMETERS };
+    static const char *const names[PARAMETERS] = {"a", "axis", "out"};
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, PARAMETERS, bound)) return NULL;
+    if (bound[A] == NULL || bound[AXIS] == NULL || !hk_is_last_axis(bound[AXIS]) || !hk_is_absent(bound[OUT])) {
+        return NULL;
+    }
+    return hk_try_argext_rows(bound[A], want_max);
+}
+
 // np.argmax(a) and np.argmin(a) with nothing but the array: the kernel is
 // called directly, which skips NumPy's Python wrapper. That wrapper is most
-// of the cost of a call on a small array.
+// of the cost of a call on a small array. So is np.argmax(m, axis=1) on a
+// matrix (hk_try_argext_rows). A call passed on is counted here only when it
+// is not of a float32 or float64 array, whose call the method hook counts.
 static PyObject *call_argext(HK_VECTORCALL_PARAMETERS, int function, bool want_max, hk_operation operation) {
     const Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
     if (nargs == 1 && kwnames == NULL) {
         PyObject *result = hk_try_argext(args[0], want_max);
         if (result != NULL) return result;
+    } else if (nargs >= 1 && hk_is_plain_array(args[0]) && PyArray_NDIM((PyArrayObject *)args[0]) == 2) {
+        PyObject *result = try_argext_rows(args, nargs, kwnames, want_max);
+        if (result != NULL) return result;
     }
-    if (!(nargs >= 1 && reaches_type_slot(args[0]))) hk_pass(operation);
+    if (!(nargs >= 1 && reaches_method_count(args[0]))) hk_pass(operation);
     return functions[function].original(callable, args, nargsf, kwnames);
 }
 
@@ -944,20 +1116,53 @@ static bool clip_bound_f32(PyObject *bound, float *value) {
     return (double)*value == d;
 }
 
-// Run a clip kernel on the whole of `x` into a new array of its shape. The
-// kernels leave the invalid-operation flag set on NaN data; NumPy's own loop
-// ends by clearing the flags, and so does this, as the loop hook does.
-static PyObject *run_clip(PyArrayObject *x, hk_kernel kernel, double lo, double hi) {
-    PyObject *result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), PyArray_TYPE(x));
-    if (result == NULL) {
-        PyErr_Clear();
-        return NULL;
+// Bytes of the array an in-place clip copies out and clips back at a time,
+// and the size of the stack buffer that holds the copy. Measured on the
+// Apple M1 Pro from Python: 2 KB and 4 KB are level, 8 KB is 5% to 10%
+// slower, and from 16 KB a million float64 elements take 1.2 ms or more
+// against NumPy's 0.66 ms, the C library's copy of that size apparently
+// leaving the cache. See docs/clip-in-place-design.md.
+#define CLIP_IN_PLACE_RUN_BYTES 4096
+
+void hk_clip_in_place(hk_kernel kernel, void *data, size_t n, double lo, double hi) {
+    // Doubles, so that the buffer is aligned for either element type.
+    double buffer[CLIP_IN_PLACE_RUN_BYTES / sizeof(double)];
+    const size_t element = kernel == HK_CLIP_F32 ? sizeof(float) : sizeof(double);
+    const size_t run = CLIP_IN_PLACE_RUN_BYTES / element;
+    char *at = data;
+    for (size_t done = 0; done < n; done += run) {
+        const size_t count = n - done < run ? n - done : run;
+        // The run is copied out, and the kernel clips the copy back over it:
+        // each element is clipped once, from its own value, and the kernel
+        // never sees overlapping buffers.
+        memcpy(buffer, at, count * element);
+        if (kernel == HK_CLIP_F32) clip_f32((const float *)buffer, (float *)at, count, (float)lo, (float)hi);
+        else clip_f64(buffer, (double *)at, count, lo, hi);
+        at += count * element;
+    }
+}
+
+// Run a clip kernel on the whole of `x`, into a new array of its shape, or
+// into `x` itself when `in_place` is true. The kernels leave the
+// invalid-operation flag set on NaN data; NumPy's own loop ends by clearing
+// the flags, and so does this, as the loop hook does.
+static PyObject *run_clip(PyArrayObject *x, hk_kernel kernel, double lo, double hi, bool in_place) {
+    PyObject *result;
+    if (in_place) {
+        result = Py_NewRef((PyObject *)x);
+    } else {
+        result = PyArray_SimpleNew(PyArray_NDIM(x), PyArray_DIMS(x), PyArray_TYPE(x));
+        if (result == NULL) {
+            PyErr_Clear();
+            return NULL;
+        }
     }
     const npy_intp n = PyArray_SIZE(x);
     void *out = PyArray_DATA((PyArrayObject *)result);
     {
         HK_BEGIN_NOGIL(n)
-        if (kernel == HK_CLIP_F32) clip_f32(PyArray_DATA(x), out, (size_t)n, (float)lo, (float)hi);
+        if (in_place) hk_clip_in_place(kernel, out, (size_t)n, lo, hi);
+        else if (kernel == HK_CLIP_F32) clip_f32(PyArray_DATA(x), out, (size_t)n, (float)lo, (float)hi);
         else clip_f64(PyArray_DATA(x), out, (size_t)n, lo, hi);
         feclearexcept(FE_ALL_EXCEPT);
         HK_END_NOGIL
@@ -1042,22 +1247,29 @@ static HK_NOINLINE PyObject *try_clip_i64(PyArrayObject *x, PyObject *lo, PyObje
 // a NaN bound fails the comparison, as does lo > hi, and both are NumPy's.
 // The float32 bounds are compared after their conversion, as the loop sees
 // them.
-HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi) {
+//
+// An `out` that is the array itself is clipped in place, through a buffer of
+// the binding's (hk_clip_in_place): the kernels are wrong when their output
+// is their input (issue 7). NumPy then returns that same array. A read-only
+// array is NumPy's, which raises, and so is an in-place int64 clip.
+HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi, PyObject *out) {
     if (!hk_is_plain_array(array)) return NULL;
     PyArrayObject *x = (PyArrayObject *)array;
+    const bool in_place = !hk_is_absent(out);
+    if (in_place && (out != array || !PyArray_ISWRITEABLE(x))) return NULL;
     // NumPy returns an empty array without calling the loop; the kernels are
     // never called with n = 0.
     if (PyArray_SIZE(x) < 1) return NULL;
-    if (hk_is_flat(array, NPY_INT64)) return try_clip_i64(x, lo, hi);
+    if (hk_is_flat(array, NPY_INT64)) return in_place ? NULL : try_clip_i64(x, lo, hi);
     if (hk_is_flat(array, NPY_FLOAT)) {
         float lo32, hi32;
         if (!clip_bound_f32(lo, &lo32) || !clip_bound_f32(hi, &hi32) || !islessequal(lo32, hi32)) return NULL;
-        return run_clip(x, HK_CLIP_F32, lo32, hi32);
+        return run_clip(x, HK_CLIP_F32, lo32, hi32, in_place);
     }
     if (hk_is_flat(array, NPY_DOUBLE)) {
         double lo64, hi64;
         if (!clip_bound_f64(lo, &lo64) || !clip_bound_f64(hi, &hi64) || !islessequal(lo64, hi64)) return NULL;
-        return run_clip(x, HK_CLIP_F64, lo64, hi64);
+        return run_clip(x, HK_CLIP_F64, lo64, hi64, in_place);
     }
     return NULL;
 }
@@ -1065,16 +1277,17 @@ HK_NOINLINE PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi) {
 // np.clip(a, a_min, a_max) for a contiguous float32 or float64 array, or a
 // short int64 one, with
 // the bounds given by position, as `a_min=` and `a_max=`, or, where NumPy
-// has them, as `min=` and `max=`; `out` absent or None; nothing else. A
-// bound left out, None, or both spellings at once are NumPy's: it raises, or
-// calls np.maximum or np.minimum instead.
+// has them, as `min=` and `max=`; `out` absent, None, or for float32 and
+// float64 the array itself; nothing else. A bound left out, None, or both
+// spellings at once are NumPy's: it raises, or calls np.maximum or
+// np.minimum instead.
 static HK_NOINLINE PyObject *try_clip(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
     enum { A, A_MIN, A_MAX, OUT, MIN, MAX, PARAMETERS };
     // `min` and `max` can only be given by keyword.
     static const char *const names[PARAMETERS] = {"a", "a_min", "a_max", "out", "min", "max"};
     PyObject *bound[PARAMETERS];
     if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, OUT + 1, bound)) return NULL;
-    if (bound[A] == NULL || !hk_is_absent(bound[OUT])) return NULL;
+    if (bound[A] == NULL) return NULL;
     PyObject *lo = bound[A_MIN], *hi = bound[A_MAX];
     if (bound[MIN] != NULL || bound[MAX] != NULL) {
         if (!clip_takes_min_max || lo != NULL || hi != NULL) return NULL;
@@ -1084,7 +1297,7 @@ static HK_NOINLINE PyObject *try_clip(PyObject *const *args, Py_ssize_t nargs, P
     // A bound left out or None is the commonest call left to NumPy, and the
     // cheapest to recognise.
     if (hk_is_absent(lo) || hk_is_absent(hi)) return NULL;
-    return hk_try_clip(bound[A], lo, hi);
+    return hk_try_clip(bound[A], lo, hi, bound[OUT]);
 }
 
 // A call left to NumPy reaches `x.clip` and then the clip loop, whose hooks
@@ -1423,6 +1636,183 @@ static PyObject *call_median(HK_VECTORCALL_PARAMETERS) {
     return functions[F_MEDIAN].original(callable, args, nargsf, kwnames);
 }
 
+// ------------------------------------------------------------------ unique
+
+// The widest range of values np.unique's kernel is always given, whatever the
+// element count: 256 values, whose table of int64 is the 2 KB a hook keeps on
+// the stack. Above it a range is taken only while it is no wider than the
+// array is long, so that the table costs at most about one more pass over as
+// many bytes as the array has. See docs/unique-design.md.
+#define UNIQUE_FREE_SPAN ((npy_intp)(HK_STACK_SCRATCH_BYTES / sizeof(int64_t)))
+
+// The range scan of np.unique keeps UNIQUE_SCAN_VECTORS running minima and
+// as many maxima, in vectors of the compiler's vector types: 16 bytes, NEON's
+// width, on ARM64 and 32, AVX2's, on x86-64. Comparing 64-bit lanes and
+// selecting is one cmgt and one bsl per two elements on ARM64, and one
+// vpcmpgtq and one vpblendvb per four on x86-64. Several independent chains
+// leave the loop bound by its loads rather than by the latency of one.
+#if defined(__aarch64__)
+#define UNIQUE_SCAN_VECTOR_BYTES 16
+#else
+#define UNIQUE_SCAN_VECTOR_BYTES 32
+#endif
+#define UNIQUE_SCAN_VECTORS 4
+typedef int64_t unique_i64xv __attribute__((vector_size(UNIQUE_SCAN_VECTOR_BYTES)));
+// Elements of one vector, and of the array one step of the scan reads.
+#define UNIQUE_SCAN_LANES (UNIQUE_SCAN_VECTOR_BYTES / sizeof(int64_t))
+#define UNIQUE_SCAN_STEP (UNIQUE_SCAN_VECTORS * UNIQUE_SCAN_LANES)
+
+// The smallest and the largest of the `n` int64 elements at `x`, n >= 1,
+// into `smallest` and `largest`. No branch on the data. The last step ends at
+// n and overlaps the one before it, which a minimum and a maximum do not
+// mind; fewer elements than a step are read one at a time. The vectors are
+// loaded with memcpy, which the compiler turns into unaligned loads, and a
+// lane is chosen with a mask, which it turns into a select (bsl, vpblendvb).
+static HK_TARGET_KERNEL_LEVEL void unique_range(const int64_t *x, size_t n, int64_t *smallest, int64_t *largest) {
+    int64_t lo = x[0], hi = x[0];
+    if (n >= UNIQUE_SCAN_STEP) {
+        unique_i64xv low[UNIQUE_SCAN_VECTORS], high[UNIQUE_SCAN_VECTORS];
+        for (size_t k = 0; k < UNIQUE_SCAN_VECTORS; k++) {
+            memcpy(&low[k], x + k * UNIQUE_SCAN_LANES, sizeof low[k]);
+            high[k] = low[k];
+        }
+        for (size_t i = 0;; i += UNIQUE_SCAN_STEP) {
+            if (i > n - UNIQUE_SCAN_STEP) i = n - UNIQUE_SCAN_STEP;
+            for (size_t k = 0; k < UNIQUE_SCAN_VECTORS; k++) {
+                unique_i64xv v;
+                memcpy(&v, x + i + k * UNIQUE_SCAN_LANES, sizeof v);
+                const unique_i64xv below = (unique_i64xv)(v < low[k]), above = (unique_i64xv)(v > high[k]);
+                low[k] = (v & below) | (low[k] & ~below);
+                high[k] = (v & above) | (high[k] & ~above);
+            }
+            if (i == n - UNIQUE_SCAN_STEP) break;
+        }
+        for (size_t k = 0; k < UNIQUE_SCAN_VECTORS; k++) {
+            for (size_t j = 0; j < UNIQUE_SCAN_LANES; j++) {
+                lo = low[k][j] < lo ? low[k][j] : lo;
+                hi = high[k][j] > hi ? high[k][j] : hi;
+            }
+        }
+    } else {
+        for (size_t i = 1; i < n; i++) {
+            lo = x[i] < lo ? x[i] : lo;
+            hi = x[i] > hi ? x[i] : hi;
+        }
+    }
+    *smallest = lo;
+    *largest = hi;
+}
+
+// np.unique(x) for an int64 array `x`, of any shape and at least one element,
+// C-contiguous: the unique_i64 kernel. Returns a new reference, or NULL with
+// no exception set for a call that is NumPy's.
+//
+// For an integer array every NumPy release from 2.3 answers this call with a
+// new one-dimensional array of the array's element type holding each
+// distinct element once, in ascending order: the hash path of _unique1d
+// sorts its result, and the sort path finds it in order. The array is read
+// once for its smallest and largest element. When the range between them is
+// narrow (UNIQUE_FREE_SPAN), the kernel marks the values present in a buffer
+// of one int64 per value of the range and writes the distinct values to its
+// front; they are copied into the result. A wide range is NumPy's, which then
+// costs it one read of the array more.
+//
+// The lock is released for the scan and the kernel from HK_NOGIL_MIN_N
+// elements. The kernel ignores elements outside the range it is given, so a
+// thread that writes the array between the two reads can change the values
+// found, never make the kernel write outside its buffer.
+static HK_NOINLINE PyObject *unique_values(PyArrayObject *x) {
+    const npy_intp n = PyArray_SIZE(x);
+    const int64_t *data = PyArray_DATA(x);
+    int64_t smallest, largest;
+    {
+        HK_BEGIN_NOGIL(n)
+        unique_range(data, (size_t)n, &smallest, &largest);
+        HK_END_NOGIL
+    }
+    // The width of the range less one, in unsigned arithmetic, where it
+    // cannot overflow: at most 2^64 - 1.
+    const uint64_t width = (uint64_t)largest - (uint64_t)smallest;
+    const npy_intp limit = n > UNIQUE_FREE_SPAN ? n : UNIQUE_FREE_SPAN;
+    if (width >= (uint64_t)limit) return NULL;
+    const npy_intp span = (npy_intp)width + 1;
+
+    int64_t on_stack[UNIQUE_FREE_SPAN];
+    int64_t *table = span <= UNIQUE_FREE_SPAN ? on_stack : malloc((size_t)span * sizeof(int64_t));
+    if (table == NULL) return NULL;
+    npy_intp count;
+    {
+        HK_BEGIN_NOGIL(n)
+        count = (npy_intp)unique_i64(data, table, (size_t)n, smallest, (size_t)span);
+        HK_END_NOGIL
+    }
+    PyObject *result = PyArray_SimpleNew(1, &count, PyArray_TYPE(x));
+    if (result != NULL) memcpy(PyArray_DATA((PyArrayObject *)result), table, (size_t)count * sizeof(int64_t));
+    if (table != on_stack) free(table);
+    if (result == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    hk_take(HK_UNIQUE_I64);
+    return result;
+}
+
+// True when a flag of np.unique was not given or is False itself. Anything
+// else, 0 and None included, is NumPy's to interpret.
+static inline bool unique_flag_off(PyObject *flag) {
+    return flag == NULL || flag == Py_False;
+}
+
+// np.unique(ar) for an int64 ndarray `ar` of at least one dimension and one
+// element, with return_index, return_inverse and return_counts absent or
+// False, axis absent or None, equal_nan absent or a bool (it means nothing
+// for integers), and sorted absent or True. The parameters are those of NumPy
+// 2.3 to 2.5: five by position, equal_nan and sorted by keyword only.
+// sorted=False is NumPy's: its order is that of NumPy's hash set.
+//
+// An array of any layout is taken: one that is not C-contiguous is copied in
+// C order first, as NumPy's own flatten() copies every array.
+static HK_NOINLINE PyObject *try_unique(PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames) {
+    enum { AR, RETURN_INDEX, RETURN_INVERSE, RETURN_COUNTS, AXIS, EQUAL_NAN, SORTED, PARAMETERS };
+    static const char *const names[PARAMETERS] = {
+        "ar", "return_index", "return_inverse", "return_counts", "axis", "equal_nan", "sorted",
+    };
+    // Parameters that may be given by position: all but the two keyword-only ones.
+    const Py_ssize_t positional = EQUAL_NAN;
+    PyObject *bound[PARAMETERS];
+    if (!hk_bind_arguments(args, nargs, kwnames, names, PARAMETERS, positional, bound)) return NULL;
+    PyObject *array = bound[AR];
+    if (array == NULL || !hk_is_plain_array(array)) return NULL;
+    PyArrayObject *x = (PyArrayObject *)array;
+    if (PyArray_TYPE(x) != NPY_INT64 || !PyArray_ISNOTSWAPPED(x) || PyArray_NDIM(x) < 1 || PyArray_SIZE(x) < 1) {
+        return NULL;
+    }
+    if (!unique_flag_off(bound[RETURN_INDEX]) || !unique_flag_off(bound[RETURN_INVERSE]) ||
+        !unique_flag_off(bound[RETURN_COUNTS]) || !hk_is_absent(bound[AXIS])) {
+        return NULL;
+    }
+    if (bound[EQUAL_NAN] != NULL && !PyBool_Check(bound[EQUAL_NAN])) return NULL;
+    if (bound[SORTED] != NULL && bound[SORTED] != Py_True) return NULL;
+    if (PyArray_IS_C_CONTIGUOUS(x)) return unique_values(x);
+    PyObject *copy = PyArray_NewCopy(x, NPY_CORDER);
+    if (copy == NULL) {
+        PyErr_Clear();
+        return NULL;
+    }
+    PyObject *result = unique_values((PyArrayObject *)copy);
+    Py_DECREF(copy);
+    return result;
+}
+
+// np.unique: the kernel when the call meets its conditions; otherwise counted
+// and passed to NumPy unchanged.
+static PyObject *call_unique(HK_VECTORCALL_PARAMETERS) {
+    PyObject *result = try_unique(args, PyVectorcall_NARGS(nargsf), kwnames);
+    if (result != NULL) return result;
+    hk_pass(HK_OP_UNIQUE);
+    return functions[F_UNIQUE].original(callable, args, nargsf, kwnames);
+}
+
 // ----------------------------------------------------------------- the hook
 
 static hk_function functions[F_COUNT] = {
@@ -1444,6 +1834,7 @@ static hk_function functions[F_COUNT] = {
     [F_ROUND] = {"round", call_round, NULL, NULL, NULL},
     [F_AROUND] = {"around", call_around, NULL, NULL, NULL},
     [F_MEDIAN] = {"median", call_median, NULL, NULL, NULL},
+    [F_UNIQUE] = {"unique", call_unique, NULL, NULL, NULL},
 };
 
 // Return the address of the call pointer inside a callable object, or NULL
@@ -1512,5 +1903,6 @@ hk_hook hk_function_hooks[] = {
     {"function.round", function_apply, function_remove, F_ROUND, false},
     {"function.around", function_apply, function_remove, F_AROUND, false},
     {"function.median", function_apply, function_remove, F_MEDIAN, false},
+    {"function.unique", function_apply, function_remove, F_UNIQUE, false},
     {NULL, NULL, NULL, 0, false},
 };

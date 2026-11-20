@@ -68,8 +68,10 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
 [tool.cibuildwheel.linux]
 archs = ["x86_64"]
 # A wheel runs on every x86-64 processor of the x86-64-v3 level, which is what
-# the assembly kernels are written to and what install() checks for. No
-# kernel ships as C on x86-64 today; one that did would have to be compiled
-# by clang, the compiler the judge timed it with, and the manylinux image's
-# compiler is gcc (docs/release-design.md).
+# the assembly kernels are written to and what install() checks for.
 config-settings = { setup-args = "-Dkernel_cpu=x86-64-v3" }
+# unique_i64 ships as C on x86-64, and a C kernel is compiled by clang, the
+# compiler the judge timed it with. The manylinux image's compiler is gcc, so
+# clang is installed into it and named for the build (docs/release-design.md).
+before-all = "yum install -y clang"
+environment = { CC = "clang" }

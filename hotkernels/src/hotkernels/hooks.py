@@ -12,6 +12,8 @@ NumPy untouched.
 """
 from __future__ import annotations
 
+import operator
+import platform
 from dataclasses import dataclass
 from functools import partial
 from itertools import accumulate
@@ -25,6 +27,34 @@ INNER_LOOP = "inner loop"
 FUNCTION = "function"
 METHOD = "method"
 INDEXING = "indexing"
+BOTTLENECK = "bottleneck"
+
+# The module that defines bottleneck's functions. A bottleneck hook is applied
+# only when it is in sys.modules; hotkernels never imports it.
+BOTTLENECK_MODULE = "bottleneck.reduce"
+# Shape of the matrix the bottleneck probes reduce along axis 0, and the seed
+# of its values. With these, the square and the add of nanstd rounded once
+# give another result than rounded twice in several columns, so a bottleneck
+# build that rounds the other way fails the nanstd probe.
+BOTTLENECK_PROBE_SHAPE = (40, 37)
+BOTTLENECK_PROBE_SEED = 192
+
+# Names platform.machine() gives an ARM64 processor: arm64 on macOS, aarch64 on Linux.
+ARM64_MACHINES = ("arm64", "aarch64")
+# Whether this is an ARM64 machine, where the binding has the in-place add and
+# subtract loops. They are not built for other architectures.
+ON_ARM64 = platform.machine() in ARM64_MACHINES
+# The operation of the in-place add and subtract loops. The binding does not
+# count the calls they leave to NumPy, since every float64 add and subtract
+# reaches them, so the report leaves that column blank for them.
+INPLACE = "inplace"
+# Why the in-place loops are not installed on another architecture.
+INPLACE_ARM64_ONLY = "ARM64 only: see docs/gradient-step-findings.md"
+# Element count of the in-place probes: the fewest the loops take
+# (INPLACE_MIN_N in hook_loop.c).
+PROBE_INPLACE_N = 131072
+# Value the in-place probes add to or subtract from each element.
+PROBE_INPLACE_STEP = 0.375
 
 # Element count of a probe array. Large enough for every size threshold in
 # the binding, small enough that install() stays fast.
@@ -59,6 +89,10 @@ PROBE_FILL = 2.5
 # kernel was timed for.
 PROBE_RUN = 16
 
+# Columns of the matrix the argmax(axis=1) probes search: narrower than the
+# rows the binding gives to the kernels, so its own loop takes them.
+PROBE_ROWS_COLS = 3
+
 # Columns of the matrix the any(axis=1) probes reduce: the width the kernel
 # was timed for. PROBE_N is a whole number of such rows' worth or more.
 PROBE_COLS = 22
@@ -68,6 +102,19 @@ PROBE_COLS = 22
 # codes are counted once more than the others, and a kernel that dropped or
 # misplaced a code would fail.
 PROBE_CODES = 41
+
+# Rows of the matrices the probes of the row loops accumulate down: PROBE_N
+# elements in 25 rows of 40 columns.
+PROBE_ROWS = 25
+# Largest factor in the cumulative-product probe: its products are at most
+# 3 ** PROBE_ROWS, below 2 ** 53, so every one is exact in float64.
+PROBE_FACTOR = 3
+# The argsort probes sort the values (PROBE_SORT_STEP * i modulo PROBE_N)
+# divided by PROBE_SORT_TIES: the step has no factor in common with PROBE_N,
+# so the values are shuffled, and the division leaves them in groups of equal
+# elements, which a sort that is not stable would put in another order.
+PROBE_SORT_STEP = 617
+PROBE_SORT_TIES = 4
 
 # Element count of the sorted array the search probes look in. It differs
 # from PROBE_N so that a kernel which confused its two lengths would fail.
@@ -98,6 +145,10 @@ class Hook:
     kind: str
     # One probe per kernel the hook serves.
     probes: tuple[Probe, ...]
+    # Module of another library that holds the hooked object, or None for a
+    # hook in NumPy. Such a hook is applied only while the module is in
+    # sys.modules.
+    module: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,17 +161,20 @@ class KernelInfo:
     numpy_call: str
     # Element type of the arrays it handles, as a NumPy type name.
     elements: str
-    # Name of the operation in the binding's counters of calls passed on to
-    # NumPy, or None for a kernel without a hook.
+    # Name of the operation the kernel serves, as the binding's counters of
+    # calls passed on to NumPy name it, or None for a kernel without a hook.
+    # An operation the binding does not count, such as INPLACE, has no
+    # figure of calls left to NumPy.
     operation: str | None
     # Names of the hooks that deliver the kernel. Empty for one without a hook.
     hooks: tuple[str, ...]
     # Why the kernel has no hook, or None when it has one.
     unbound_reason: str | None = None
-    # True for a loop built into the binding for calls on short arrays, which
-    # is plain C in the hook files and not a kernel from `kernels/`: the
-    # judge never sees it, and `report()` shows it as exact C and does not
-    # count it among the kernels.
+    # True for a loop built into the binding, for calls on short arrays or
+    # for accumulations along the first axis of a matrix, or for in-place adds
+    # and subtracts, which is plain C in the hook files and not a kernel from
+    # `kernels/`: the judge never sees it, and `report()` shows it as exact C
+    # and does not count it among the kernels.
     builtin: bool = False
 
 
@@ -180,6 +234,39 @@ def _argext_small_method(dtype: type, method: str, value: float) -> bool:
     return int(getattr(x, method)()) == SMALL_PROBE_INDEX
 
 
+def _argext_rows(dtype: type, rows: Callable[[np.ndarray], np.ndarray], value: float) -> bool:
+    """Probe the rows path of a function or method hook: argmax or argmin along axis 1 of a narrow matrix.
+
+    Row r holds `value` at column r modulo PROBE_ROWS_COLS and zeros
+    elsewhere, so the answer moves from row to row; a row's other zeros tie
+    with each other and never win.
+
+    Args:
+        dtype: Element type of the probe matrix.
+        rows: Makes the call on the matrix: `np.argmax(m, axis=1)` and so on.
+        value: The marked element: positive for argmax, negative for argmin.
+
+    Returns:
+        Whether the result is an np.intp array of the marked columns.
+    """
+    count = PROBE_N // PROBE_ROWS_COLS
+    m = np.zeros((count, PROBE_ROWS_COLS), dtype)
+    marked = np.arange(count) % PROBE_ROWS_COLS
+    m[np.arange(count), marked] = value
+    result = rows(m)
+    return result.dtype == np.intp and bool(np.array_equal(result, marked))
+
+
+def _argext_rows_function(function: Callable) -> Callable[[np.ndarray], np.ndarray]:
+    """Return `function(m, axis=1)` as a function of `m`, for `np.argmax` or `np.argmin`."""
+    return lambda m: function(m, axis=1)
+
+
+def _argext_rows_method(method: str) -> Callable[[np.ndarray], np.ndarray]:
+    """Return `m.argmax(axis=1)` or `m.argmin(axis=1)` as a function of `m`."""
+    return lambda m: getattr(m, method)(axis=1)
+
+
 def _clip_with(dtype: type, clip: Callable[[np.ndarray, float, float], np.ndarray]) -> bool:
     """Probe a clip hook: values from -1 to 1 clamped to the probe bounds.
 
@@ -207,6 +294,27 @@ def _clip_method(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
 def _clip(dtype: type) -> bool:
     """Probe the clip loop or the function hook: `np.clip(x, lo, hi)`."""
     return _clip_with(dtype, np.clip)
+
+
+def _inplace(plain: Callable[[np.ndarray, np.ndarray], np.ndarray],
+             in_place: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> bool:
+    """Probe an in-place loop: `w += b` or `w -= b` on PROBE_INPLACE_N float64 elements.
+
+    The answer is computed first by the operator that makes a new array,
+    which the in-place loops never take.
+
+    Args:
+        plain: The operator, `operator.add` or `operator.sub`.
+        in_place: Its in-place form, `operator.iadd` or `operator.isub`.
+
+    Returns:
+        Whether `w` holds the same values afterwards as the new array.
+    """
+    w = np.arange(PROBE_INPLACE_N, dtype=np.float64)
+    b = np.full(PROBE_INPLACE_N, PROBE_INPLACE_STEP)
+    expected = plain(w, b)
+    result = in_place(w, b)
+    return result is w and bool(np.array_equal(w, expected))
 
 
 def _clip_i64_with(clip: Callable[[np.ndarray, int, int], np.ndarray]) -> bool:
@@ -418,6 +526,73 @@ def _cumfmax() -> bool:
     return result.dtype == np.float64 and result.tolist() == _running_max(values)
 
 
+def _down_columns(values: list[float], operation: Callable[[float, float], float]) -> list[list[float]]:
+    """Return the accumulation of a PROBE_ROWS-row matrix down its columns, in plain Python.
+
+    Args:
+        values: The matrix's elements in C order, PROBE_N of them.
+        operation: The step: element i of a column is operation(element i-1
+            of the result, element i of the column).
+
+    Returns:
+        The result's rows, as lists.
+    """
+    cols = len(values) // PROBE_ROWS
+    rows = [values[i * cols:(i + 1) * cols] for i in range(PROBE_ROWS)]
+    result = [rows[0]]
+    for row in rows[1:]:
+        result.append([operation(a, b) for a, b in zip(result[-1], row)])
+    return result
+
+
+def _rows_probe(call: Callable[[np.ndarray], np.ndarray], values: list[float],
+                operation: Callable[[float, float], float]) -> bool:
+    """Probe a row loop: an accumulation along the first axis of a PROBE_ROWS-row float64 matrix.
+
+    Args:
+        call: Makes the NumPy call on the matrix.
+        values: The matrix's elements in C order. None of the results is a NaN.
+        operation: The step of the accumulation, in plain Python.
+
+    Returns:
+        Whether the result is float64, of the matrix's shape, and holds the
+        accumulation down each column.
+    """
+    matrix = np.array(values, np.float64).reshape(PROBE_ROWS, -1)
+    result = call(matrix)
+    return result.dtype == np.float64 and result.shape == matrix.shape and result.tolist() == _down_columns(
+        values, operation)
+
+
+def _rows_cumsum(call: Callable[[np.ndarray], np.ndarray]) -> bool:
+    """Probe the row loop of np.add: `call` sums the running-maximum probe values down the columns, exactly."""
+    return _rows_probe(call, _running_max_probe(), lambda a, b: a + b)
+
+
+def _rows_cumprod() -> bool:
+    """Probe the row loop of np.multiply: `m.cumprod(axis=0)` on whole numbers 1 to PROBE_FACTOR, exactly."""
+    values = [float(1 + i % PROBE_FACTOR) for i in range(PROBE_N)]
+    return _rows_probe(lambda m: m.cumprod(axis=0), values, lambda a, b: a * b)
+
+
+def _rows_cummax() -> bool:
+    """Probe the row loop of np.maximum: `np.maximum.accumulate(m)` on the running-maximum probe values."""
+    return _rows_probe(np.maximum.accumulate, _running_max_probe(), max)
+
+
+def _rows_cumfmax() -> bool:
+    """Probe the row loop of np.fmax: `np.fmax.accumulate(m)` with a NaN at every PROBE_STRIDE-th element after the first row.
+
+    The first row holds numbers, so no result is a NaN; a loop that let a NaN
+    through, or propagated it as np.maximum does, fails.
+    """
+    values = _running_max_probe()
+    cols = PROBE_N // PROBE_ROWS
+    for i in range(cols, PROBE_N, PROBE_STRIDE):
+        values[i] = float("nan")
+    return _rows_probe(np.fmax.accumulate, values, lambda a, b: a if b != b or b <= a else b)
+
+
 def _fmax_reduceat() -> bool:
     """Probe the ufunc method hook: `np.fmax.reduceat(x, starts)` on float64, in runs of PROBE_RUN.
 
@@ -520,6 +695,19 @@ def _bincount_codes(dtype: type) -> bool:
     return counts.dtype == np.intp and counts.tolist() == expected
 
 
+def _unique() -> bool:
+    """Probe the function hook: `np.unique` on PROBE_N int64 values with gaps, below zero and above it.
+
+    The elements are -3, 0 and 7 repeated, so a kernel that wrote every value
+    of the range, or lost the sign, or did not sort, fails.
+
+    Returns:
+        Whether the result is the int64 array [-3, 0, 7].
+    """
+    result = np.unique(np.resize(np.array([7, -3, 0], np.int64), PROBE_N))
+    return result.dtype == np.int64 and result.tolist() == [-3, 0, 7]
+
+
 def _isin() -> bool:
     """Probe the function hook: `np.isin` with two test values."""
     x = np.arange(PROBE_N, dtype=np.int64)
@@ -557,6 +745,77 @@ def _interp() -> bool:
     return bool(np.array_equal(np.interp(queries, points, 2.0 * points), 2.0 * queries))
 
 
+def _bottleneck_probe_matrix() -> np.ndarray:
+    """Return the matrix the bottleneck probes reduce: random values with every special value bottleneck treats apart.
+
+    Column 0 is all NaN, column 1 all -0.0, column 2 zeros of both signs ending
+    in +0.0 and column 3 ending in -0.0, column 4 +inf and NaN, column 5 -inf
+    and NaN; the rest are normal values with a NaN in every seventh row.
+    """
+    rows, cols = BOTTLENECK_PROBE_SHAPE
+    x = np.random.default_rng(BOTTLENECK_PROBE_SEED).standard_normal((rows, cols))
+    x[::7, 6:] = np.nan
+    x[:, 0] = np.nan
+    x[:, 1] = -0.0
+    x[:, 2] = np.where(np.arange(rows) % 2, 0.0, -0.0)
+    x[:, 3] = np.where(np.arange(rows) % 2, -0.0, 0.0)
+    x[:, 4] = np.where(np.arange(rows) % 2, np.inf, np.nan)
+    x[:, 5] = np.where(np.arange(rows) % 2, -np.inf, np.nan)
+    return x
+
+
+def _bottleneck(function: str, hook: str) -> bool:
+    """Probe a bottleneck hook: the function along axis 0, against bottleneck's own answer.
+
+    The probe matrix is reduced twice in each of two layouts, C order and a
+    view of rolling windows: with the hook removed, which is bottleneck's own
+    loop, and with it applied. bottleneck is in sys.modules when this runs.
+
+    Args:
+        function: "nanmean", "nanstd", "nanmin" or "nanmax"; nanstd is called
+            with ddof=1, as empyrical calls it.
+        hook: Name of the hook, which is applied when the probe starts and is
+            applied again when it ends.
+
+    Returns:
+        Whether every result with the hook has the same bits as without it.
+    """
+    import importlib
+    import sys
+
+    from .environment import BINDING_MODULE
+
+    binding = importlib.import_module(BINDING_MODULE)
+    call = getattr(sys.modules[BOTTLENECK_MODULE], function)
+    keywords = {"ddof": 1} if function == "nanstd" else {}
+    x = _bottleneck_probe_matrix()
+    windows = np.lib.stride_tricks.as_strided(x.ravel(), (x.shape[0], x.size - x.shape[0] + 1), (8, 8))
+    binding.remove(hook)
+    expected = [call(a, axis=0, **keywords) for a in (x, windows)]
+    binding.apply(hook)
+    got = [call(a, axis=0, **keywords) for a in (x, windows)]
+    return all(type(g) is np.ndarray and g.dtype == e.dtype and g.shape == e.shape and g.tobytes() == e.tobytes()
+               for e, g in zip(expected, got))
+
+
+def _argsort(dtype: type) -> bool:
+    """Probe the method hook: `np.argsort(x, kind="stable")` on shuffled values with ties.
+
+    The expected order is worked out by Python's own sort of (value, index)
+    pairs, which is stable by construction and shares no code with NumPy's.
+
+    Args:
+        dtype: Element type of the probe array.
+
+    Returns:
+        Whether the result is the stable order, as `np.intp`.
+    """
+    values = [(PROBE_SORT_STEP * i % PROBE_N) // PROBE_SORT_TIES for i in range(PROBE_N)]
+    expected = sorted(range(PROBE_N), key=lambda i: (values[i], i))
+    result = np.argsort(np.array(values, dtype), kind="stable")
+    return result.dtype == np.intp and result.tolist() == expected
+
+
 # Every hook, in the order install() applies them: the deepest first.
 HOOKS: tuple[Hook, ...] = (
     Hook("slot.argmax.f32", TYPE_SLOT, (Probe("argmax_f32", partial(_argext_method, np.float32, "argmax", 1.0)),)),
@@ -565,13 +824,22 @@ HOOKS: tuple[Hook, ...] = (
     Hook("slot.argmin.f64", TYPE_SLOT, (Probe("argmin_f64", partial(_argext_method, np.float64, "argmin", -1.0)),)),
     Hook("loop.clip.f32", INNER_LOOP, (Probe("clip_f32", partial(_clip, np.float32)),)),
     Hook("loop.clip.f64", INNER_LOOP, (Probe("clip_f64", partial(_clip, np.float64)),)),
+    *((
+        Hook("loop.add.f64", INNER_LOOP, (Probe("add_inplace_f64", partial(_inplace, operator.add, operator.iadd)),)),
+        Hook("loop.subtract.f64", INNER_LOOP,
+             (Probe("subtract_inplace_f64", partial(_inplace, operator.sub, operator.isub)),)),
+    ) if ON_ARM64 else ()),
     Hook("function.argmax", FUNCTION, (
         Probe("argmax_f32", partial(_argext_function, np.float32, np.argmax, 1.0)),
         Probe("argmax_f64", partial(_argext_function, np.float64, np.argmax, 1.0)),
+        Probe("argmax_rows_f32", partial(_argext_rows, np.float32, _argext_rows_function(np.argmax), 1.0)),
+        Probe("argmax_rows_f64", partial(_argext_rows, np.float64, _argext_rows_function(np.argmax), 1.0)),
     )),
     Hook("function.argmin", FUNCTION, (
         Probe("argmin_f32", partial(_argext_function, np.float32, np.argmin, -1.0)),
         Probe("argmin_f64", partial(_argext_function, np.float64, np.argmin, -1.0)),
+        Probe("argmin_rows_f32", partial(_argext_rows, np.float32, _argext_rows_function(np.argmin), -1.0)),
+        Probe("argmin_rows_f64", partial(_argext_rows, np.float64, _argext_rows_function(np.argmin), -1.0)),
     )),
     Hook("function.count_nonzero", FUNCTION, (
         Probe("count_nonzero_i64", partial(_count_nonzero, np.int64)),
@@ -609,6 +877,7 @@ HOOKS: tuple[Hook, ...] = (
     Hook("function.round", FUNCTION, (Probe("round_f64", partial(_round_with, np.round)),)),
     Hook("function.around", FUNCTION, (Probe("round_f64", partial(_round_with, np.around)),)),
     Hook("function.median", FUNCTION, (Probe("median_f64", _median),)),
+    Hook("function.unique", FUNCTION, (Probe("unique_i64", _unique),)),
     Hook("method.astype", METHOD, (Probe("cast_u8_f32", _astype),)),
     Hook("method.sum", METHOD, (Probe("sum_u8", _sum_method),)),
     Hook("method.nonzero", METHOD, (Probe("nonzero_bool", partial(_nonzero, _nonzero_method)),)),
@@ -617,6 +886,7 @@ HOOKS: tuple[Hook, ...] = (
         Probe("cumsum_f32", partial(_cumsum, np.float32), inexact=True),
         Probe("cumsum_f64", partial(_cumsum, np.float64), inexact=True),
         Probe("cumsum_bool", _cumsum_bool),
+        Probe("cumsum_rows_f64", partial(_rows_cumsum, lambda m: m.cumsum(axis=0))),
     )),
     Hook("method.searchsorted", METHOD, (
         Probe("searchsorted_f64", _searchsorted),
@@ -625,10 +895,14 @@ HOOKS: tuple[Hook, ...] = (
     Hook("method.argmax", METHOD, (
         Probe("argmax_f32", partial(_argext_small_method, np.float32, "argmax", 1.0)),
         Probe("argmax_f64", partial(_argext_small_method, np.float64, "argmax", 1.0)),
+        Probe("argmax_rows_f32", partial(_argext_rows, np.float32, _argext_rows_method("argmax"), 1.0)),
+        Probe("argmax_rows_f64", partial(_argext_rows, np.float64, _argext_rows_method("argmax"), 1.0)),
     )),
     Hook("method.argmin", METHOD, (
         Probe("argmin_f32", partial(_argext_small_method, np.float32, "argmin", -1.0)),
         Probe("argmin_f64", partial(_argext_small_method, np.float64, "argmin", -1.0)),
+        Probe("argmin_rows_f32", partial(_argext_rows, np.float32, _argext_rows_method("argmin"), -1.0)),
+        Probe("argmin_rows_f64", partial(_argext_rows, np.float64, _argext_rows_method("argmin"), -1.0)),
     )),
     Hook("method.clip", METHOD, (
         Probe("clip_f32", partial(_clip_with, np.float32, _clip_method)),
@@ -639,16 +913,33 @@ HOOKS: tuple[Hook, ...] = (
         Probe("cummax_i64", partial(_cummax, np.maximum)),
         Probe("cummax_i64", partial(_cummax, np.fmax)),
         Probe("cumfmax_f64", _cumfmax),
+        Probe("cumsum_rows_f64", partial(_rows_cumsum, np.add.accumulate)),
+        Probe("cumprod_rows_f64", _rows_cumprod),
+        Probe("cummax_rows_f64", _rows_cummax),
+        Probe("cumfmax_rows_f64", _rows_cumfmax),
     )),
     Hook("ufunc.reduceat", METHOD, (Probe("fmax_reduce_f64", _fmax_reduceat),)),
     Hook("method.any", METHOD, (Probe("any_rows_bool", partial(_any_rows, _any_method)),)),
     Hook("method.round", METHOD, (Probe("round_f64", partial(_round_with, _round_method)),)),
+    Hook("method.argsort", METHOD, (
+        Probe("argsort_f64", partial(_argsort, np.float64)),
+        Probe("argsort_i64", partial(_argsort, np.int64)),
+        Probe("argsort_u64", partial(_argsort, np.uint64)),
+    )),
     Hook("index.get", INDEXING, (
         Probe("compress_f32", partial(_compress, np.float32)),
         Probe("compress_f64", partial(_compress, np.float64)),
     )),
     Hook("index.set", INDEXING, (Probe("maskfill_f64", partial(_maskfill, _assign)),)),
+    # bottleneck's functions, applied only when bottleneck is imported.
+    *(Hook(f"bottleneck.{function}", BOTTLENECK,
+           (Probe(f"{function}_cols_f64", partial(_bottleneck, function, f"bottleneck.{function}")),),
+           module=BOTTLENECK_MODULE)
+      for function in ("nanmean", "nanstd", "nanmin", "nanmax")),
 )
+
+# The hooks in bottleneck, which install(bottleneck=False) leaves out.
+BOTTLENECK_HOOKS = tuple(hook.name for hook in HOOKS if hook.module == BOTTLENECK_MODULE)
 
 # The hooks that deliver the compress kernels: `x[mask]`, `np.compress` and `np.extract`.
 COMPRESS_HOOKS = ("index.get", "function.compress", "function.extract")
@@ -658,8 +949,15 @@ COMPRESS_HOOKS = ("index.get", "function.compress", "function.extract")
 KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("argmax_f32", "np.argmax", "float32", "argmax", ("slot.argmax.f32", "function.argmax", "method.argmax")),
     KernelInfo("argmax_f64", "np.argmax", "float64", "argmax", ("slot.argmax.f64", "function.argmax", "method.argmax")),
+    # Loops built into the binding, for rows too narrow for the kernels in
+    # np.argmax(m, axis=1) and m.argmax(axis=1); wider rows count under the
+    # kernels above.
+    KernelInfo("argmax_rows_f32", "argmax(axis=1)", "float32", "argmax", ("function.argmax", "method.argmax"), builtin=True),
+    KernelInfo("argmax_rows_f64", "argmax(axis=1)", "float64", "argmax", ("function.argmax", "method.argmax"), builtin=True),
     KernelInfo("argmin_f32", "np.argmin", "float32", "argmin", ("slot.argmin.f32", "function.argmin", "method.argmin")),
     KernelInfo("argmin_f64", "np.argmin", "float64", "argmin", ("slot.argmin.f64", "function.argmin", "method.argmin")),
+    KernelInfo("argmin_rows_f32", "argmin(axis=1)", "float32", "argmin", ("function.argmin", "method.argmin"), builtin=True),
+    KernelInfo("argmin_rows_f64", "argmin(axis=1)", "float64", "argmin", ("function.argmin", "method.argmin"), builtin=True),
     KernelInfo("clip_f32", "np.clip", "float32", "clip", ("loop.clip.f32", "function.clip", "method.clip")),
     KernelInfo("clip_f64", "np.clip", "float64", "clip", ("loop.clip.f64", "function.clip", "method.clip")),
     # A loop built into the binding, for short arrays.
@@ -672,6 +970,9 @@ KERNELS: tuple[KernelInfo, ...] = (
     KernelInfo("cumsum_f32", "np.cumsum", "float32", "cumsum", ("method.cumsum",)),
     KernelInfo("cumsum_f64", "np.cumsum", "float64", "cumsum", ("method.cumsum",)),
     KernelInfo("cumsum_bool", "np.cumsum", "bool", "cumsum", ("method.cumsum",)),
+    # A loop built into the binding: the sum down the columns of a matrix.
+    KernelInfo("cumsum_rows_f64", "np.cumsum axis=0", "float64", "cumsum", ("method.cumsum", "ufunc.accumulate"),
+               builtin=True),
     KernelInfo("cast_u8_f32", "x.astype(float32)", "uint8", "astype", ("method.astype",)),
     KernelInfo("sum_u8", "np.sum", "uint8", "sum", ("function.sum", "method.sum")),
     KernelInfo("count_nonzero_i64", "np.count_nonzero", "int64", "count_nonzero", ("function.count_nonzero",)),
@@ -690,10 +991,31 @@ KERNELS: tuple[KernelInfo, ...] = (
     # np.maximum.accumulate does not fit the report's column of 19 characters.
     KernelInfo("cummax_i64", "maximum.accumulate", "int64", "accumulate", ("ufunc.accumulate",)),
     KernelInfo("cumfmax_f64", "fmax.accumulate", "float64", "accumulate", ("ufunc.accumulate",)),
+    # Loops built into the binding: accumulations down the columns of a matrix.
+    KernelInfo("cumprod_rows_f64", "np.cumprod axis=0", "float64", "accumulate", ("ufunc.accumulate",),
+               builtin=True),
+    KernelInfo("cummax_rows_f64", "maximum.acc axis=0", "float64", "accumulate", ("ufunc.accumulate",),
+               builtin=True),
+    KernelInfo("cumfmax_rows_f64", "fmax.acc axis=0", "float64", "accumulate", ("ufunc.accumulate",),
+               builtin=True),
     KernelInfo("fmax_reduce_f64", "fmax.reduceat", "float64", "reduceat", ("ufunc.reduceat",)),
     KernelInfo("any_rows_bool", "m.any(axis=1)", "bool", "any", ("method.any", "function.any")),
+    KernelInfo("unique_i64", "np.unique", "int64", "unique", ("function.unique",)),
+    # The stable kinds only: kind='stable', kind='mergesort' and stable=True.
+    KernelInfo("argsort_f64", "np.argsort, stable", "float64", "argsort", ("method.argsort",)),
+    KernelInfo("argsort_i64", "np.argsort, stable", "int64", "argsort", ("method.argsort",)),
+    KernelInfo("argsort_u64", "np.argsort, stable", "uint64", "argsort", ("method.argsort",)),
     # A loop built into the binding, for short arrays.
     KernelInfo("round_f64", "np.round", "float64", "round", ("function.round", "function.around", "method.round"),
                builtin=True),
     KernelInfo("median_f64", "np.median", "float64", "median", ("function.median",), builtin=True),
+    # Loops built into the binding for adds and subtracts in place, on ARM64.
+    KernelInfo("add_inplace_f64", "x += y", "float64", INPLACE, ("loop.add.f64",),
+               unbound_reason=None if ON_ARM64 else INPLACE_ARM64_ONLY, builtin=True),
+    KernelInfo("subtract_inplace_f64", "x -= y", "float64", INPLACE, ("loop.subtract.f64",),
+               unbound_reason=None if ON_ARM64 else INPLACE_ARM64_ONLY, builtin=True),
+    # Calls a library sends to bottleneck rather than NumPy: `bn.nanmean(a,
+    # axis=0)` on a matrix whose rows' elements are adjacent.
+    *(KernelInfo(f"{function}_cols_f64", f"bn.{function}", "float64", f"bn.{function}", (f"bottleneck.{function}",))
+      for function in ("nanmean", "nanstd", "nanmin", "nanmax")),
 )
