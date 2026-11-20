@@ -1,0 +1,34 @@
+{# The result of `delivery apps` on the console: one block per application and size. #}
+{% for item in items %}
+{{ item.timing.name }}, {{ item.timing.size }}: {{ item.timing.title }}
+  {{ item.timing.data }}{{ ", %d runs per round" % item.timing.repeats if item.timing.repeats > 1 else "" }}
+  plain NumPy:                    {{ "%.1f" | format(item.timing.numpy_ms) }} ms
+  after install():                {{ "%.1f" | format(item.timing.hotkernels_ms) }} ms   ({{ item.timing.speedup | times }}), results {{ "identical" if item.timing.identical else "DIFFERENT" }}
+  after install(inexact=True):    {{ "%.1f" | format(item.timing.inexact_ms) }} ms   ({{ item.timing.inexact_speedup | times }}), results {{ "identical" if item.timing.inexact_identical else "not identical" }}
+  kernel calls: {{ item.timing.kernel_calls | thousands }}   left to NumPy: {{ item.timing.left_calls | thousands }}
+{% for count in item.timing.taken %}
+    kernel  {{ count.call | ljust(20) }} {{ count.elements | ljust(8) }} {{ count.calls | thousands | rjust(9) }}
+{% endfor %}
+{% for count in item.timing.left %}
+    left    {{ count.call | ljust(29) }} {{ count.calls | thousands | rjust(9) }}
+{% endfor %}
+{% if item.profile %}
+  where the time goes (plain -> installed):
+{% for kind, share in item.profile.plain.classes.items() %}
+    {{ kind | ljust(22) }} {{ "%5.1f%%" | format(100 * share) }} -> {{ "%5.1f%%" | format(100 * item.profile.installed.classes[kind]) }}
+{% endfor %}
+  largest functions on plain NumPy:
+{% for function in item.profile.plain.functions %}
+    {{ "%5.1f%%" | format(100 * function.share) }}  {{ function.kind | ljust(20) }} {{ function.name }}
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+{% for name, modules in skipped.items() %}
+skipped {{ name }}: needs {{ modules | join(", ") }} (run with `uv run --group apps`)
+{% endfor %}
+{% if meta.sampler is defined and meta.sampler %}
+profile sampled with {{ meta.sampler }}
+{% endif %}
+load average {{ meta.load_average }}{{ ", a busy machine: the times are rough" if meta.load_average > busy_load else "" }}
+RESULT: {{ "pass" if passed else "FAIL" }}

@@ -1,0 +1,227 @@
+# any_rows_bool attempts (arm64)
+
+All runs on an Apple M1 Pro (macOS), native, while another kernel run was timing in another
+worktree, so timings from about 100,000 elements up are noisier than usual.
+
+What the compiler does with `naive.c` (from the judge's figures): rows of 22 at 0.13 ns per
+element, rows of 64 at 0.018, rows of 4 at 0.48 (the inner loop is entered and left per row).
+
+## 1. Baseline: one row at a time
+
+- **Idea:** the simplest correct kernel. `udiv` for the row count. Rows of 16 or more: 16-byte
+  chunks or'ed together, the last one ending at the row's end, then `umaxv` and `str b` per row.
+  Shorter rows: a byte at a time.
+- **check:** pass
+- **compare:** none (first version). `run`: 1.13x [1.13 – 1.13] over naive C overall; 2.98x on
+  rows of 22 (sparse, 1,048,576), 1.00x on rows of 4, 0.50x on rows of 64.
+- **Kept:** yes
+- **Notes:** the per-row `umaxv` and one-byte store cost about 0.7 ns a row whatever its width.
+
+## 2. Rows of 16 to 64: sixteen rows per block, reduced by a tree of `umaxp`
+
+- **Idea:** each row is reduced to 16 bytes whose maximum is its result: rows of 16 to 32 as
+  their first 16 bytes or'ed with their last 16 (two overlapping loads), rows of 33 to 64 as
+  their first 32 or'ed with their last 32 (two `ldp`). Fifteen `umaxp` turn sixteen such rows
+  into the sixteen result bytes, in order, and one `str q` stores them: no `umaxv`, no move to a
+  general register, one store per sixteen rows. The rows left under a block take the loop of
+  attempt 1.
+- **check:** pass
+- **compare:** significantly faster, 1.71x [1.71 – 1.72]; rows of 22 2.0x, rows of 64 2.5x
+  (5.2x in the first-level cache), rows of 4 unchanged.
+- **Kept:** yes
+- **Notes:** rows of 64 at 64 and 256 elements (one and four rows) are slower, 0.77x and 0.92x:
+  they never fill a block and pay for the extra tests at entry.
+
+## 3. Rows of four: three `umaxp` per sixteen rows
+
+- **Idea:** a path of its own for `cols` = 4. A row is four bytes, so 64 bytes are sixteen rows,
+  and three `umaxp` (pairs, then pairs of pairs) leave one byte per row, in order, still 0 or 1:
+  no compare and no narrowing. 32 rows per step (four `ldp`, six `umaxp`, one `stp`), then a
+  block of sixteen, then one block that ends at the last row and stores some rows a second time;
+  under sixteen rows in all, `ldr w`, `cmp`, `cset` and `strb` per row.
+- **check:** pass
+- **compare:** significantly faster, 3.20x [3.19 – 3.21] over all tables; the other widths
+  unchanged.
+- **Kept:** yes
+
+## 4. Rows of 16 to 64: the last rows as one overlapping block, fewer than 16 rows one by one
+
+- **Idea:** with at least 16 rows, the rows left under a block are done by one more block that
+  ends at the last row (the positions step back by `msub`) and stores some rows a second time.
+  With fewer than 16 rows in all, each row is reduced the same way as in a block, then `umaxv`
+  and `str b`: no chunk loop and its branches.
+- **check:** pass
+- **compare:** significantly faster, 1.13x [1.13 – 1.13]; rows of 22 1.21x and rows of 64
+  1.20x over each table, 2.2x to 3.3x at 64 and 256 elements.
+- **Kept:** yes
+
+## 5. Rows of 16 to 32: no chain of adds through the block
+
+- **Idea:** in attempt 4 every row moved the position by `cols`, so the 32 loads of a block
+  waited on a chain of sixteen dependent adds: one cycle a row. Now four positions four rows
+  apart and three offsets (one, two and three `cols`, and the same plus `cols - 16` for each
+  row's last 16 bytes) address all sixteen rows with register-offset loads; the four positions
+  move once per block.
+- **check:** pass
+- **compare:** significantly faster, 1.047x [1.046 – 1.048] over all tables; rows of 22 1.15x,
+  1.46x to 1.55x from 4,096 to 65,536 elements, about 1.04x beyond.
+- **Kept:** yes
+- **Notes:** rows of 22 now take 0.23 ns a row in the first-level cache, 0.74 cycles: the two
+  loads a row on three load units. Rows of 64 (four loads a row) and rows of 4 (eight loads per
+  32 rows) are at the same limit.
+
+## 6. Rows of four: four to fifteen rows by 16-byte loads
+
+- **Idea:** under sixteen rows in all, four rows per `ldr q`, two `umaxp` of the vector with
+  itself and `str s`; the last four end at the last row and may store some rows a second time.
+  Only under four rows (fewer than 16 elements) the scalar loop of attempt 3.
+- **check:** pass
+- **compare:** significantly faster, 1.015x [1.013 – 1.016]; rows of 4 at 16 elements 1.63x
+  (4.1 ns to 2.6 ns), nothing else moved.
+- **Kept:** yes
+
+## 7. Rows of 16 to 32: prefetch four blocks ahead
+
+- **Idea:** rows of 22 take 0.0155 ns a byte from 262,144 elements against 0.0105 in the
+  first-level cache, more than rows of 4 and 64 lose there. Four `prfm pldl1keep` per block, one
+  per four rows, 64 rows ahead, to start the second-level fetches earlier.
+- **check:** pass
+- **compare:** significantly slower, 0.974x [0.973 – 0.975]; rows of 22 0.92x, slower at every
+  size from 1,024 up: the prefetches take load slots from a loop already limited by its loads.
+- **Kept:** no
+
+## 8. Rows of 16 to 64, fewer than 16 rows in all: groups of 1, 2, 4 and 8 rows
+
+- **Idea:** in place of a `umaxv` and a one-byte store per row, the rows are taken by the bits
+  of their count: one row (`umaxv`, `str b`), two (two `umaxv`, two `str b`), four (a tree of
+  `umaxp`, `str s`), eight (a tree, `str d`). Each group's loads are independent of the others'.
+  The smallest group first, so one row takes one taken branch.
+- **check:** pass
+- **compare:** significantly faster, 1.010x [1.009 – 1.011]; rows of 22 at 256 elements (11
+  rows) 1.38x, rows of 64 at 256 elements (4 rows) 1.10x; rows of 22 at 64 elements (2 rows)
+  0.92x, 2.0 ns to 2.1 ns.
+- **Kept:** yes
+- **Notes:** a first version took the groups largest first: one row of 64 went from 1.9 ns to
+  2.9 ns behind three taken branches (0.997x, significantly slower). A pair of rows reduced by a
+  `umaxp` and three more `umaxp` of the vector with itself is a chain of four; two `umaxv` side
+  by side measured the same at two rows.
+
+## 9. Non-temporal loads above 8 MB for rows of 4 and of 33 to 64
+
+- **Idea:** `ldnp` in place of `ldp` in the main loops. Tried first everywhere: 1.16x at
+  16,777,216 elements, but 0.88x at 1,048,576 (no significant difference over all). So the main
+  loops are duplicated with `ldnp` and taken from 8,388,608 elements, larger than the 12 MB
+  second-level cache. Rows of 16 to 32 cannot use it: `ldnp` has no register offset.
+- **check:** pass
+- **compare:** significantly faster, 1.010x [1.010 – 1.010]; rows of 4 and of 64 1.15x to 1.19x
+  at 16,777,216, every other size unchanged.
+- **Kept:** yes
+
+## 10. Rows of 16 to 32 above 8 MB: non-temporal pairs, masked
+
+- **Idea:** what attempt 9 did for rows of 4 and 64, for the path it could not reach. Each row is
+  one `ldnp` of the 32 bytes at its start, the second 16 and'ed with a mask of the row's last
+  `cols - 16` bytes (from a 32-byte constant). Four positions, one per row of four, each moved
+  four rows after use. The pair reads up to 15 bytes past the row, so the loop stops while a
+  whole block is left, and the ordinary loop does the rest.
+- **check:** pass
+- **compare:** significantly faster, 1.002x [1.001 – 1.003], and again 1.002x [1.002 – 1.003];
+  rows of 22 1.05x and 1.06x at 16,777,216 elements, nothing else moved.
+- **Kept:** yes
+- **Notes:** a smaller gain than attempt 9 at the same size (1.17x there): the row of 22 costs
+  more instructions in this form (`and` and a position add per row).
+
+## 11. Rows of four: tested before the division, short matrices first
+
+- **Idea:** `cols` = 4 is tested before the `udiv`, and its row count is `n >> 2`; under sixteen
+  rows the path goes to the 16-byte loads of attempt 6 at once, not through the block tests.
+- **check:** pass
+- **compare:** significantly faster, 1.012x [1.011 – 1.012]; rows of 4 at 16 elements 1.33x
+  (2.6 ns to 1.9 ns), rows of 22 at 64 elements 1.08x (one test fewer before its path).
+- **Kept:** yes
+
+## 12. Rows of 16 to 32 in the second-level cache: masked pairs with ordinary loads
+
+- **Idea:** the form of attempt 10 (one pair of loads at the row's start, the second half
+  masked, positions moved per row) with `ldp` in place of `ldnp`, from 131,072 elements, in case
+  the pair at the row's start suits the second-level cache better than two overlapping loads.
+- **check:** pass
+- **compare:** significantly slower, 0.998x [0.997 – 0.999]; rows of 22 0.99x from 262,144 to
+  4,194,304 and 0.95x at 16,777,216 (where it replaced `ldnp`).
+- **Kept:** no
+
+## Widths the judge does not time
+
+The judge times widths 22, 4 and 64 only, so `compare` cannot see a change to any other path.
+The attempts below were decided outside the one rule, at the coordinator's request, after the
+kernel was found slower than the naive C it replaced at widths 8, 12, 15, 65 and 1,000, and
+slower than NumPy from Python at widths 1 and 1,000. Each was kept when `check` passed,
+`compare` against HEAD was not significantly slower on the timed widths, and a timer outside
+the repository (the kernel against `naive.c` built with `clang -O3 -mcpu=native`, best of 15,
+3%, 50% and 0% True, 4,096 and 1,048,576 elements) showed it faster than the naive C at the
+width, and for widths 1 and above 64 also not slower than NumPy from Python
+(`m.any(axis=1)` after `hotkernels.install()`, 1,048,576 elements). Load average 5 to 11
+throughout, with other kernel runs in progress.
+
+## 13. Width 1: a copy
+
+- **Idea:** with every byte 0 or 1 the result of a row of one is the byte itself: 32 bytes per
+  step with `ldp` and `stp`, the last 32 stored at the end over the ones before; under 32 bytes,
+  two overlapping copies of 16, 8 or 4 bytes, under 4 a byte at a time.
+- **check:** pass
+- **compare:** no significant difference, 1.000x [0.999 – 1.001] (together with attempt 14)
+- **Kept:** yes, on the timer: the judge times no such width.
+- **Notes:** against the naive C 47x at 4,096 elements (52 ns against 2.46 µs) and 27x to 28x
+  at 1,048,576 (22 µs against 621 µs), the same on every share. From Python at 1,048,576
+  elements 1.35x to 1.46x faster than NumPy (26 µs to 27 µs against 37 µs), where it was 0.08x.
+
+## 14. Widths 2, 3 and 5 to 15: a row in a general register
+
+- **Idea:** in place of a byte at a time, two loads per row, one at the row's start and one
+  ending at its end, overlapping when the row is shorter than both: 8 bytes each for widths 8 to
+  15, 4 bytes for 5 to 7, 2 bytes and 1 byte for 2 and 3. Or'ed, compared with zero, `cset`,
+  `strb`. Four rows per step, addressed from one position and fixed offsets.
+- **check:** pass
+- **compare:** no significant difference, 1.000x [0.999 – 1.001] (together with attempt 13)
+- **Kept:** yes, on the timer: the judge times no such width.
+- **Notes:** against the naive C, the same within 3% on 3%, 50% and 0% True: width 2 2.8x
+  (0.28 ns a row), 3 5.6x to 5.7x, 5 7.5x to 7.9x, 8 3.6x to 3.8x (36 µs against 135 µs at
+  1,048,576), 12 7.6x to 7.9x, 15 10.8x to 11.4x. Width 8 from Python is 23x to 39x faster than
+  NumPy. Width 2 could take `umaxp` like width 4; left, as it is already 2.8x over the C.
+
+## 15. Widths above 64: 64 bytes per step and an exit at the first True
+
+- **Idea:** NumPy's reduction stops at a row's first True; the chunk loop of attempt 1 read every
+  row to its end and reduced it with `umaxv`. Now a row goes 64 bytes per step (two `ldp`, three
+  `orr`, one `umaxp` to 8 bytes, `fmov` to a general register, `cbz`) and ends at the first step
+  that holds a True; its last 64 bytes end at the row's end and overlap the step before.
+- **check:** pass
+- **compare:** no significant difference, 1.000x [1.000 – 1.001]
+- **Kept:** yes, on the timer: the judge times no such width.
+- **Notes:** against the naive C at 4,096 / 1,048,576 elements: width 65 2.16x / 1.13x (3%
+  True), 2.02x / 2.17x (50%), 1.54x / 1.45x (all False); width 100 5.22x / 3.24x, 4.80x /
+  4.40x, 3.59x / 3.26x; width 1,000 7.78x / 5.93x, 7.76x / 6.73x, and 1.05x / 1.04x all False,
+  where there is no exit and both read every byte. From Python at 1,048,576 elements: width 65
+  2.8x to 6.1x faster than NumPy, 100 2.3x to 6.5x, 1,000 1.04x all False but 0.63x (3% True,
+  14.7 µs against 9.3 µs) and 0.66x (50%): the kernel takes about 2.2 µs there, and the rest is
+  the binding's read of every byte for values other than 0 and 1, which NumPy's early exit does
+  not pay. That read is the binding's, not the kernel's.
+
+## 16. Widths 65 to 128: blocks of sixteen rows, no exit
+
+- **Idea:** with the exit of attempt 15, rows of 65 on sparse data hold a True in their first 64
+  bytes 86% of the time, and the branch that decides it mispredicts on the rest: 1.05x over the
+  naive C at 1,048,576 elements. A row of 65 to 128 is at most two steps, so these widths now
+  take the block of rows of 33 to 64 with the row's first 64 bytes or'ed with its last 64
+  (four `ldp`), fifteen `umaxp` per sixteen rows and one store, no exit.
+- **check:** pass
+- **compare:** first placed before the long-row loop: significantly slower, 0.992x
+  [0.991 – 0.992], rows of 4 at 256 elements 2.7 ns to 3.5 ns, the rows-of-4 loop moved in
+  memory. Placed at the end of the text instead: no significant difference, 1.000x
+  [0.999 – 1.001].
+- **Kept:** yes, on the timer: the judge times no such width.
+- **Notes:** width 65 against the naive C at 4,096 / 1,048,576 elements: 2.16x / 1.53x (3%
+  True), 2.22x / 1.50x (50%), 2.19x / 1.50x (all False), where attempt 15 gave 2.16x / 1.05x,
+  2.02x / 2.17x and 1.54x / 1.45x. Width 100: 4.5x / 3.4x on every share (attempt 15: 5.2x / 3.2x
+  sparse, 4.8x / 4.4x dense). The lowest figure of the two widths rises from 1.05x to 1.50x.
+  From Python at 1,048,576 elements width 65 is 2.6x to 8.6x faster than NumPy, 100 2.1x to 7.1x.

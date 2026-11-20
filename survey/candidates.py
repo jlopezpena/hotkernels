@@ -23,6 +23,10 @@ CONTROL = "control"
 EXTRA, WIDER = "extra", "wider"
 # Operations taken from the calls of a program in use: docs/second-shortlist-design.md.
 SECOND = "second shortlist"
+# Operations taken from the applications study: docs/applications-findings.md.
+APPS = "applications"
+# Sorting, from the applications study: docs/sort-design.md.
+SORT = "argsort"
 
 # Mask densities measured: the worst case for a branch predictor, and a sparse mask.
 DENSITIES = (0.5, 0.05)
@@ -44,6 +48,13 @@ NAN_SHARE = 0.05
 # Share of True in the mask of `np.where(c, a, nan)`, which callers use to
 # blank the few elements that fail a test.
 MOSTLY_TRUE = 0.95
+# Distinct values of the np.unique labels, binary and ten classes, and the
+# table the naive C is given for them.
+UNIQUE_LABELS = (2, 10)
+UNIQUE_TABLE = 64
+# Elements of output the argsort candidates have per element of input: the
+# result, and the working memory of the C sorts (see survey/naive.c).
+ARGSORT_OUT_PER_ELEMENT = 5
 # Relative tolerances for kernels whose NumPy counterpart orders floating-point
 # operations differently (pairwise sums, fused multiply-add).
 RTOL_F32_SUM = 1e-2
@@ -483,6 +494,51 @@ def _second_shortlist() -> list[Cand]:
     ]
 
 
+def _applications() -> list[Cand]:
+    """The candidates found by the applications study: `np.unique` on int64 labels.
+
+    Returns:
+        The candidates of this group, in measuring order.
+    """
+    return [
+        Cand(f"unique_i64 {labels} values", APPS, "np.unique(x)", "unique_i64", "pipi",
+             {"x": f"rng.integers(0, {labels}, n)", "out": f"np.empty({UNIQUE_TABLE}, np.int64)"},
+             ("ptr(x)", "n", "ptr(out)", str(UNIQUE_TABLE)),
+             "out[:ret]", "np.unique(x)", out="out", alloc=True)
+        for labels in UNIQUE_LABELS
+    ]
+
+
+def _argsort() -> list[Cand]:
+    """Stable argsort of 64-bit keys, against a merge sort and against a radix sort in C.
+
+    The default kind is measured too, against the radix sort, on data without
+    equal elements: there every correct sort gives the same answer, and with
+    ties NumPy's quicksort gives an order of its own.
+
+    Returns:
+        The candidates of this group, in measuring order.
+    """
+    out = f"np.empty({ARGSORT_OUT_PER_ELEMENT} * n, np.int64)"
+    data = {
+        "f64": _RANDOM["f64"],
+        "i64": "rng.integers(-(1 << 62), 1 << 62, n)",
+        "u64": "rng.integers(0, 1 << 63, n).astype(np.uint64) * 2",
+    }
+    args = ("ptr(x)", "ptr(out)", "n")
+    cands = []
+    for t, x in data.items():
+        for how, cfn in (("merge sort", f"argsort_merge_{t}"), ("radix sort", f"argsort_radix_{t}")):
+            cands.append(Cand(f"argsort_{t} stable ({how})", SORT, "np.argsort(x, kind='stable')", cfn, "ppi",
+                              {"x": x, "out": out}, args, "out[:n]", "np.argsort(x, kind='stable')",
+                              out="out", alloc=True))
+    for t in ("f64", "i64"):
+        cands.append(Cand(f"argsort_{t} default kind (radix sort)", SORT, "np.argsort(x)", f"argsort_radix_{t}",
+                          "ppi", {"x": data[t], "out": out}, args, "out[:n]", "np.argsort(x)",
+                          out="out", alloc=True))
+    return cands
+
+
 def candidates() -> list[Cand]:
     """List every candidate the survey measures.
 
@@ -491,5 +547,5 @@ def candidates() -> list[Cand]:
     """
     groups = (_argmax, _controls, _mask_selection, _counting, _nonzero, _accumulations, _searching,
               _clip, _any_all, _indexing, _membership_and_binning, _elementwise, _stepped_slices,
-              _second_shortlist)
+              _second_shortlist, _applications, _argsort)
     return [cand for group in groups for cand in group()]

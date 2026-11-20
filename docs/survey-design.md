@@ -61,6 +61,9 @@ uv run survey run
 | ARM64 | Apple M1 Pro, macOS 27.2.1, NumPy 2.5.5, Apple clang 21. The reference loop drifted by 0.6%. All 65 variants agree with NumPy. Taken before the survey placed output buffers | [apple-m1-pro.md](../survey/results/apple-m1-pro.md) (61 variants) and [apple-m1-pro-branchless.md](../survey/results/apple-m1-pro-branchless.md) (4 follow-up variants) |
 | x86-64 | Intel Core i5-14600KF, Linux 7.0, NumPy 2.5.5 using its AVX2 loops (it requires X86_V2 and found X86_V3), clang 21.1.8. Pinned to one performance core, no warnings. The reference loop drifted by less than 0.1%. All 65 variants agree with NumPy | [intel-core-i5-14600kf.md](../survey/results/intel-core-i5-14600kf.md) |
 | x86-64, second shortlist | The same machine, NumPy 2.5.5, clang 21.1.8, pinned to one performance core, no warnings. The reference loop drifted by less than 0.1%. The 13 variants of [second-shortlist-design.md](second-shortlist-design.md) and no others; all agree with NumPy | [intel-core-i5-14600kf-second-shortlist.md](../survey/results/intel-core-i5-14600kf-second-shortlist.md) |
+| ARM64, second shortlist | Apple M1 Pro, macOS 27.2.1, NumPy 2.5.5, Apple clang 21, at a load average of about 2.5. The reference loop drifted by 1.6%. The same 13 variants and no others; all agree with NumPy | [apple-m1-pro-second-shortlist.md](../survey/results/apple-m1-pro-second-shortlist.md) |
+| ARM64, applications | Apple M1 Pro, macOS 27.2.1, NumPy 2.5.5, Apple clang 21, at a load average of about 16, so rough. The reference loop drifted by 0.8%. The group `applications`: `np.unique` on int64 labels of two and ten values ([unique-design.md](unique-design.md)), 11.1x behind the naive C from 65,536 elements up; both agree with NumPy | [apple-m1-pro-unique.md](../survey/results/apple-m1-pro-unique.md) |
+| ARM64, argsort | Apple M1 Pro, macOS 27.2.1, NumPy 2.5.5, Apple clang 21, on a machine in use (load average 4 to 8). The reference loop drifted by 0.4%. The eight variants of [sort-design.md](sort-design.md) and no others; all agree with NumPy | [apple-m1-pro-argsort.md](../survey/results/apple-m1-pro-argsort.md) |
 
 ## Results on ARM64
 
@@ -72,6 +75,8 @@ uv run survey run
 4. **Branch misprediction is a large part of NumPy's cost on masks.** `x[mask]` at 50% density costs NumPy 4.8 ns per element. A C loop with no data-dependent branch does it in 0.34 ns: 14x faster, before any SIMD.
 5. **Where NumPy already has NEON, it is very good.** `np.max`, `np.any`, `np.all`, `count_nonzero` on booleans and `packbits` run at 0.01 to 0.05 ns per element, 10x to 50x ahead of naive C. These are not targets.
 6. **Stepped slices are not a target.** Copying and adding over `a[::2]` tie naive C (gap 1.03x to 1.09x), and `np.sum` and `np.argmax` on a stepped slice are ahead of it.
+
+**Sorting, surveyed after the applications study.** A stable `argsort` was on neither shortlist: the survey's question is whether NumPy loses to the loop a programmer would write, and for a sort it does not. A bottom-up merge sort of indices in C is level with NumPy's timsort on int64 and uint64 keys (0.88x to 1.07x from 4,096 elements up) and half as fast on float64. The gap is in the algorithm: a plain radix sort of (key, index) pairs, eight passes of eight bits, is 6.4x to 8.8x faster than NumPy at a million elements and 8.6x to 22.6x at sixteen million, and 4x to 5x faster than NumPy's default, unstable kind. That is why the `argsort` kernels are a different algorithm in C and not NumPy's loop in assembly ([sort-design.md](sort-design.md)).
 
 ### Shortlist
 

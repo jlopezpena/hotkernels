@@ -34,6 +34,10 @@
 #include <xmmintrin.h>
 #endif
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 #include "kernels.h"
 
 // ---------------------------------------------------------------- counters
@@ -41,9 +45,13 @@
 // One entry per kernel the binding can call. The order is the order of
 // HK_KERNEL_NAMES in module.c.
 //
-// The entries after the kernels are loops built into the binding for calls
+// The entries after the kernels are loops built into the binding: for calls
 // on short arrays, where NumPy's own call path is nearly all of a call's
-// cost and the loop hardly matters. They are plain C in the hook files, not
+// cost and the loop hardly matters; for accumulations along the first axis
+// of a matrix, where the gain is the order in which memory is walked; and,
+// on ARM64, for float64 adds and subtracts in place, where what decides the
+// speed is which core's cache holds the output (hook_loop.c). They are plain
+// C in the hook files, not
 // kernels from `kernels/`, and the judge does not see them; `delivery check`
 // compares them with NumPy as it does the rest of the binding. They are
 // counted like kernels so that report() and the self-test of install() can
@@ -57,9 +65,15 @@ typedef enum {
     HK_HISTOGRAM_F64, HK_BINCOUNT_U8, HK_ISIN_I64,
     HK_SEARCHSORTED_F64, HK_SEARCHSORTED_RIGHT_F64, HK_INTERP_F64,
     HK_WHERE_F64, HK_CUMMAX_I64, HK_CUMFMAX_F64, HK_FMAX_REDUCE_F64, HK_ANY_ROWS_BOOL,
-    HK_BINCOUNT_I16, HK_BINCOUNT_I64,
+    HK_BINCOUNT_I16, HK_BINCOUNT_I64, HK_UNIQUE_I64,
+    HK_ARGSORT_F64, HK_ARGSORT_I64, HK_ARGSORT_U64,
+    // Served through bottleneck's functions, not NumPy's (hook_bottleneck.c).
+    HK_NANMEAN_COLS_F64, HK_NANSTD_COLS_F64, HK_NANMIN_COLS_F64, HK_NANMAX_COLS_F64,
     // Built into the binding.
     HK_CLIP_I64, HK_ROUND_F64, HK_MEDIAN_F64,
+    HK_CUMSUM_ROWS_F64, HK_CUMPROD_ROWS_F64, HK_CUMMAX_ROWS_F64, HK_CUMFMAX_ROWS_F64,
+    HK_ARGMAX_ROWS_F32, HK_ARGMAX_ROWS_F64, HK_ARGMIN_ROWS_F32, HK_ARGMIN_ROWS_F64,
+    HK_ADD_INPLACE_F64, HK_SUBTRACT_INPLACE_F64,
     HK_KERNEL_COUNT
 } hk_kernel;
 
@@ -71,6 +85,9 @@ typedef enum {
     HK_OP_NONZERO, HK_OP_CUMSUM, HK_OP_ASTYPE, HK_OP_SUM, HK_OP_COUNT_NONZERO,
     HK_OP_HISTOGRAM, HK_OP_BINCOUNT, HK_OP_ISIN, HK_OP_SEARCHSORTED, HK_OP_INTERP,
     HK_OP_WHERE, HK_OP_ACCUMULATE, HK_OP_REDUCEAT, HK_OP_ANY, HK_OP_ROUND, HK_OP_MEDIAN,
+    HK_OP_UNIQUE, HK_OP_ARGSORT,
+    // bottleneck's functions: a call counted here was left to bottleneck.
+    HK_OP_BN_NANMEAN, HK_OP_BN_NANSTD, HK_OP_BN_NANMIN, HK_OP_BN_NANMAX,
     HK_OPERATION_COUNT
 } hk_operation;
 
@@ -101,6 +118,26 @@ static inline void hk_take(hk_kernel k) {
 static inline void hk_pass(hk_operation op) {
     hk_count(&hk_passed[op]);
 }
+
+// One Python call of argmax or argmin that NumPy may split into many calls of
+// the type slot, one per row. The method hook sets `active` before it hands
+// a float32 or float64 array on to NumPy; while it is set the slot hook
+// records here what it did with each row instead of counting, and the method
+// hook counts the whole call once when NumPy returns. One per thread: NumPy
+// runs the slot on the calling thread with the interpreter lock released,
+// while other threads may be in calls of their own. See
+// docs/argmax-rows-design.md.
+typedef struct {
+    // True while a method hook waits for NumPy to return.
+    bool active;
+    // True when the slot took a kernel for at least one row.
+    bool taken;
+    // The kernel the slot took. Every row of one call has the same length,
+    // so it is the same kernel for all of them.
+    hk_kernel slot_kernel;
+} hk_argext_call;
+
+extern _Thread_local hk_argext_call hk_argext_mark;
 
 // True when install(inexact=True) was given: kernels that are not
 // bit-identical to NumPy may then take calls.
@@ -237,6 +274,88 @@ static inline bool hk_has_nan(const double *values, size_t n) {
 // the invalid-operation flag for a signalling NaN, never for a quiet one, and
 // a call that holds a signalling NaN goes to NumPy. The bits are copied out
 // with memcpy, which the compiler turns into a plain load.
+//
+// On ARM64 the same loop takes about 0.16 ns per element on the Apple M1 Pro,
+// three times what the kernels it guards take to read the elements, so there
+// a pre-test reads the array first (below) and the loop runs only on the
+// blocks the pre-test cannot clear.
+#if defined(__aarch64__)
+
+// Doubles per block of the ARM64 pre-tests: 256 bytes. A block the pre-test
+// cannot clear is read again by the test per element.
+#define HK_GUARD_BLOCK 32
+
+// The top 16 bits of each of the 32 doubles at `x` into `top`: the sign, the
+// exponent, and the top four bits of the fraction, the quiet bit of a NaN
+// among them. Element 8k + j of the block is lane j of top[k]. Two unzips
+// gather them: of the high 32-bit words of four elements, then of the high
+// halves of those. Three instructions per eight elements, where a test of the
+// whole 64 bits takes at least two per two.
+static inline void hk_top_halves(const double *x, uint16x8_t top[4]) {
+    for (int k = 0; k < 4; k++) {
+        const uint32x4_t a = vreinterpretq_u32_f64(vld1q_f64(x + 8 * k));
+        const uint32x4_t b = vreinterpretq_u32_f64(vld1q_f64(x + 8 * k + 2));
+        const uint32x4_t c = vreinterpretq_u32_f64(vld1q_f64(x + 8 * k + 4));
+        const uint32x4_t d = vreinterpretq_u32_f64(vld1q_f64(x + 8 * k + 6));
+        top[k] = vuzp2q_u16(vreinterpretq_u16_u32(vuzp2q_u32(a, b)), vreinterpretq_u16_u32(vuzp2q_u32(c, d)));
+    }
+}
+
+// The test of every element, the loop of the x86-64 version below: true when
+// one of the `n` doubles at `values` is a signalling NaN.
+static inline bool hk_signalling_nan_scan(const double *values, size_t n) {
+    // The quiet bit of a NaN.
+    const uint64_t quiet = 0x0008000000000000ULL;
+    uint64_t clear = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t bits;
+        memcpy(&bits, &values[i], sizeof bits);
+        const uint64_t nan = values[i] != values[i] ? ~0ULL : 0;
+        clear |= ~bits & nan;
+    }
+    return (clear & quiet) != 0;
+}
+
+// False when none of the 32 doubles at `x` can be a signalling NaN. A
+// signalling NaN, and an infinity, has a top halfword whose low 15 bits are
+// 0x7ff0 to 0x7ff7: all ones in the exponent and the quiet bit clear. Shifted
+// left by one, which drops the sign, that is 0xffe0 to 0xffee, and adding 0x20
+// takes exactly those, wrapping, below 0x10. A quiet NaN gives 0x10 to 0x1e,
+// and every number but an infinity more. Integer instructions only: no
+// floating-point flag is raised here.
+static inline bool hk_block_may_signal(const double *x) {
+    // Added to the shifted top halfword: wraps the range of a signalling NaN
+    // and an infinity to the bottom.
+    const uint16x8_t bias = vdupq_n_u16(0x20);
+    // The shifted top halfword of a quiet NaN, plus the bias, is at least this.
+    const uint16_t quiet_floor = 0x10;
+    uint16x8_t top[4];
+    hk_top_halves(x, top);
+    const uint16x8_t low01 = vminq_u16(vaddq_u16(vshlq_n_u16(top[0], 1), bias), vaddq_u16(vshlq_n_u16(top[1], 1), bias));
+    const uint16x8_t low23 = vminq_u16(vaddq_u16(vshlq_n_u16(top[2], 1), bias), vaddq_u16(vshlq_n_u16(top[3], 1), bias));
+    return vminvq_u16(vminq_u16(low01, low23)) < quiet_floor;
+}
+
+// ARM64: a block of 32 elements at a time, pre-tested on its top halfwords
+// (hk_block_may_signal) and tested element by element only when that finds an
+// infinity or a signalling NaN; it returns at the first block that holds a
+// signalling NaN. The last block ends at n and overlaps the one before it;
+// fewer than 32 elements are tested element by element. The answer is the
+// x86-64 version's for every input, and the floating-point flags are too: the
+// test per element raises the invalid-operation flag for a signalling NaN,
+// and every signalling NaN is in a block it tests. About 0.062 ns per element
+// in the first-level cache, where the test of every element took 0.156, and
+// 0.097 from the second-level cache, where it took 0.156 (Apple M1 Pro).
+static inline bool hk_has_signalling_nan(const double *values, size_t n) {
+    if (n < HK_GUARD_BLOCK) return hk_signalling_nan_scan(values, n);
+    for (size_t i = 0;; i += HK_GUARD_BLOCK) {
+        if (i > n - HK_GUARD_BLOCK) i = n - HK_GUARD_BLOCK;
+        if (hk_block_may_signal(values + i) && hk_signalling_nan_scan(values + i, HK_GUARD_BLOCK)) return true;
+        if (i == n - HK_GUARD_BLOCK) return false;
+    }
+}
+
+#else
 static inline HK_TARGET_KERNEL_LEVEL bool hk_has_signalling_nan(const double *values, size_t n) {
     // The quiet bit of a NaN.
     const uint64_t quiet = 0x0008000000000000ULL;
@@ -249,6 +368,7 @@ static inline HK_TARGET_KERNEL_LEVEL bool hk_has_signalling_nan(const double *va
     }
     return (clear & quiet) != 0;
 }
+#endif
 
 // Clear the floating-point status flags a kernel may have set. NumPy's own
 // loops leave none behind, and a kernel's vmaxpd sets the invalid-operation
@@ -336,15 +456,36 @@ static inline bool hk_as_exact_double(PyObject *obj, double *out) {
 PyObject *hk_try_sum(PyObject *array);
 PyObject *hk_try_argext(PyObject *array, bool want_max);
 
+// argmax or argmin along the last axis of a matrix, as the new
+// one-dimensional np.intp array NumPy's `m.argmax(axis=1)` returns: the
+// operation's kernel once per row for rows of at least ARGEXT_ROWS_KERNEL_COLS
+// elements, and a loop of the binding's own (argmax_rows_f32 and the rest)
+// for narrower ones. The caller has tested that the axis is 1 or -1 and that
+// there is no other argument but an `out` of None; the array's type, shape and
+// layout are tested here. In hook_function.c.
+PyObject *hk_try_argext_rows(PyObject *array, bool want_max);
+
 // The array NumPy's clip returns for `array` clamped to the bounds `lo` and
 // `hi`, as given by the caller: the clip kernels, or for int64 the binding's
 // own loop, on a new array. `array` is contiguous float32 or float64 with at
 // least one element, or contiguous int64 with 1 to CLIP_I64_MAX_N elements;
 // each bound is an object that leaves the result in the array's element type
 // and converts to it exactly as NumPy converts it, with lo <= hi after the
-// conversion. A caller whose NumPy operation needs more, such as no `out`,
-// tests that first. In hook_function.c.
-PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi);
+// conversion. `out` is the caller's `out` argument, NULL when it was not
+// given: absent or None gives a new array, the array itself (float32 and
+// float64, writeable) clips it in place and returns it, and anything else is
+// NumPy's. A caller whose NumPy operation needs more tests that first. In
+// hook_function.c.
+PyObject *hk_try_clip(PyObject *array, PyObject *lo, PyObject *hi, PyObject *out);
+
+// Clip the `n` elements at `data` to [lo, hi] in place with the clip kernel
+// `kernel` (HK_CLIP_F32 or HK_CLIP_F64; for float32 the bounds are float32
+// values held as doubles). The kernels are wrong when their output is their
+// input (issue 7), so each run of the array is copied to a buffer on the
+// stack and the kernel clips the copy back over the run: every kernel call
+// sees two buffers that do not overlap. Leaves the floating-point flags as the kernels leave them. Needs
+// no interpreter lock. In hook_function.c.
+void hk_clip_in_place(hk_kernel kernel, void *data, size_t n, double lo, double hi);
 
 // The elements of `x` where `mask` is True, as a new one-dimensional array:
 // the compress kernels. `x` is contiguous float32, float64 or int64 (which
@@ -448,5 +589,6 @@ extern hk_hook hk_loop_hooks[];
 extern hk_hook hk_function_hooks[];
 extern hk_hook hk_method_hooks[];
 extern hk_hook hk_index_hooks[];
+extern hk_hook hk_bottleneck_hooks[];
 
 #endif

@@ -1,0 +1,24 @@
+{# The report of `delivery workloads`, for the terminal: one block per workload and size. #}
+Load average when the run started: {{ meta.load_average }}{{ " (the machine was in use: treat the figures as rough)" if meta.load_average > busy_load else "" }}
+{% if skipped %}
+Skipped, libraries not installed (run with `uv run --group workloads`):
+{% for name, missing in skipped %}
+  {{ name }}: {{ missing | join(", ") }}
+{% endfor %}
+{% endif %}
+{% for o in outcomes %}
+
+{{ o.workload }} ({{ o.size }}){{ ", written by this project" if o.ours else "" }}: {{ o.title }}
+{% if o.identical %}
+  plain NumPy {{ o.numpy_ns | time }}, installed {{ o.hotkernels_ns | time }}, {{ o.speedup | times }} faster, best of {{ o.rounds }}; results identical
+{% for c in o.counts %}
+  {{ c.numpy_call | ljust(20) }}{{ c.elements | ljust(10) }}kernel {{ c.calls | thousands | rjust(9) }}   left to NumPy {{ c.left_to_numpy | thousands | rjust(9) }}
+{% else %}
+  reached no hooked call
+{% endfor %}
+{% else %}
+  RESULTS DIFFER with hotkernels installed; not timed
+{% endif %}
+{% endfor %}
+
+RESULT: {{ "pass" if not failed else "FAIL: " ~ failed | join(", ") }}{{ ", " ~ skipped | length ~ " skipped" if skipped else "" }}

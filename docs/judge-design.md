@@ -110,7 +110,8 @@ The first real kernels needed more than the two fixtures do. Each addition below
 | `In("v", "f64", len="needles")` | An input whose length is the value of an integer scalar, so a kernel can have two lengths that vary independently. See [A second length](#a-second-length) | `searchsorted` (the needles), `interp` (the queries) |
 | `Out("counts", "i64", capacity=256)` | An output whose size is fixed | `bincount` |
 | `Out("counts", "i64", capacity="nbins")` | An output whose size is the value of an integer scalar, so it changes with the scalar set | `histogram` |
-| `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs | `searchsorted` and `interp` (sorted data) |
+| `Out("out", "i64", capacity=Times(3), used="return", scratch=True)` | An output with a whole number of elements per element of `n`. With `scratch=True` it lends a kernel working memory in proportion to its input: the kernel reports the elements that are its result, they are compared with the oracle, and the rest of the buffer is its to use. See [Scratch output](#scratch-output-writing-inside-the-capacity) | `argsort` (the result and the two buffers a radix sort moves its elements between) |
+| `In("a", "f64", prepare=np.sort)` | A function applied to every generated input, for kernels defined only on some inputs. Timing inputs that a distribution supplies do not pass through it | `searchsorted` and `interp` (sorted data); `cumfmax_f64` and `fmax_reduce_f64` (no `-0.0` where a zero is the maximum: a domain that leaves out the inputs the binding sends to NumPy, where NumPy's builds disagree) |
 | `In("test", "i64", len=8, classes={"padded_3": fn})` | Value classes of one argument alone, tried next to the ones every argument of its type gets, for inputs a caller sends that the general classes do not produce. Each function takes the argument's default random array and returns the array to use. They are checked like any plain class, pairings included, and are not timed | `isin_i64` (test values padded by repeating the first, as the binding pads them) |
 | `In("v", "f64", len="needles", draws_from="a")` | One more value class, `from_a`, whose elements are elements of `a` as the kernel receives it. Tried with `a` random and with `a` holding repeated values at every size and in every scalar set. See [Values drawn from another argument](#values-drawn-from-another-argument) | `searchsorted` (needles equal to elements, at every path), `interp` (queries on sample points) |
 | `InOut("x", "f64")` | A buffer the kernel modifies in place. It starts as an input and is compared in full with the oracle's result | masked assignment |
@@ -323,6 +324,8 @@ That has consequences, which is why scratch is opt-in per buffer and not the def
 | The judge checks less | For a scratch buffer the judge no longer detects a kernel that stores one element too many inside the capacity. A wrong count or a wrong reported element is still caught by the comparison, and a store past the capacity is still caught by the guard page |
 | Two correct kernels can differ | The tail is unspecified, so byte-for-byte comparison covers the reported part only |
 
+**Working memory.** A capacity can be a multiple of `n`, `capacity=Times(3)`, and a kernel that needs memory in proportion to its input uses a scratch output for it: the stable `argsort` kernels report `n` indices at the start of a buffer of `3n` and keep the elements they are moving in the rest ([sort-design.md](sort-design.md#the-judge)). The judge supports one output per kernel, and this needed nothing else of it. Every consequence in the table holds, the first most of all: the buffer is the binding's own, and the user is handed a copy of the reported part.
+
 The assembly still needs care at the end of the input: the leftover elements that do not fill a block are handled one at a time, because a full block load would read past the input, which stays forbidden.
 
 ### Calling convention
@@ -514,6 +517,8 @@ A fourth, `tally_u8`, covers [scalar sets](#scalar-sets). It counts elements by 
 A fifth, `rank_u8`, covers [a second length](#a-second-length). For each of a scalar number of needles it counts the elements of an array smaller than the needle. One broken variant reads a byte past the needles, which is caught only if that buffer is placed against the guard page by the scalar's value and not by `n`. The other handles the default number of needles whatever the scalar says.
 
 `rank_u8` also draws its needles from its array, and a selftest step confirms what [Values drawn from another argument](#values-drawn-from-another-argument) promises without running a kernel: at every size the fixture is checked at, in every scalar set, there is a case whose needles are all elements of the array as the kernel receives it, and the array holds repeated values.
+
+A capacity that is a multiple of `n` (`capacity=Times(3)`) has no fixture of its own: a selftest step builds a spec with one and confirms that the output is sized at that many elements per element at several sizes, and that a factor that is not a whole number of at least 1 is refused. The kernels that use it, the stable `argsort` kernels, are what run it against guard pages.
 
 | Broken variant | Must be caught by |
 |---|---|

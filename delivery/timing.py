@@ -12,6 +12,7 @@ average is recorded with every run.
 from __future__ import annotations
 
 import importlib
+import math
 import os
 import platform
 import subprocess
@@ -25,6 +26,7 @@ import numpy as np
 
 import hotkernels
 from hotkernels.environment import BINDING_MODULE
+from hotkernels.hooks import ON_ARM64
 
 from judge import cores
 from judge.cli import machine
@@ -72,6 +74,12 @@ ISIN_TEST = [1, 50, 999, 0, 7, 500, 501, 2]
 # Number of distinct codes of the timed int16 and int64 bincount arrays: the
 # counter count their kernels were timed for.
 BINCOUNT_CODES = 64
+# Distinct values of the timed np.unique arrays: binary labels and ten
+# classes, the labels of the application it was written for.
+UNIQUE_LABELS = (2, 10)
+# Range of the np.unique array that is left to NumPy after the binding's scan:
+# wider than any array timed, so the range test fails at every size.
+UNIQUE_WIDE = 1 << 40
 # Length of the runs of the timed np.fmax.reduceat, and the share of its
 # elements that are NaN.
 REDUCEAT_RUN = 16
@@ -88,6 +96,20 @@ MEDIAN_F64_MAX_N = 128
 # Decimals of the timed np.round: the commonest in the program the second
 # shortlist came from.
 DECIMALS = 2
+# Most rows of the timed matrices accumulated along their first axis: about a
+# year of trading days, as in empyrical's rolling windows. A matrix of n
+# elements has min(ROWS_WINDOW, isqrt(n)) rows: 4 x 4, 64 x 64 and 256 x 4,096.
+ROWS_WINDOW = 256
+# Standard deviation of the factors of the timed cumulative product, which are
+# near 1 as daily returns plus one are.
+ROWS_SPREAD = 0.01
+
+# Element count from which the argsort kernels take a stable argsort: the
+# binding's limit (ARGSORT_MIN_N in hook_method.c).
+ARGSORT_MIN_N = 256
+# The share of a sorted array that the "nearly sorted" timing shuffles at its
+# end: few enough that the binding leaves the call to NumPy's timsort.
+ARGSORT_SHUFFLED_SHARE = 100
 # Length of the sorted array in the search statements that hold it fixed while
 # the number of needles grows: the shape of a lookup in a small table.
 SMALL_TABLE = 1000
@@ -170,6 +192,29 @@ def _ints(dtype: type, n: int) -> tuple:
     return (_rng(n).integers(0, 10, n).astype(dtype),)
 
 
+def _unsigned(n: int) -> tuple:
+    """Build uint64 values drawn from the whole range of the type, as hashes are."""
+    return (_rng(n).integers(0, np.iinfo(np.uint64).max, n, dtype=np.uint64, endpoint=True),)
+
+
+def _sorted_floats(n: int) -> tuple:
+    """Build normally distributed float64 values in ascending order."""
+    return (np.sort(_rng(n).standard_normal(n)),)
+
+
+def _nearly_sorted_floats(n: int) -> tuple:
+    """Build sorted float64 values whose last one in ARGSORT_SHUFFLED_SHARE is in random order."""
+    (x,) = _sorted_floats(n)
+    tail = max(n // ARGSORT_SHUFFLED_SHARE, 2)
+    x[n - tail:] = _rng(n + 1).standard_normal(tail)
+    return (x,)
+
+
+def _stable_argsort(x: np.ndarray) -> np.ndarray:
+    """Call `np.argsort(x, kind='stable')`."""
+    return np.argsort(x, kind="stable")
+
+
 def _spread_ints(n: int) -> tuple:
     """Build int64 values drawn from the whole range of the type, so that a new maximum is rare after the start."""
     info = np.iinfo(np.int64)
@@ -203,6 +248,19 @@ def _codes(dtype: type, n: int) -> tuple:
         (codes,).
     """
     return (_rng(n).integers(0, BINCOUNT_CODES, n).astype(dtype),)
+
+
+def _labels(classes: int, n: int) -> tuple:
+    """Build int64 labels uniform in [0, classes).
+
+    Args:
+        classes: Number of distinct values.
+        n: Element count.
+
+    Returns:
+        (labels,).
+    """
+    return (_rng(n).integers(0, classes, n),)
 
 
 def _bytes(n: int) -> tuple:
@@ -247,6 +305,22 @@ def _matrix(share: float, n: int) -> tuple:
     """
     rows = max(n // ANY_COLUMNS, 1)
     return (_rng(n).random((rows, ANY_COLUMNS)) < share,)
+
+
+def _window(n: int, center: float = 0.0, spread: float = 1.0) -> tuple:
+    """Build a C-ordered float64 matrix of about `n` normally distributed elements, for accumulations down its columns.
+
+    Args:
+        n: Element count asked for; a perfect square at or below 65,536, and
+            a multiple of ROWS_WINDOW above it.
+        center: Mean of the elements.
+        spread: Standard deviation of the elements.
+
+    Returns:
+        (matrix,), of min(ROWS_WINDOW, isqrt(n)) rows.
+    """
+    rows = min(ROWS_WINDOW, math.isqrt(n))
+    return (center + spread * _rng(n).standard_normal((rows, n // rows)),)
 
 
 def _narrow_ints(n: int) -> tuple:
@@ -347,6 +421,59 @@ def _copyto(value: float, x: np.ndarray, mask: np.ndarray) -> None:
     np.copyto(x, value, where=mask)
 
 
+def _clip_in_place(x: np.ndarray) -> np.ndarray:
+    """Run `np.clip(x, -0.5, 0.5, out=x)`. Running it twice changes nothing more.
+
+    Args:
+        x: The array, clipped in place.
+
+    Returns:
+        `x`, as NumPy returns it.
+    """
+    return np.clip(x, LO, HI, out=x)
+
+
+def _clip_method_in_place(x: np.ndarray) -> np.ndarray:
+    """Run `x.clip(-0.5, 0.5, out=x)`. Running it twice changes nothing more.
+
+    Args:
+        x: The array, clipped in place.
+
+    Returns:
+        `x`, as NumPy returns it.
+    """
+    return x.clip(LO, HI, out=x)
+
+
+def _two_floats(n: int) -> tuple:
+    """Build two arrays of normally distributed float64 values."""
+    rng = _rng(n)
+    return rng.standard_normal(n), rng.standard_normal(n)
+
+
+def _subtract_in_place(w: np.ndarray, b: np.ndarray) -> None:
+    """Run `w -= b`."""
+    w -= b
+
+
+def _add_in_place(w: np.ndarray, b: np.ndarray) -> None:
+    """Run `w += b`."""
+    w += b
+
+
+def _subtract_scalar(w: np.ndarray) -> None:
+    """Run `w -= 0.5`, whose scalar steps by zero."""
+    w -= HI
+
+
+# The loops of the binding that take float64 adds and subtracts in place,
+# where they are built: ARM64 only. Elsewhere the statements are timed as
+# calls left to NumPy, and so they are below INPLACE_MIN_N elements.
+INPLACE_MIN_N = 131072
+SUBTRACT_IN_PLACE = "subtract_inplace_f64" if ON_ARM64 else None
+ADD_IN_PLACE = "add_inplace_f64" if ON_ARM64 else None
+
+
 def _set_element(x: np.ndarray) -> None:
     """Run `x[3] = 1.0`."""
     x[3] = 1.0
@@ -363,6 +490,8 @@ TAKEN: tuple[Timed, ...] = (
     Timed("clip", "np.clip(x, -0.5, 0.5)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, LO, HI), "clip_f64"),
     Timed("clip", "np.clip(x, 0, 1)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, 0, 1), "clip_f64"),
     Timed("clip", "x.clip(-0.5, 0.5)", "float32", partial(_floats, np.float32), lambda x: x.clip(LO, HI), "clip_f32"),
+    Timed("clip", "np.clip(x, -0.5, 0.5, out=x)", "float64", partial(_floats, np.float64), _clip_in_place, "clip_f64"),
+    Timed("clip", "x.clip(-0.5, 0.5, out=x)", "float32", partial(_floats, np.float32), _clip_method_in_place, "clip_f32"),
     Timed("clip", "np.clip(x, 2, 7)", "int64", partial(_ints, np.int64), lambda x: np.clip(x, INT_LO, INT_HI),
           "clip_i64", max_n=CLIP_I64_MAX_N),
     Timed("clip", "x.clip(2, 7)", "int64", partial(_ints, np.int64), lambda x: x.clip(INT_LO, INT_HI), "clip_i64",
@@ -373,6 +502,9 @@ TAKEN: tuple[Timed, ...] = (
           max_n=ROUND_F64_MAX_N),
     Timed("round", "np.round(x)", "float64", partial(_floats, np.float64), np.round, "round_f64",
           max_n=ROUND_F64_MAX_N),
+    Timed("inplace", "w -= b", "float64", _two_floats, _subtract_in_place, SUBTRACT_IN_PLACE,
+          min_n=INPLACE_MIN_N),
+    Timed("inplace", "w += b", "float64", _two_floats, _add_in_place, ADD_IN_PLACE, min_n=INPLACE_MIN_N),
     Timed("median", "np.median(x)", "float64", partial(_floats, np.float64), np.median, "median_f64",
           max_n=MEDIAN_F64_MAX_N),
     Timed("compress", "x[mask]", "float32, half selected", partial(_masked, np.float32, HALF), lambda x, m: x[m], "compress_f32"),
@@ -397,6 +529,13 @@ TAKEN: tuple[Timed, ...] = (
     Timed("accumulate", "np.maximum.accumulate(x)", "int64", _spread_ints, np.maximum.accumulate, "cummax_i64"),
     Timed("accumulate", "np.fmax.accumulate(x)", "float64", partial(_floats, np.float64), np.fmax.accumulate,
           "cumfmax_f64"),
+    Timed("accumulate", "np.fmax.accumulate(a, axis=0)", "float64 matrix", _window,
+          lambda a: np.fmax.accumulate(a, axis=0), "cumfmax_rows_f64"),
+    Timed("accumulate", "np.maximum.accumulate(a, axis=0)", "float64 matrix", _window,
+          lambda a: np.maximum.accumulate(a, axis=0), "cummax_rows_f64"),
+    Timed("accumulate", "a.cumprod(axis=0)", "float64 matrix near 1", partial(_window, center=1.0, spread=ROWS_SPREAD),
+          lambda a: a.cumprod(axis=0), "cumprod_rows_f64"),
+    Timed("cumsum", "a.cumsum(axis=0)", "float64 matrix", _window, lambda a: a.cumsum(axis=0), "cumsum_rows_f64"),
     Timed("reduceat", "np.fmax.reduceat(x, starts)", f"float64, runs of {REDUCEAT_RUN}, {REDUCEAT_NAN:.0%} NaN",
           partial(_runs, nan=REDUCEAT_NAN), np.fmax.reduceat, "fmax_reduce_f64"),
     Timed("cumsum", "np.cumsum(mask)", "bool, half selected", partial(_mask, HALF), np.cumsum, "cumsum_bool"),
@@ -419,6 +558,8 @@ TAKEN: tuple[Timed, ...] = (
           np.bincount, "bincount_i16"),
     Timed("bincount", "np.bincount(x)", f"int64, codes 0 to {BINCOUNT_CODES - 1}", partial(_codes, np.int64),
           np.bincount, "bincount_i64"),
+    *(Timed("unique", "np.unique(x)", f"int64, {classes} values", partial(_labels, classes), np.unique, "unique_i64")
+      for classes in UNIQUE_LABELS),
     Timed("isin", "np.isin(x, eight_values)", "int64, values close together", _narrow_ints, lambda x: np.isin(x, ISIN_TEST), "isin_i64"),
     Timed("searchsorted", "np.searchsorted(a, v)", "float64, as many needles as elements", partial(_search, None), np.searchsorted, "searchsorted_f64"),
     Timed("searchsorted", "np.searchsorted(a, v)", "float64, 1,000 elements", partial(_search, SMALL_TABLE), np.searchsorted, "searchsorted_f64"),
@@ -427,6 +568,22 @@ TAKEN: tuple[Timed, ...] = (
     Timed("searchsorted", "np.digitize(x, bins)", "float64, 1,000 bin edges", partial(_search, SMALL_TABLE), _digitize, "searchsorted_right_f64"),
     Timed("interp", "np.interp(x, xp, fp)", "float64, as many queries as points", partial(_interp, None), np.interp, "interp_f64"),
     Timed("interp", "np.interp(x, xp, fp)", "float64, 1,000 points", partial(_interp, SMALL_TABLE), np.interp, "interp_f64"),
+    Timed("argsort", "np.argsort(x, kind='stable')", "float64", partial(_floats, np.float64), _stable_argsort,
+          "argsort_f64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "x.argsort(kind='mergesort')", "float64", partial(_floats, np.float64),
+          lambda x: x.argsort(kind="mergesort"), "argsort_f64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "np.argsort(x, kind='stable')", "int64, the whole range", _spread_ints, _stable_argsort,
+          "argsort_i64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "np.argsort(x, kind='stable')", "int64, ten values", partial(_ints, np.int64), _stable_argsort,
+          "argsort_i64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "np.argsort(x, kind='stable')", "uint64, the whole range", _unsigned, _stable_argsort,
+          "argsort_u64", min_n=ARGSORT_MIN_N),
+    Timed("argsort", "np.argsort(x, kind='stable')", "float64, already sorted", _sorted_floats, _stable_argsort,
+          "argsort_f64", min_n=ARGSORT_MIN_N),
+    # What scikit-learn's ranking metrics call on their scores.
+    Timed("argsort", "np.argsort(np.flip(x), kind='stable')", "float64, a reversed view",
+          partial(_floats, np.float64), lambda x: np.argsort(np.flip(x), kind="stable"), "argsort_f64",
+          min_n=ARGSORT_MIN_N),
 )
 
 # Statements that reach a hook and are left to NumPy: what a hook costs a
@@ -438,6 +595,10 @@ LEFT: tuple[Timed, ...] = (
     Timed("clip", "np.clip(x, -0.5, None)", "float64", partial(_floats, np.float64), lambda x: np.clip(x, LO, None), None),
     Timed("round", "np.round(x, 2)", "float32", partial(_floats, np.float32), lambda x: np.round(x, DECIMALS), None),
     Timed("median", "np.median(x)", "float32", partial(_floats, np.float32), np.median, None),
+    Timed("inplace", "a + b", "float64", _two_floats, np.add, None),
+    Timed("inplace", "w -= 0.5", "float64", partial(_floats, np.float64), _subtract_scalar, None),
+    Timed("inplace", "w -= b", "float32", lambda n: tuple(a.astype(np.float32) for a in _two_floats(n)),
+          _subtract_in_place, None),
     Timed("astype", "x.astype(np.float64)", "uint8", _bytes, lambda x: x.astype(np.float64), None),
     Timed("sum", "np.sum(x)", "float64", partial(_floats, np.float64), np.sum, None),
     Timed("sum", "x.sum()", "float64", partial(_floats, np.float64), lambda x: x.sum(), None),
@@ -453,6 +614,7 @@ LEFT: tuple[Timed, ...] = (
           partial(_runs, nan=0.0), np.add.reduceat, None),
     Timed("histogram", "np.histogram(x, 50, (-3.0, 3.0), density=False)", "float64", partial(_floats, np.float64), lambda x: np.histogram(x, BINS, RANGE, density=False), None),
     Timed("bincount", "np.bincount(x)", "int32", partial(_ints, np.int32), np.bincount, None),
+    Timed("unique", "np.unique(x)", "int64, wide range", partial(_labels, UNIQUE_WIDE), np.unique, None),
     Timed("isin", "np.isin(x, nine_values)", "int64", _narrow_ints, lambda x: np.isin(x, ISIN_TEST + [3]), None),
     Timed("searchsorted", "np.searchsorted(a, v)", "float64 array, float32 needles", _search_float32_needles, np.searchsorted, None),
     Timed("interp", "np.interp(x, xp, fp, left=0.0)", "float64", partial(_interp, None), lambda x, xp, fp: np.interp(x, xp, fp, left=0.0), None),
@@ -465,6 +627,10 @@ LEFT: tuple[Timed, ...] = (
     Timed("maskfill", "np.copyto(x, 0.0)", "float64", partial(_floats, np.float64), lambda x: np.copyto(x, 0.0), None),
     Timed("where", "np.where(mask, 1.0, 0.0)", "bool, half selected", partial(_mask, HALF), lambda m: np.where(m, 1.0, 0.0), None),
     Timed("where", "np.where(mask, a, b)", "float32, half true", partial(_selected, np.float32, HALF), np.where, None),
+    Timed("argsort", "np.argsort(x)", "float64, the default kind", partial(_floats, np.float64), np.argsort, None),
+    Timed("argsort", "np.argsort(x, kind='stable')", "float64, nearly sorted",
+          _nearly_sorted_floats, _stable_argsort, None),
+    Timed("argsort", "np.argsort(x, kind='stable')", "float32", partial(_floats, np.float32), _stable_argsort, None),
 )
 
 

@@ -98,6 +98,8 @@ Three further rules are enforced the same way:
 ::: aside The one relaxation: scratch output
 The fast way to do `x[mask]` stores more than it keeps: every block is written whole, and the write position then advances only by the number of selected elements, so the surplus is overwritten by the next store. The last store leaves a few stray elements just past the result. A spec can permit this for one buffer by declaring it `scratch=True`. The kernel may then write anywhere inside the buffer's capacity, and only the reported elements are compared with NumPy. Writing one byte past the capacity is still a fault.
 
+The same declaration lends a kernel working memory. A capacity can be a multiple of `n` (`capacity=Times(3)`), and the stable `argsort` kernels report `n` indices at the start of such a buffer and move their elements about in the rest of it.
+
 This has a price, paid in the binding: the buffer has to be large enough for all `n` elements, the user must only ever be handed the reported part, and a scratch kernel can never be run on a buffer the user owns. [Chapter 7]([[ root ]]report/delivery/#scratch-output-and-the-cost-of-allocation) picks that up.
 :::
 
