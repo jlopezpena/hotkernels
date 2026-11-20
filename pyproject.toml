@@ -42,6 +42,12 @@ dev = [
     "hypothesis>=6.100",
     "pytest>=8.0",
 ]
+# What `uv run --group workloads delivery workloads` needs: the libraries whose
+# functions are timed as workloads. Pinned by uv.lock; updated by hand.
+workloads = [
+    "pandas>=3.0",
+    "scikit-image>=0.26",
+]
 
 [build-system]
 requires = ["hatchling"]
