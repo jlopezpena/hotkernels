@@ -232,6 +232,7 @@ uv run survey report survey/results/apple-m1-pro.json   # regenerate a report
 uv run delivery check         # every hooked call, with and without hotkernels; about a minute
 uv run delivery demo          # run examples/workload.py both ways and compare
 uv run delivery time          # time statements from Python; add --record to keep the result
+uv run --group workloads delivery workloads   # library and benchmark-suite code, both ways
 uv run delivery numpy-tests   # NumPy's own test suite, both ways; about ten minutes
 uv run --group apps delivery apps --profile   # five whole applications at two sizes, both ways, and where their time goes
 uv run --group apps delivery apps --set second --profile   # five more, recorded apart

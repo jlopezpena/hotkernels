@@ -232,6 +232,10 @@ dev = [
     { name = "hypothesis" },
     { name = "pytest" },
 ]
+workloads = [
+    { name = "pandas" },
+    { name = "scikit-image" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -260,6 +264,10 @@ apps = [
 dev = [
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "pytest", specifier = ">=8.0" },
+]
+workloads = [
+    { name = "pandas", specifier = ">=3.0" },
+    { name = "scikit-image", specifier = ">=0.26" },
 ]
 
 [[package]]
